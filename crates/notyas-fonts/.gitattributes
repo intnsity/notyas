@@ -1,0 +1,5 @@
+# The generated atlases must round-trip byte-identically through git so that
+# tools/fonts/regen.ps1 (which writes LF) always reproduces the committed bytes.
+# A CRLF-normalizing checkout (core.autocrlf=true) would make every regen look
+# like a full rewrite. Keep the bytes exactly as committed.
+src/gen/*.rs -text

@@ -1,0 +1,19 @@
+[package]
+name = "notyas-fonts"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Pre-rasterized notyas Sans / notyas Mono glyph atlases (derived from IBM Plex, OFL 1.1) with a minimal Rgb565 alpha-blending text renderer"
+# License of the CODE in this crate. The generated glyph data under src/gen/ is derived
+# from IBM Plex and remains under the SIL Open Font License 1.1 - see LICENSE-fonts at
+# the repository root and the crate docs.
+license = "GPL-3.0-or-later"
+repository = "https://github.com/intnsity/BigDice"
+publish = false
+
+[dependencies]
+# DrawTarget / Rgb565 / Point live in embedded-graphics-core; depending on the core
+# crate rather than embedded-graphics itself keeps this crate's dependency surface
+# minimal while staying type-identical with the firmware's embedded-graphics 0.8
+# (which is built on core 0.4). Pure Rust, no_std.
+embedded-graphics-core = "0.4"

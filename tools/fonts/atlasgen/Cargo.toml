@@ -1,0 +1,23 @@
+# Host-side glyph atlas generator for notyas. Rasterizes the committed IBM Plex TTFs
+# (tools/fonts/upstream/) into static Rust glyph atlases under
+# crates/notyas-fonts/src/gen/. Run via tools/fonts/regen.ps1; output is byte-identical
+# across runs (fixed glyph order, no timestamps, no hash-map iteration in emission).
+[package]
+name = "atlasgen"
+version = "0.1.0"
+edition = "2021"
+description = "Rasterizes IBM Plex TTFs into static notyas Sans / notyas Mono glyph atlases"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+# Rasterizer choice: fontdue over ab_glyph. fontdue's Font::rasterize(char, px) yields
+# the 8-bit coverage bitmap and pixel-snapped placement metrics (xmin/ymin/advance) in a
+# single call, and its px parameter is em-relative - the same sizing model as the
+# desktop BigDice GUI's point sizes - so "desktop 15px * 2.2" translates directly.
+# ab_glyph would need manual outline->raster plumbing and its PxScale is height-based,
+# inviting a silent sizing mismatch. Both are pure Rust; fontdue's tree is smaller.
+fontdue = "0.9"
+# Name-table access only (font version string for the generated provenance headers and
+# LICENSE-fonts). Same version fontdue resolves to, so this adds no new code origin.
+ttf-parser = "0.25"

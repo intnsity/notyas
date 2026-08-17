@@ -1,0 +1,6 @@
+# Upstream TTFs are committed verbatim; their SHA256s are recorded in LICENSE-fonts
+# and any byte change is a licensing/provenance event, never a checkout artifact.
+upstream/*.ttf binary
+# regen.ps1 must reproduce the committed generated files byte-for-byte; keep the
+# scripts' own line endings stable too so hashes in reports stay meaningful.
+regen.ps1 -text
