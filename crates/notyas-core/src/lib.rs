@@ -57,3 +57,7 @@ pub mod entropy;
 #[cfg(feature = "qr")]
 pub mod qr;
 pub mod report;
+/// Boot self-test (SECURITY.md invariant 5): a curated vector subset the firmware runs
+/// at every boot and renders on the Verify screen. Off the derivation pipeline above -
+/// it only exercises it.
+pub mod selftest;
