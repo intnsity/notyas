@@ -94,8 +94,10 @@ Notes the scripts encode:
 
 ## Captured boot log (COM3, 2026-08-17)
 
-The log predates the bigdice32 -> notyas rename; log tags and the banner then
-read `bigdice32_firmware` / `BigDice32`. Kept verbatim as captured.
+Captured after the bigdice32 -> notyas rename and the repo move to
+`\\172.16.0.9\bear\code\btc\notyas`, from a full rebuild at the new path.
+(An earlier capture from the same day predated the rename and showed
+`bigdice32_firmware` / `BigDice32` tags; superseded by this one.)
 
 ```
 ESP-ROM:esp32p4-eco2-20240710
@@ -112,11 +114,11 @@ I (286) efuse_init: Max chip rev:     v1.99
 I (290) efuse_init: Chip rev:         v1.3
 ...
 I (377) main_task: Calling app_main()
-I (379) bigdice32_firmware: C6 radio held in reset (GPIO54 low)
-I (380) bigdice32_firmware: BigDice32 0.1.0-m1 hello
-I (380) bigdice32_firmware: IDF v5.5.4 | chip ESP32-P4 rev v1.3 | free heap 596108 bytes
-I (1389) bigdice32_firmware: BigDice32 0.1.0-m1 hello
-I (1389) bigdice32_firmware: IDF v5.5.4 | chip ESP32-P4 rev v1.3 | free heap 596108 bytes
+I (379) notyas_firmware: C6 radio held in reset (GPIO54 low)
+I (380) notyas_firmware: notyas 0.1.0-m1 hello
+I (380) notyas_firmware: IDF v5.5.4 | chip ESP32-P4 rev v1.3 | free heap 596116 bytes
+I (1388) notyas_firmware: notyas 0.1.0-m1 hello
+I (1388) notyas_firmware: IDF v5.5.4 | chip ESP32-P4 rev v1.3 | free heap 596116 bytes
 ```
 
 ## Pitfalls hit while proving this (all encoded in config/scripts now)
