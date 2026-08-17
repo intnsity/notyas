@@ -23,6 +23,19 @@ default = []
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.52", features = ["binstart"] }
+embedded-graphics = "0.8"
 
 [build-dependencies]
 embuild = "0.33"
+
+# Display/touch C components from the ESP component registry, pulled into the
+# esp-idf-sys build by embuild's component manager. Each bindings_header adds
+# that component's API (plus the esp_lcd/LDO/i2c_master surface it needs) to
+# the generated esp_idf_sys bindings.
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "waveshare/esp_lcd_st7703", version = "^2" }
+bindings_header = "bindings/st7703.h"
+
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/esp_lcd_touch_gt911", version = "^1" }
+bindings_header = "bindings/gt911.h"

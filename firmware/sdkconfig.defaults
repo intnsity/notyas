@@ -25,6 +25,15 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8000
 # 1 ms tick so std::thread::sleep has 1 ms granularity (default is 100 Hz).
 CONFIG_FREERTOS_HZ=1000
 
+# --- I2C (0.1.0-m2) ----------------------------------------------------------
+# The image links BOTH i2c drivers: esp-idf-hal (via esp-idf-svc) references
+# the legacy driver/i2c.h symbols, while our GT911 touch path uses the new
+# i2c_master API. The legacy driver's startup constructor abort()s when it
+# sees the new driver linked - before app_main, boot-looping the board. We
+# never install the legacy driver at runtime, so skipping the link-time check
+# is safe; IDF provides this option for exactly this situation.
+CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y
+
 # --- PSRAM (0.1.0-m2) --------------------------------------------------------
 # 32 MB in-package PSRAM (ESP32-P4NRW32). The DPI panel driver allocates the
 # 720x720 RGB565 framebuffer (~1 MB) from this heap, so display work needs it.

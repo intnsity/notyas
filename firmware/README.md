@@ -1,8 +1,9 @@
 # notyas-firmware
 
 std Rust on ESP-IDF for the Waveshare ESP32-P4-WiFi6-Touch-LCD-4B. Milestone
-0.1.0-m1: proves the toolchain end-to-end - builds, flashes, boots on the real
-board, locks the radio down, and logs a heartbeat banner on UART0.
+0.1.0-m2 (part 1): 720x720 MIPI-DSI display and GT911 touch up from Rust -
+the Butter Paper demo shell renders, touches are drawn live and logged.
+(m1 proved the toolchain: build, flash, boot, radio lockdown, heartbeat.)
 
 ## Toolchain (exact versions, proven 2026-08-17)
 
@@ -83,43 +84,90 @@ Notes the scripts encode:
   default (v3.x-family) config and does not boot on this chip.
 - Monitor manually: `espflash monitor --port COM3` (115200 baud; Ctrl-C exits).
 
-## What 0.1.0-m1 does
+## What 0.1.0-m2 does
+
+Boot sequence in `src/main.rs`, in load-bearing order:
 
 1. `esp_idf_svc::sys::link_patches()` + EspLogger init.
 2. **Airgap lockdown first**: GPIO54 (the ESP32-C6 radio module's CHIP_PU
    enable) is driven LOW and held for the whole power cycle - the radio chip
    sits in reset. Logs `C6 radio held in reset (GPIO54 low)`.
-3. Once per second: banner `notyas 0.1.0-m1 hello`, IDF version, chip
-   revision from eFuse (major.minor), free heap.
+3. Backlight enable (GPIO33) claimed and held LOW - the panel stays dark
+   until the first real frame is in the framebuffer.
+4. Display bring-up (`src/display.rs`):
+   - internal LDO channel 3 acquired at 2500 mV (MIPI DPHY power - skipping
+     this hangs DSI init) and channel 4 at 3300 mV (GPIO39-48 IO bank);
+   - DSI bus, 2 lanes at 480 Mbps/lane; DBI IO channel for panel commands;
+   - ST7703 panel via the `waveshare/esp_lcd_st7703` component (v2.0.0),
+     720x720 RGB565, DPI clock 38 MHz, LCD reset GPIO27 handled by the
+     panel config, `use_dma2d`. The function-like C config macros
+     (`ST7703_*_CONFIG`) cannot be bound by bindgen; their values are
+     replicated as consts in display.rs.
+   - Framebuffer: the DPI driver allocates one 720x720 RGB565 buffer (~1 MB)
+     in PSRAM. We draw into it directly (`esp_lcd_dpi_panel_get_frame_buffer`)
+     and publish by passing the same pointer back through
+     `esp_lcd_panel_draw_bitmap` - the driver recognizes its own framebuffer,
+     skips the copy, and only does the required cache writeback. One buffer,
+     no memcpy, no hand-rolled cache maintenance. `display::Display`
+     implements `embedded_graphics::DrawTarget` (Rgb565) over that buffer.
+5. Butter Paper shell painted (tokens in `src/theme.rs`, from
+   `\\172.16.0.9\bear\code\YellowBGs.md`): paper-1 page, centered paper-2
+   card with 1px hairline border, title/version/status text in the built-in
+   mono fonts. Text styles are passed as generic `TextRenderer` parameters so
+   the pre-rasterized notyas font atlases (parallel workstream) drop in
+   without touching the drawing code. Then backlight on: GPIO33 high + LEDC
+   PWM on GPIO26 at 80% (5 kHz, 10-bit, inverted output - same proven config
+   as the Waveshare BSP, whose backlight PWM input is active-low).
+6. Touch bring-up (`src/touch.rs`): i2c_master bus on SDA GPIO7 / SCL GPIO8
+   at 400 kHz; manual GT911 reset on GPIO23 then a 120 ms wake-up wait; probe
+   0x5D then 0x14; `espressif/esp_lcd_touch_gt911` component with reset AND
+   int set to NC (see pitfall 7); product id read from register 0x8140 and
+   logged.
+7. Main loop: poll GT911 every 25 ms (INT is unrouted - poll is the only
+   option); on a new touch point, log `touch x=.. y=..` and repaint the
+   status line; heartbeat banner once per second.
 
-## Captured boot log (COM3, 2026-08-17)
+## Captured boot log (COM3, 2026-08-17, display+touch bring-up)
 
-Captured after the bigdice32 -> notyas rename and the repo move to
-`\\172.16.0.9\bear\code\btc\notyas`, from a full rebuild at the new path.
-(An earlier capture from the same day predated the rename and showed
-`bigdice32_firmware` / `BigDice32` tags; superseded by this one.)
+Three consecutive power cycles produced byte-identical init logs (boot on
+this path is deterministic to the millisecond). GT911 address was 0x14 on
+these cycles; it can legitimately be 0x5D on others (pitfall 7).
 
 ```
 ESP-ROM:esp32p4-eco2-20240710
-Build:Jul 10 2024
 rst:0x1 (POWERON),boot:0x30f (SPI_FAST_FLASH_BOOT)
 ...
-I (27) boot: ESP-IDF v5.5.4 2nd stage bootloader
 I (30) boot: chip revision: v1.3
 I (42) boot.esp32p4: SPI Flash Size : 32MB
 ...
-I (279) app_init: ESP-IDF:          v5.5.4
-I (283) efuse_init: Min chip rev:     v1.0
-I (286) efuse_init: Max chip rev:     v1.99
-I (290) efuse_init: Chip rev:         v1.3
+I (296) MSPI Timing: Enter psram timing tuning
+I esp_psram: Found 32MB PSRAM device
+I esp_psram: Speed: 200MHz
+I (501) mmu_psram: .rodata xip on psram
+I (558) mmu_psram: .text xip on psram
+I (1038) esp_psram: SPI SRAM memory test OK
 ...
-I (377) main_task: Calling app_main()
-I (379) notyas_firmware: C6 radio held in reset (GPIO54 low)
-I (380) notyas_firmware: notyas 0.1.0-m1 hello
-I (380) notyas_firmware: IDF v5.5.4 | chip ESP32-P4 rev v1.3 | free heap 596116 bytes
-I (1388) notyas_firmware: notyas 0.1.0-m1 hello
-I (1388) notyas_firmware: IDF v5.5.4 | chip ESP32-P4 rev v1.3 | free heap 596116 bytes
+I (1120) esp_psram: Adding pool of 32064K of PSRAM memory to heap allocator
+...
+I (1206) notyas_firmware: C6 radio held in reset (GPIO54 low)
+I (1211) notyas_firmware::display: LDO channel 3 acquired at 2500 mV (MIPI DPHY)
+I (1218) notyas_firmware::display: LDO channel 4 acquired at 3300 mV (GPIO39-48 bank)
+I (1227) notyas_firmware::display: DSI bus up: 2 lanes, 480 Mbps/lane
+I (1232) st7703: version: 2.0.0
+I (1676) notyas_firmware::display: ST7703 panel initialized (720x720 RGB565, DPI 38 MHz)
+I (1676) notyas_firmware::display: DPI framebuffer at 0x480b0a80 (PSRAM)
+I (1695) notyas_firmware::display: backlight PWM duty set to 80%
+I (1838) notyas_firmware::touch: GT911 responds at i2c address 0x14
+I (1841) GT911: TouchPad_ID:0x39,0x31,0x31
+I (1844) GT911: TouchPad_Config_Version:70
+I (1849) notyas_firmware::touch: GT911 initialized: product id "911" ([39, 31, 31, 00]), polled mode, reset GPIO23
+I (1858) notyas_firmware: notyas 0.1.0-m2 shell up
+I (2877) notyas_firmware: notyas 0.1.0-m2 | IDF v5.5.4 | free heap 32264516 bytes
 ```
+
+45 s monitored with no crash, no watchdog, steady heap. The rev v1.3
+silicon accepted the full Waveshare SPIRAM combination (200 MHz + XIP +
+L2 256 KB/128 B) on the first try - no bisecting needed.
 
 ## Pitfalls hit while proving this (all encoded in config/scripts now)
 
@@ -140,3 +188,31 @@ I (1388) notyas_firmware: IDF v5.5.4 | chip ESP32-P4 rev v1.3 | free heap 596116
    esp-idf-sys binding allowlist, and on the pre-v3 table the wafer major
    version is split into LO(2b)/HI(1b) fields - main.rs composes
    `(HI << 2) | LO` exactly like IDF's efuse_ll.h.
+5. `[[package.metadata.esp-idf-sys.extra_components]]` silently ignored
+   (remote components never downloaded, bindings never generated): embuild
+   guesses the workspace dir by walking UP FROM OUT_DIR, which lives under
+   CARGO_TARGET_DIR (C:\nyt), not next to the sources - so its
+   `cargo metadata` probe finds no Cargo.toml and ALL package metadata is
+   dropped. Same root cause as pitfall 1, different symptom. Fixed by
+   pinning `CARGO_WORKSPACE_DIR = { value = "", relative = true }` in
+   .cargo/config.toml. Note: esp-idf-sys does not rerun its build script
+   when that env changes - `cargo clean -p esp-idf-sys` once after adding it.
+6. Boot-loop abort before app_main after adding the GT911 component:
+   `E i2c: CONFLICT! driver_ng is not allowed to be used with this old
+   driver`. esp-idf-hal (via esp-idf-svc) links the legacy driver/i2c.h
+   symbols, our touch path uses the new i2c_master API, and the legacy
+   driver's startup constructor abort()s when both are linked. We never
+   install the legacy driver at runtime, so sdkconfig sets
+   `CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y` (IDF's escape hatch for
+   exactly this).
+7. GT911 init failing intermittently with `touch_gt911_read_cfg: GT911 read
+   error!`, address flipping between 0x5D and 0x14 across boots: the GT911
+   re-latches its I2C address from the INT level at every reset release, and
+   INT is unrouted on this board (floats). The esp_lcd_touch_gt911 driver
+   pulses reset itself and reads config immediately, racing the chip's
+   ~50 ms post-reset wake-up. Fix in touch.rs: reset the chip manually
+   (GPIO23, 10 ms low, then 120 ms wake-up), probe for whichever address got
+   latched, and hand the driver `rst_gpio_num = NC` so it cannot re-reset
+   and re-randomize the address. Also: the first coordinate read after reset
+   reports a phantom point (observed 481,481) - init does one throwaway
+   read.
