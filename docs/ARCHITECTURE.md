@@ -81,9 +81,13 @@ bespoke renderer is simpler and fully reviewable.
 
 Theme: Butter Paper (\\172.16.0.9\bear\code\YellowBGs.md), same tokens as desktop
 BigDice's gui/theme.rs - warm paper ramp, warm ink, cobalt accent, depth by tint. Fonts:
-IBM Plex Sans + IBM Plex Mono (OFL), pre-rasterized to bitmap glyph atlases at build
-time by a host-side tool (no runtime font parsing). Terminal-plain layout: full-width
-cards, hairline rules, no animation.
+IBM Plex Sans + IBM Plex Mono (OFL 1.1), pre-rasterized to bitmap glyph atlases at build
+time by a host-side tool (no runtime font parsing). Licensing: OFL permits embedding and
+redistribution with GPL3 firmware (fonts ship as data + LICENSE-fonts, desktop BigDice
+pattern), but "Plex" is a Reserved Font Name - subsetted/converted artifacts are Modified
+Versions and must be renamed (e.g. "notyas Sans"/"notyas Mono"), with the OFL text and
+attribution in LICENSE-fonts; unmodified upstream TTFs may keep their names. Terminal-
+plain layout: full-width cards, hairline rules, no animation.
 
 ## Security model (summary - SECURITY.md is normative)
 
