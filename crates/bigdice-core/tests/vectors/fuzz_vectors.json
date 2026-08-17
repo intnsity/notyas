@@ -1,0 +1,1372 @@
+{
+ "generated_by": "fuzz/make_vectors.py - trimmed from a 224-case differential fuzz corpus",
+ "source": "expected values are the agreement of two independent oracles: iancoleman/bip39 entropy.js + jsbip39.js run under node (entropy, mnemonic, seed) and python bip-utils (seed re-derived with hashlib.pbkdf2_hmac, then keys and addresses)",
+ "corpus_prng_seed": 20260813,
+ "params": {
+  "words": "raw",
+  "account": 0,
+  "change": 0,
+  "rows_per_scheme": 3,
+  "network": "mainnet",
+  "passphrase": ""
+ },
+ "notes": {
+  "input": "raw text as given to --dice / --dice-file; only [1-6] characters are entropy",
+  "clean": "extracted rolls after mapping 6 -> 0",
+  "binary": "per-roll encoding 0->00 1->01 2->10 3->11 4->0 5->1",
+  "bits_used": "raw mode keeps the LAST floor(bits/32)*32 bits",
+  "slip132_prv_pub": "yprv/ypub for bip49, zprv/zpub for bip84, null elsewhere"
+ },
+ "reference_checks": {
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "root_xprv": "xprv9s21ZrQH143K3GJpoapnV8SFfukcVBSfeCficPSGfubmSFDxo1kuHnLisriDvSnRRuL2Qrg5ggqHKNVpxR86QEC8w35uxmGoggxtQTPvfUu",
+  "first_addresses": {
+   "bip44": "1LqBGSKuX5yYUonjxT5qGfpUsXKYYWeabA",
+   "bip49": "37VucYSaXLCAsxYyAPfbSi9eh4iEcbShgf",
+   "bip84": "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+   "bip86": "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr"
+  }
+ },
+ "vectors": [
+  {
+   "id": "rand_n020_00",
+   "note": "20 rolls: the shortest length in the corpus",
+   "n_rolls": 20,
+   "input": "23564122165452663152",
+   "rolls": "23564122165452663152",
+   "expected": {
+    "events": 20,
+    "clean": "23504122105452003152",
+    "binary": "1011100001101001001011000001101110",
+    "bits": 34,
+    "bits_used": 32,
+    "entropy_hex": "e1a4b06e",
+    "word_count": 3,
+    "phrase": "ticket cereal breeze",
+    "seed_hex": "60984514755950e4bcd9f488c36e10f5b401a1d1310fe1be69d27cb05c03a9edea8c85c05ab5a9fba837cf837d4f999f20d6fcd8f2f6bc77f784032420704c5c",
+    "root_xprv": "xprv9s21ZrQH143K2oveAqEajcrcU474cxaLkJhx6Ztjfq8hcmgK833EUd5zzSLs4aPrWdPPDgWEwSngFUbgMoGgFps4d7vF3LiKWcn3JfjbJCC",
+    "schemes": {
+     "bip44": {
+      "account_path": "m/44'/0'/0'",
+      "xprv": "xprv9xhm8n2HyZwo88Ei355hjVJGCaxrDhRRbN83bJwKttxP1SV3QzXLYnJ9gp8UycgUQ9ZnWkwVxP5ecC8DUiGWsjQRK9VwnfV4WnczoumVgDC",
+      "xpub": "xpub6Bh7YHZBowW6LcKB96ci6dEzkcoLdA9Gxb3ePhLwTEVMtEpBxXqb6acdY7KE6c6xh4ZMgBPn1HwYYxgogQmbhcMZX4Tj1n43kZsiksdvAon",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "15mkwXWUJq58eHDAimMe9kbKY79Fwv5GJk",
+        "pubkey": "024044f99c18334ca4d2309d8c4000913216c4d37d2d5da3b4f2da18e352354f0e",
+        "wif": "L2v7tr3wYyjo39QimvCCZ9mbHgGAVFCKKGuDGAVHnQawdw9KCaLG"
+       },
+       {
+        "path": "m/44'/0'/0'/0/1",
+        "address": "1MbJu9DsbpJwaF1uVtGrnmgXzLDwtmvzWA",
+        "pubkey": "032168ab182bb95ce2631c8bdb6448246e706bca2920c892dbaf046b1768605dc7",
+        "wif": "L3AgFzoVCMuBRgwntXH7iDDGX29uHNbzEi9eH7tkUsNEAkqHfx27"
+       },
+       {
+        "path": "m/44'/0'/0'/0/2",
+        "address": "1FbfLbPrqA6C4jB9oRJ4dRCkWx9vcR9Gky",
+        "pubkey": "0337ceda35fa7e9efbfda8c37b0f183afcb2f7a07910f0d22f16e66ac00c893fa2",
+        "wif": "KxLWJGvwi5F6GqQiXpjFhoeJATixaT2UQsxmRUfFQgbq3durHEK7"
+       }
+      ]
+     },
+     "bip49": {
+      "account_path": "m/49'/0'/0'",
+      "xprv": "xprv9zAS3Uk3AjfsxPv7DgksVrwPbAsYfpvcH9aAsGCEmE75Ny6x5xDywCafvVdLhAhweKHNr2cFtKey9SzjuWq25UxqYCs2jDh7ogUS5sEwjYc",
+      "xpub": "xpub6D9nSzGw17EBAszaKiHsrzt89Ci35HeTeNVmfebrKZe4FmS6dVYEUzu9mnpDRQ4W7QS63iguoZyxJvKqnR43PgsJ7eUVCaXVCgGrEgmubUv",
+      "slip132_prv": "yprvAJzhM9QxKRDMoh7E43YVhx2tm91zcSv7CG6Pef689EUxS4vBLcPYZGEowhavh5Ms3xQBbWCpLz1X2jcJdDF2sieSQYZTK8Wc5QY5UT8QNYD",
+      "slip132_pub": "ypub6Xz3kewr9nmf2BBhA55W55ydKArV1udxZV1zT3Vjha1wJsFKt9ho74ZHnzmoRJiRX3YtoCHUGELWCCwQW7U4BvYtyzAunVLyUQLVdF5KoF4",
+      "rows": [
+       {
+        "path": "m/49'/0'/0'/0/0",
+        "address": "39ajZS5MUPDSDeas6ZeMGJGD9Zuk9aJDrz",
+        "pubkey": "022161bdbb65084a29cb4ee7c8b35559a294b4775fba3fea4d93a5bb125b3b2c43",
+        "wif": "L4Xxpn54AmKRqJP9Ga3iYGBrjvCsneaBeRSJseVeYQsFQbrZv2PQ"
+       },
+       {
+        "path": "m/49'/0'/0'/0/1",
+        "address": "35Q2F3H4cBgstdK9VREY9zw2Cr4Dr7QfAa",
+        "pubkey": "02409666d5d79019c3e4eb29605b1f336731c733500bfba032d2477182f7b7b3a9",
+        "wif": "KyAzJybL2m9xGWECfSPwxQCnqvPZuHuPxWPPw4n6oYJ2vqKR1Czb"
+       },
+       {
+        "path": "m/49'/0'/0'/0/2",
+        "address": "3HFo4LPphm1d6o7YDHnNAsNf99ScRTckaX",
+        "pubkey": "02a916354aa3ab9ef7325feb052cdc8b2a1f18af03b41a77dc0ad497fca4fd1042",
+        "wif": "L4g9Pfb5GJMiyZVdBoidDQaHDn1uDdGGKSTf727YHf7HsAg6voD1"
+       }
+      ]
+     },
+     "bip84": {
+      "account_path": "m/84'/0'/0'",
+      "xprv": "xprv9yvdBbCMsLUhXLJR7rQgfXh6SzTZvubRgPFzEiYiD2fkjQbft2Kso6pGhoYreUq7VvQeryN1kSzZ5hra8xgib1mnPfjJPnxB42k9K1MZWzy",
+      "xpub": "xpub6Cuyb6jFhi2zjpNtDswh2fdq12J4LNKH3cBb36xKmNCjcCvpRZe8Lu8kZ6RGKVK6czqMnhCWdhUxoYuCUEX8X7p5vLvpeH3W8rdV3LWoj8W",
+      "slip132_prv": "zprvAdb9nvYCAhZfDvgenZyw5ht6nvkTp9aRWcJRoWLUy3RWqcE8PLf13E8YkDU2eJ8xKCeGMvZ8fmherH5haMWkBV8z8M89Zcb9bUsS65WSYgQ",
+      "slip132_pub": "zpub6raWCS56157xSQm7tbWwSqpqLxaxDcJGsqE2btk6XNxViQZGvsyFb2T2bWLSKJcwSH4yHePdZ2C4a88KudMA7bBHf2Kfp6gUgJkmpZ8Y8a3",
+      "rows": [
+       {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1q0j57ucxd53jf5l8rql6l0j07fjcaxc23dpq6hg",
+        "pubkey": "0376bb79182d9c4fb4de1c6aa22c4c72a8f89f2bcb35e40c24e1dd9770e1d1b1a7",
+        "wif": "L1t5LE2ARqnEgsFyNgkaSBex8HcyBEwewjHrdLgeBwKgjgkZ5K6f"
+       },
+       {
+        "path": "m/84'/0'/0'/0/1",
+        "address": "bc1qwj3f9c8wzgfzqhdzze4szcqa2q4htlcxp50jf6",
+        "pubkey": "0257ce87cdcc48ac111d648d7dc31f754b0494168d79420ba67e2ae6f3a9fc14d2",
+        "wif": "L1DG7MtZqXsd29iTCiWnCP78DzPaWKpCQp2AftzWgEaRY9Wi3pjd"
+       },
+       {
+        "path": "m/84'/0'/0'/0/2",
+        "address": "bc1q48zxy77u4tgx6zs8tz54ljandls5uwvdrvrwxy",
+        "pubkey": "0305ec5960842bbcf05b916e26f9327dfad0d2f07847aa95539767f663bea2038f",
+        "wif": "L1wnFJZCLvYoJSoVMCVQHumRBmS1ESQW8ZQxiBEYLf5TT9vHo6ta"
+       }
+      ]
+     },
+     "bip86": {
+      "account_path": "m/86'/0'/0'",
+      "xprv": "xprv9yXjFq9dpNQYaYfKb7ssB884Dy1PmJMCxLsmSdrULDgJA3FazDzk2ohGi4E46Aoopsx8VNoQPxT6mpxytnYpjSzR5hqpwXAWVm8diLwup4r",
+      "xpub": "xpub6CX5fLgXejxqo2jnh9QsYG4nmzqtAm54KZoNF2G5tZDH2qajXmJzac1kZLhMdnNHmnoCLy9mRPU6nHwDx43H4YepdWxQ8B1XKtpQSGeUqFk",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/86'/0'/0'/0/0",
+        "address": "bc1pqr0hettczm8gly8n9w7ffv20mpa5ptlra0dtf7wcr9unzv9lzgqqcjhqay",
+        "pubkey": "0322dfd4ad617bdb38f36105e29c2f43460008123752948395c4b70dc12c2d651d",
+        "wif": "Kwg7wZVWNgU8BwRHsag1fsoB88HWtFE2gYV1DuXCM3uGBCLtkHvf"
+       },
+       {
+        "path": "m/86'/0'/0'/0/1",
+        "address": "bc1pfmkfpxyy8pllluvra84uhvqzdpmpeu76ujsrgrrtjfaqh4fu9zfq43fv7t",
+        "pubkey": "026c88e9d9063f702a2dc86f568812379cd4a03060ca98ced0297f64c38372f34c",
+        "wif": "L5HyoE89xL4s6wv1y7BoRBM2UiUTYDeE3vJ2LatiWUvBWg81qVhh"
+       },
+       {
+        "path": "m/86'/0'/0'/0/2",
+        "address": "bc1pm6ujsc7ndd3q6y2043p47hmhp7j4cypw2sulr349tg35ng9g56eqmussjp",
+        "pubkey": "034aae59a881fc1f5c30f80e5f15b6bf53811b4a2627bae1b39111398b6072be20",
+        "wif": "KxgQqrNQhE4H7Q41jh6Wh7RdA5QwqRPtUL3mS98Vbnyqq3n2SfUG"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "rand_n032_00",
+   "note": "32 rolls",
+   "n_rolls": 32,
+   "input": "44165162651652514322433461211314",
+   "rolls": "44165162651652514322433461211314",
+   "expected": {
+    "events": 32,
+    "clean": "44105102051052514322433401211314",
+    "binary": "000100101001000101001101010111010011110000110010111010",
+    "bits": 54,
+    "bits_used": 32,
+    "entropy_hex": "574f0cba",
+    "word_count": 3,
+    "phrase": "firm journey concert",
+    "seed_hex": "d7b04500cc820d54d82588019a668d6d75a5fe886c0c01d1226eefa68b1b20ba480f68d520de0c1185555c3ba9ba469f4c65ee39ed5f5686d99aa46a36591775",
+    "root_xprv": "xprv9s21ZrQH143K27CqeiYNmmD9Nd6D7pRcAvCPvt9Hna12hu3UF2184ddLi7Ji3j2yKTLPnGMsTf58GxzarRyrZBR4VyDjC65dUEvtvWhdgjY",
+    "schemes": {
+     "bip44": {
+      "account_path": "m/44'/0'/0'",
+      "xprv": "xprv9y7WUyNvvJWWCx6SRcPEbr4rb3NmLXymMKqNjWacfv2DkkCzy7VHKrkbTN5a4SYb4sHBnFZ8TRXEoqNUo4rzvrsMcV1NmaBgTpGzWvaxYLY",
+      "xpub": "xpub6C6rtUupkg4oRSAuXdvExz1b95DFjzhciYkyXtzEEFZCdYY9WeoXsf55JfCjzwKVf2DUk2EQTDNenhJCvdDkZXkcTrNLeZCCU325m9cn2rE",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "1GtbJphuSa5nib5TYLME5L8vP7yzNKwrdd",
+        "pubkey": "0362f1bf0b8741b0029ae03aeeb7aba8699c594da027aaff044e62e708bcbcc9be",
+        "wif": "KyicDuPMGJC2x2MiNKH15zTQGUuwzKSNkpuaEwGUmpKu8LkwcZrw"
+       },
+       {
+        "path": "m/44'/0'/0'/0/1",
+        "address": "13tJSGcrXA7k5BPCN1WtP36PzQBTDdVHn5",
+        "pubkey": "02fa48d8680ca9690596a09360ea7de28932d2e3a6b9ab0f0528e270901c04d4e2",
+        "wif": "Kz26iPPDQNSRzmZh2yuGvvAvYvso9gW32zaUowJP6VWn13PGMTjr"
+       },
+       {
+        "path": "m/44'/0'/0'/0/2",
+        "address": "12vQ13Sdps18cooQ8PNqxPu4Kv64QVbzn4",
+        "pubkey": "03063d308ad5fb44f01053a8ee52bd09a39cbc1e2b667a4e17e276dfabf575630a",
+        "wif": "KyQQRDjpMbpnfHtEbwKoa4yp2orVawqdcBHaXYWk6x8itj5V1nYi"
+       }
+      ]
+     },
+     "bip49": {
+      "account_path": "m/49'/0'/0'",
+      "xprv": "xprv9xsUr4AP77H382S7km4XMCXve8y63VgJ4TUxn8WL2kXXw1xBusSEsbkLGwoGrT5i9Dgb2TtSy5pgS4GSDbPW1Hc6dJZunMKduqHq66fe38n",
+      "xpub": "xpub6BrqFZhGwUqLLWWarnbXiLUfCAoaSxQ9RgQZaWuwb64WopHLTQkVRQ4p8GNNeASNE4Tf2GZMjQqFwCN723FSWyjzH2SKdcUXYHzxDy9iKDv",
+      "slip132_prv": "yprvAHhk9iqJFnpWyKdEb7r9ZHdRp77Xz7fnya1BZXQDQkuQz7mRAXboVfQUJ9krrMjdYroPmwV1RkBEKLszwHoWoXHhVeGLNG98BZMUUghnv5u",
+      "slip132_pub": "ypub6Wh6ZENC6ANpBohhh9P9vRaAN8x2PaPeLnvnMuopy6SPrv6Zi4v43Tix9UKxe56HdhaTmk9vC5BopUyfjjfTKDRb9N8kDXJ1p24bcbj2cxP",
+      "rows": [
+       {
+        "path": "m/49'/0'/0'/0/0",
+        "address": "3H6ES49NQTfCq1NjsLMHLy2tKsmEfDRntt",
+        "pubkey": "03b56c6976ed4fc7b704361ea3297b6ad1e89d90aa82cf7813391b189a919be636",
+        "wif": "KxRktavEuf4UfyzQBXPnBN75MD44n4pTzvKfFRa4sKzaZGPaoNpy"
+       },
+       {
+        "path": "m/49'/0'/0'/0/1",
+        "address": "38qAgFMojRVqvhUtBZR4ZCvb2hQTKYgVCT",
+        "pubkey": "03f6a05a3990e0e65d029102b17af6b5bac417a68ee4245568ed66444985198e83",
+        "wif": "KyQSfRwT7LNRShd83qEA8nwfRRKBUZVvXmoyeqUBidKvruTBJw8d"
+       },
+       {
+        "path": "m/49'/0'/0'/0/2",
+        "address": "3Gt447MyXbejDut6rtaTo62wAPghkJnkXh",
+        "pubkey": "024e6fecf05ba2e14f2b49b19893a8a2f9fe4027290a8a98a606e6c653829c5168",
+        "wif": "KyYTXrzjNU5w52RxdXksJgaybf4fKxuXCF7xw6myEGQDc3yVzB6N"
+       }
+      ]
+     },
+     "bip84": {
+      "account_path": "m/84'/0'/0'",
+      "xprv": "xprv9zLGAY9weP2FXWbHeKqXkmR2bqJ3VxAV9yA9K5EnNKBRY5yZ3ECjcC7Q3HyRSAnHeEYGtVFB5gtUv2r3KA9r45UzxF3hyqvve5FQzMWTPck",
+      "xpub": "xpub6DKca3gqUkaYjzfkkMNY7uMm9s8XuQtLXC5k7TePveiQQtJhamWz9zRstbKBjB6TApUqgAfXUousVqFNtnnGcEZ9JXWT2H2XKXVRjoWDNr6",
+      "slip132_prv": "zprvAdznmsVmwk7DE6yXK3QnAwc2wmawPC9UzCCass2Z8KwBeHc1YYXrrKRg5htbRz68TWmtPSSJ11bagc5AkYyseYrCgvSZ9fZuBXNhmVinooh",
+      "slip132_pub": "zpub6rz9BP2fn7fWSb3zR4wnY5YmVoRRnesLMR8BgFSAgfUAX5wA65r7Q7k9w1EMizQHz6iTB7reQ8cyGQUWLBcJChvM3CuJC6fVryciWwdoQhD",
+      "rows": [
+       {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1qnlulrn3w4fm60l945yzmwn9tlk2mzkxdt5vxdg",
+        "pubkey": "031e62b095cc8b22c05126a36f242b0c3ff16147fd87d6db42bfeb7072afaed6d9",
+        "wif": "L1VYJNhksw7sWf3P5j8UTRUPr6NWNtjzY6hqPNBDCgFvjJjtc9gf"
+       },
+       {
+        "path": "m/84'/0'/0'/0/1",
+        "address": "bc1qsdrrh68w29mspvqy773dfdlap0m566sdp6d9hs",
+        "pubkey": "02fa873a9319353611acbf55bc5dd42deb86e8e3e4fe1697ba28412348e6605a8c",
+        "wif": "KwsD2YQEzMh7c1jF1jqiPiCcoe4XY3g3okRcTX2rdtV551jLzxym"
+       },
+       {
+        "path": "m/84'/0'/0'/0/2",
+        "address": "bc1qqn9a9mp032g7hneqwufm5tt8nls7gx266c7t65",
+        "pubkey": "03e0a8c792fbab3e8ad48921e8fe8a7301453994bd541eb9aacc8932eecff47a92",
+        "wif": "L1ZiDk28rNL8JJ49TYFJJ5r3gdbRTeLJJ6yCUN7H1iUmikUTgxG4"
+       }
+      ]
+     },
+     "bip86": {
+      "account_path": "m/86'/0'/0'",
+      "xprv": "xprv9yun3kdF1VgvgcEcawVswV4dpjs4UpWeMEp4qpH98TsynxGR6zVtFTomZZ172gS2NWLLfDrVjRdnMWujMTVtXnL6ikJXBHGd2Ncb5ecb7G9",
+      "xpub": "xpub6Cu8TGA8qsFDu6K5gy2tJd1NNmhYtHEViTjfeCgkgoQxfkbZeXp8oG8FQq5LeF7GBQxNvKArar9eiEg5XuWHow4v25CceXpqR2YdzGLK8JY",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/86'/0'/0'/0/0",
+        "address": "bc1pmlhf72d0xz02ggmtqm7q40gj3vgrjwjq0tjkg8p8xvlmmpeeldfs2r2nj6",
+        "pubkey": "03b8e00edc0a19480b913d12203a2d5d17708680cc29b04bc66da0118b1013d35d",
+        "wif": "L4rqp757cv9yEYymMqogYaAYEq8bhC7ERbzwCMzuacJqyMxmZDC1"
+       },
+       {
+        "path": "m/86'/0'/0'/0/1",
+        "address": "bc1pktuyggte785qdalqd2snf36fcqpe93rqy82cgxvrr2c3uvhsespsv88qd6",
+        "pubkey": "031cd8776690f5d8431e5c8421ff0ba358a792a1a5da71c8a6e52947224fce5d53",
+        "wif": "KxrEiEVV13AA8ksAHGNo36gAsHgWdUN46PrBVoCMVgrBB3aQw9ku"
+       },
+       {
+        "path": "m/86'/0'/0'/0/2",
+        "address": "bc1pjemn5s9hf7kvw3c0kcxsrh5tncerzfl0p0mesw2wlrv4kwlyjg5sh7zkpn",
+        "pubkey": "03892ec3436672941ca7c4e86084d26b2bf7b0d36ba028acbf75687291d1778afa",
+        "wif": "KyGGkJW1KqUE4ytZKP9nDFru5xWMhy1uSRfF5p4PTr46i54M3ajf"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "rand_n064_00",
+   "note": "64 rolls",
+   "n_rolls": 64,
+   "input": "6255125265316336316152635553131521141541451661553452365156135642",
+   "rolls": "6255125265316336316152635553131521141541451661553452365156135642",
+   "expected": {
+    "events": 64,
+    "clean": "0255125205310330310152035553131521141541451001553452305150135042",
+    "binary": "0010110110110001110100111100110100011100011111110111011100101001100101010000011111011011001011000111100010",
+    "bits": 106,
+    "bits_used": 96,
+    "entropy_hex": "c74f3471fddca6541f6cb1e2",
+    "word_count": 9,
+    "phrase": "shrug keen broccoli wing skill claw laundry normal tilt",
+    "seed_hex": "b76c7eb71460468558b9d4d9dfc82f13ab3ba252e7c0f333b0a122206999a21b4d05261e8d878b6f54d0df12b043752d4b3a809a6c682bf90b102cdb262bb9a2",
+    "root_xprv": "xprv9s21ZrQH143K2y5DfiesMaqWWcYXj5HuWVBpfeDtkke9JMVsorTHviE4BQk3ZHzmahpTNBNVpu6ZJy1EDPH9aJd4KGJv1CGcwrMdskX75dG",
+    "schemes": {
+     "bip44": {
+      "account_path": "m/44'/0'/0'",
+      "xprv": "xprv9you7UML6VUVqps7ZNdQwyR5WPdSUgdFrmvDdkfxxukZchSa63YS5b4dmaJiAdXiqpTpZAkrJGxFFuHMsCrJMgNeewjpi5DWtPEx6b1S8Mt",
+      "xpub": "xpub6CoFWytDvs2o4JwafQARK7Mp4RTvt9M7DzqpS95aXFHYVVmidargdPP7cr8hLknXFCZ8m6JdEzzGvyqf68gaHdp5TQAXP2E3aoM5EYmvvvV",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "1AZt25PLdYqJy9QZaPCNz51awCCuHnpLtW",
+        "pubkey": "02ff4484e25e9c5673af148e0db59f5aa30efcc4c8917f297a2b60ad1795a77ed6",
+        "wif": "L5EdrANwSVAFpdTQJAPCPz4jbFEFXTaJ6LH6trhTRMr14B9GK5oN"
+       },
+       {
+        "path": "m/44'/0'/0'/0/1",
+        "address": "1469w2LULGCTQpBNEZXGgYj82Vzdo4jTnJ",
+        "pubkey": "02cb994ead72f67f09606fce68743887422d03b1a5f9444879ba95636039da0179",
+        "wif": "Kyyr8ReP1NtzT1KvCj3cR9mYfF53ERwALCC8CmH3FpbsFM48Einq"
+       },
+       {
+        "path": "m/44'/0'/0'/0/2",
+        "address": "1LtCmgASsKYNLreMTYXuqZnJu98tuLsTUX",
+        "pubkey": "03b504dc2504a6519b92563f4ec0378b53711a401b34052354d581e784e957506e",
+        "wif": "KxkhBrRzGww7jkum6x6QcQGcdcZ44pLfTnBgEKuYAnU39FqTMxrX"
+       }
+      ]
+     },
+     "bip49": {
+      "account_path": "m/49'/0'/0'",
+      "xprv": "xprv9y14UgbHySMBNHdFnvvKfGLWpp79hHQpTQ4Pu8to5gzEKJXkjn8u2LdHUjMrdPo5tPtzupbDdc8j5Vk7V3urDeaEJY1RgmncEBRmxLV4PfW",
+      "xpub": "xpub6BzQtC8BoouUamhitxTL2QHFNqwe6k8fpcyzhXJQe2XDC6ruHKT9a8wmL2jT63oBurtAoQxfVVdebStxs5GznK48tSMJK5iRk5zrE8bsDtt",
+      "slip132_prv": "yprvAHqKnMGD87tfDapNdHhwsMS1znFbduQKNWacgXngThN7NQLyzSJTeQHRVwKSdJT1J31ofJBn6GVGxnMgCkKs1tFqAshrGgc6VuVRLwBLsma",
+      "slip132_pub": "ypub6WpgBro6xVSxS4tqjKExEVNkYp663N8AjjWDUvCJ22u6FCg8XyciCCbuMEh35xT7KVzyYtZDx9zCUjWXamh1aYjjkn3itzXv1p4VcjHtdy7",
+      "rows": [
+       {
+        "path": "m/49'/0'/0'/0/0",
+        "address": "3GHyrYRTT3VoGnzQi7AXQ1jc4YVrC64rja",
+        "pubkey": "035e157b601acc7151b28654f145570f4c33bfdb312a4e0512e628d9541de749d0",
+        "wif": "L141L222dXSuhNkYA6p2FxVWPqg1vi7faPxPDXbvNp14GRQo6Ugh"
+       },
+       {
+        "path": "m/49'/0'/0'/0/1",
+        "address": "3CFj1BBP9wExinHypx1Mz4v4zqQsXpLyFY",
+        "pubkey": "033c006565dbf97f768b88d3c35f2e967fe70f5b268258e313375421da39457429",
+        "wif": "L1ujrftvZbWcT1jcnUrS8NWJKY3MZydKn3Fg7gXu1wyzRwjXW4rQ"
+       },
+       {
+        "path": "m/49'/0'/0'/0/2",
+        "address": "39RJTRBhYBueiErLwRqFyvL4LagUg2VNCA",
+        "pubkey": "0305a937ea115cf0114e8f191d879239e65992e1593ed43040e642d3ae519ca49b",
+        "wif": "L1PieW6aY7ELhtToT6Hj9cMSQiGbWAoAwHgWPf3dn5YKuonHES7f"
+       }
+      ]
+     },
+     "bip84": {
+      "account_path": "m/84'/0'/0'",
+      "xprv": "xprv9zADuoEJtcRsyhQJqKaFDH1Bs2MBNo7JMmisJ3c97HHXpAuGa9KRNn6JM2aLhVJjNiSk7BgyPc38wibbP7F4VxA1Ui2XyEbKFoBLCyoVNj5",
+      "xpub": "xpub6D9aKJmCiyzBCBUmwM7FaQwvR4BfnFq9izeU6S1kfcpWgyER7gdfvaQnCJwouqHRvJa5KiFQoSLTgwCxMMWJiucuaedVmMH9WBUMWdYUBL2",
+      "slip132_prv": "zprvAdpkX8a9ByWqgHnYW39VdTCCCxe5G36JBzmJrqPusJ3HvNXj5TeYcuQaPSVWhJcaBzgMc8t6JvkEiHpipW566RXDDPRP94EHoFJcz6nc3fi",
+      "slip132_pub": "zpub6rp6ve732M58tms1c4gVzb8vkzUZfVp9ZDgufDoXRdaGoArsczxoAhj4EiryuebGjaogpfSXim3ZTWS5nkLLKNz7KL2LwAv83dbeHiSDLXk",
+      "rows": [
+       {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1q5mah7n8tr84e5u4gdvppn0gl5h2ru2m9j7v5e9",
+        "pubkey": "024cfa82e2477bf6d51c9e1e75847823117a7f372403e34e8ab403a86873e0bc6c",
+        "wif": "L45BxHqnsbPDbE4UGphJoZYNWHfT99c3VdppbVMjjqrVvn5doWwv"
+       },
+       {
+        "path": "m/84'/0'/0'/0/1",
+        "address": "bc1qquzs72762et5sztufu8hf2xh484chfhp6gcm7y",
+        "pubkey": "036a33f089e7b2e7c79c12048c9765d32c7b14ff3c7a71918d44dbddfcfba8ca10",
+        "wif": "L2SKJR6f8yxrwrZJnQUa8WdwK8ZFM2jxHEbyQsj5ttg63JhoEUzp"
+       },
+       {
+        "path": "m/84'/0'/0'/0/2",
+        "address": "bc1qdsyg8u3llpvhvgqa5vj3zw3tn0ttjc30lumal4",
+        "pubkey": "02278d9157d39844d7b135be7621e8ebe20792d13dc2bc346504597b3869c4e0aa",
+        "wif": "KxuUnsf3d2pFjr5hJbcB4xCTU6FuVb4Na5iRpuTzSTyNEC1MsKcp"
+       }
+      ]
+     },
+     "bip86": {
+      "account_path": "m/86'/0'/0'",
+      "xprv": "xprv9z4i69BuXMAri5ALZJPcpMdDDoP63kGeBnfTagNJPtENRVEKwGDqedewHNfAMVKVK2u46TwH7Xq5HMa6n87BBZvkFgw8uCkzMnAHq77M5dX",
+      "xpub": "xpub6D44VeioMij9vZEofKvdBVZwmqDaTCzVZ1b4P4muxDmMJHZUUoY6CRyR8h1iz6aZqR5iuPvJJbjYMDwSPAvSiPcVX2DKYxF4uMj2hvZA364",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/86'/0'/0'/0/0",
+        "address": "bc1pldz8lel7ngwluvjr4hvwqq8tw0p6zlp9lm9dfkr4qrrgfj6c6aeqtc6nxg",
+        "pubkey": "033fadbb4bac11920bd7ddbe1579a4991af94882dc680e0a2f91c48bfeebb368c0",
+        "wif": "KwQHpQysYfk4t1Gc3bbS4DG9xa2KEwfi9jbT9PQy19p9hc4T7Gmj"
+       },
+       {
+        "path": "m/86'/0'/0'/0/1",
+        "address": "bc1p9d5hg0jwmdenq4qdm5nh8ux2t6slz6n5st920k6ry56qkuh7hvpqxg69lt",
+        "pubkey": "03911f99003ce800e12ec740d85313b4b4cea2be713aa2136117025dcf01d507dd",
+        "wif": "KxLWt7S7ryGRD1o2q5sQL7kZtg2eUNZNrdgBM6MwzgePLARgNeRD"
+       },
+       {
+        "path": "m/86'/0'/0'/0/2",
+        "address": "bc1p5xsp6x3vehupn8rxxvsn6lrcw9klnkjv0rg487fd60u9v7dhvtvs24s3gp",
+        "pubkey": "039cf2eea4a64e96e12d1fe9fe1391729af9679c3d36311ec750f29db5df1d5e03",
+        "wif": "L28w6xiKKCyerU7GTebbzZJcRF9qXyUAScyP2CUKbN3TGBpHyGpy"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "rand_n100_00",
+   "note": "100 rolls",
+   "n_rolls": 100,
+   "input": "5465522436231122125532561454613226526255555633545615231633562234224435461315212611111266125152323566",
+   "rolls": "5465522436231122125532561454613226526255555633545615231633562234224435461315212611111266125152323566",
+   "expected": {
+    "events": 100,
+    "clean": "5405522430231122125532501454013220520255555033545015231033502234224435401315212011111200125152323500",
+    "binary": "1000111010011001011010110100110111110100010100001111010001100010111110011111010001110110100111110010101101010001110000111011100110000101010101100000011010111011101110000",
+    "bits": 169,
+    "bits_used": 160,
+    "entropy_hex": "32d69be8a1e8c5f3e8ed3e56a387730aac0d7770",
+    "word_count": 15,
+    "phrase": "crazy regular when duck middle wheat photo pond find bring system best school roof search",
+    "seed_hex": "9f435e665c4e63cffa71601e3a1784e933977b4a9d3fd20d96df24a98371daf33cd816738ead6ec281d394d734245bd251dc06f504cb5635754fcc0b0e480ef4",
+    "root_xprv": "xprv9s21ZrQH143K3LUaahtnsLp565UHi4ggfzNqbVCvCWTjw7KvNGX7YLVmhQC3KtGAJEFmJrZoDZfvWuTzVffQ7y1nyUn7DojtGzWwK2GzQQ3",
+    "schemes": {
+     "bip44": {
+      "account_path": "m/44'/0'/0'",
+      "xprv": "xprv9y22Tog27qisiE1v5Z8Ck9CJt7w27eRz3HuzBR79nQs7moYMAW5hJ1RnWJe3CAxaheqzuAnQ6NBnktzL8jV7Q36qT8MzTJcc7XoD416QtCm",
+      "xpub": "xpub6C1NsKCuxDHAvi6PBafD7H93S9mWX79qQWqayoWmLkQ6ebsVi3PwqokGMaSJBMctV91jmkT3epu6TcodpaYifRYbSjhkcNW4qEgwHKwW2cC",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "1f24AYEHny6QUL1PujXhEmp578Gx9sFUg",
+        "pubkey": "034576759ca2b544d418ad5ebb56df496a44717ade19f8903a68908b26045cd579",
+        "wif": "L4XnFT3L7aX5HDUDvxWiYpGsy6iAn13pZSd3y8rB4HRYBF6AZqA6"
+       },
+       {
+        "path": "m/44'/0'/0'/0/1",
+        "address": "1CTcuNJ3QpzrUsVotrsEwVMjCTuXRMdsB3",
+        "pubkey": "03ca5793a509a2f9c7292c24f8b9f567a657b4a59c8367919c23704c1a195f930e",
+        "wif": "L2oEfR2LpNvnCDpEKu9UNViLFGrptEzCVcT4pnyi6fbm7zaLPx5Z"
+       },
+       {
+        "path": "m/44'/0'/0'/0/2",
+        "address": "1ESVsedpq8Qpxq1FFHreRnd9FfcvqBctHf",
+        "pubkey": "03d7792cce62c3f92a02ab745cb0f3af2490ca1e1b4600f268f1ecaa8fa08308e9",
+        "wif": "L1q76esMZYjXBF5vqZ7qBdsyaBy1335iU6354G2NU2Hd9KeS4qhD"
+       }
+      ]
+     },
+     "bip49": {
+      "account_path": "m/49'/0'/0'",
+      "xprv": "xprv9ymcUvASM3T24kX6queZDwSy43mANsZaVKVqb4G8fpeF1XWk8Wm5RC7jSLsVUVSk8LkQTi8ZG1kvFFCeo1oZt7uwsqF2fLYJYyV5HTqDLsp",
+      "xpub": "xpub6CkxtRhLBR1KHEbZwwBZb5Phc5benLHRrYRSPSfkEABDtKqtg45KxzSDHcjGbMQ5xR3JgpARVeSyMmT2DD3yBnAiEnaLsrkUnJmFPq19X1i",
+      "slip132_prv": "yprvAJbsnaqMVizVv3iDgGSBS2YUE1ucKVZ5QS24NTA23q284dKyPAve3FmsTYq5UQ6fXysDDBj7ig7U8XpDWiDagMbYkAwTFFMnphYig4VqFaY",
+      "slip132_pub": "ypub6XbEC6NFL6Yo8XngnHyBoAVCn3k6ixGvmewfAqZdcAZ6wRf7viEtb46MJpgrbG41N4A7SHkyxJoXF44avuTyz1rK78GmTmZy42ptnTVakd9",
+      "rows": [
+       {
+        "path": "m/49'/0'/0'/0/0",
+        "address": "3QL4Ybuc7FaYze6RLc79sgUD62jvu439Nt",
+        "pubkey": "023425d1319801eb0f0654175d50453e6402a219d27536a7a65b5480471fb8d298",
+        "wif": "L38qQvUDHysd9NitjseJmwRfWYiUTZoAmPZc4vJjhtJGQaUQMFKs"
+       },
+       {
+        "path": "m/49'/0'/0'/0/1",
+        "address": "31t9H2JJ22JdyXubFUHHKJ33M7me5Xi9u9",
+        "pubkey": "02094090d88d94759ced4db12dc5e9a8213286376ab8e916db591f40ff01b94f99",
+        "wif": "KxBAe4qLwUssk6h9KiuRcsGAXchkAyAitUyMpaKmUsdygmnbLvDC"
+       },
+       {
+        "path": "m/49'/0'/0'/0/2",
+        "address": "3Kqm4oxAWG4SPh8gaNMeyN4p6jagDFrKkS",
+        "pubkey": "037aee6ac47137351826e3be8c590fda53f4051245c07c21005c9396a8e7c63498",
+        "wif": "KyiNRjS6fpBGyuNFfA5oyTTLhJyQcA4KDvvT6byZcsjb2S9M2gQX"
+       }
+      ]
+     },
+     "bip84": {
+      "account_path": "m/84'/0'/0'",
+      "xprv": "xprv9zVv5VvFHUCpTd2BhhReqsXvAcLJqcchNmquMuWExZMtrrmk2MRFoMU1SiCLdS5cJioNC7g2mBr6e4iSFYHNbFwhcmeSHYnQTGA9vwwjFv8",
+      "xpub": "xpub6DVGV1T97qm7g76eoixfD1UeieAoF5LYjzmWAHurWttsjf6tZtjWM9nVHz8vtutzhsQS3UNxUbdfJmFpENpBPYSVAzdzfi3fwDhHMAzmghS",
+      "slip132_prv": "zprvAeASgqG5aqHnADQRNQzuG3ivWYdCirbhCztLvhJ1ia7ey4QCXfkP3UnHV87WdFPT812yh4s9gWZCQdwZgw7QBjJuMT3HTNRNziHSi4AGG5N",
+      "slip132_pub": "zpub6s9o6LnyRCr5NhUtUSXudBff4aTh8KKYaDowj5hdGuedqrjM5D4dbH6mLQ46tjCqX9e3YRa5PvLm5LUwfmeCz1ogug2qqXgeUfpa8NWBVgT",
+      "rows": [
+       {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1q7jx075z0fwhea63kt5thl05usgc7fqxx4ungwy",
+        "pubkey": "032d17f7bcebad5a6b4404059fecbf5802ce3aba605d4565b8938a6ec03f283a93",
+        "wif": "Kx5Kq7YLYhPYnHavMbd8E81L87jBzEYzTewgjsmKKTodCxAVhJmC"
+       },
+       {
+        "path": "m/84'/0'/0'/0/1",
+        "address": "bc1qj4geaqtq7pqsyuskrlqjxxmuf5xfrprqv05xap",
+        "pubkey": "02ce281eb20b127bb665dfc1ab2468a4507e190258952f84b3a5741543ae4ad3d9",
+        "wif": "L1NSQYbvisoknDHWPGRqxzYYWUtRJTbepaPSL9npy4FGRxKMBsEv"
+       },
+       {
+        "path": "m/84'/0'/0'/0/2",
+        "address": "bc1qw232plgewer9fvrxrz2893du80ywlpe6hqmp23",
+        "pubkey": "03fc05966a56894476315853af3f82c5565aa75339f99fc16d45082e271f4575f1",
+        "wif": "KyAa5h5qqQRbJHKuQ6kV9q8AXXzs1E7VJDmYqbf82SYQ3SGR5obx"
+       }
+      ]
+     },
+     "bip86": {
+      "account_path": "m/86'/0'/0'",
+      "xprv": "xprv9zN4G3Qn4e7Adyg6aB246tMYhxoizY6cEFbsTf1yHqLjdDApwgcd2DarHLeg56zCpPgDAh3869DcLTFyk2926kqfhy8ud2KhyjpRd4GTU8s",
+      "xpub": "xpub6DMQfYwfu1fTrTkZgCZ4U2JHFzeDPzpTbUXUG3RarAsiW1VyVDvsa1uL8c7snp4yAjzREHmhrKH5Wy2J4iJDjb4tLTmXEo6efbHWn6iMNmc",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/86'/0'/0'/0/0",
+        "address": "bc1pz87nv8rv6cvrxvjjk07dr6gu0z6e9e8zkknzduyra4r988v95g5qnqk9pc",
+        "pubkey": "02bce86e31247521443a87ac105d1c1e2d18ff99f9460f3353d587c9e27b0a598d",
+        "wif": "KxxqXfVK4Pkb7RMTzCbiZkwt8x1c9x1JgRjLaw26ejy3bbovwkky"
+       },
+       {
+        "path": "m/86'/0'/0'/0/1",
+        "address": "bc1p90vj8mr9jv9lu3tta8p9zleh0vnz9v2dwf0ytajhlxvrq2zcwqdqkekq6r",
+        "pubkey": "03bca47d8168cd2b2a96d3337a073d0ab19211dfe9331c62b98fd00f26bef71443",
+        "wif": "L3HjByAKoHvvSzomZCtsLvvTFWNsrA5g8cHnLGDHbVXKZetT5o7U"
+       },
+       {
+        "path": "m/86'/0'/0'/0/2",
+        "address": "bc1pjt3mw88s080kfnznf2m88n95tj39gmcqqdrwgckjf9ls7g5r2acqwgld0m",
+        "pubkey": "0389415d711bb6c3553f31f5764b24bb00800a9e3113186b6b4ff43f0e1258b727",
+        "wif": "L34e4hBZ2YTjoMn4jv4CWKNdpAfcuAgCGmU9YkGwWNoFH9zCHh9i"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "rand_n128_00",
+   "note": "128 rolls",
+   "n_rolls": 128,
+   "input": "32555514356142663312625656132155145266141416516366434451261532415552141111166515166555622125132433356424651624443464615626353363",
+   "rolls": "32555514356142663312625656132155145266141416516366434451261532415552141111166515166555622125132433356424651624443464615626353363",
+   "expected": {
+    "events": 128,
+    "clean": "32555514350142003312025050132155145200141410510300434451201532415552141111100515100555022125132433350424051024443404015020353303",
+    "binary": "11101111010111000101000001111011000101001000111100111010110000001001001001010011000001100101100001111100011111001001010101010000101101000011100101001101011110011111110001000010100100001100000001100100011111110011",
+    "bits": 212,
+    "bits_used": 192,
+    "entropy_hex": "07b148f3ac0925306587c7c9550b4394d79fc4290c0647f3",
+    "word_count": 18,
+    "phrase": "amateur medal diagram fix myself oblige noodle wedding sing portion special claim ketchup tilt picnic liar elevator onion",
+    "seed_hex": "e2a4b52d328320584bf288e9e42ddbcac4bf46550cff2d996c8e78771d3497614cb23820d2ab005c7fde42f4807adc5dedc1c53adee3bc52adf9484aa952b124",
+    "root_xprv": "xprv9s21ZrQH143K35h8eG4Mo3JegKb9XuNpSoc1DyiT25rBRiWrnTuP1qv2SikrgTjDEmPyN7gXSZYRHtQZMCB678nTQNFnqLiccU9XcGRrA9K",
+    "schemes": {
+     "bip44": {
+      "account_path": "m/44'/0'/0'",
+      "xprv": "xprv9zPhKPTEUn2xom1A8trfVe6FmgQan5E6RmHZEUGZiidZVe9eAW9Jy5B7L9Yb8WwcnwfJHj9B74Czz645yuoco8U6P12CaQpzYLG2L462BWA",
+      "xpub": "xpub6DP3itz8K9bG2F5dEvPfrn2zKiF5BXwwnzDA2rgBH4AYNSUni3TZWsVbBPy8youd7SAviiWcM2afVxVxxgR6R2WQKhvRUWpAox1tNFEpRot",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "184LhrdX6RK9bA6B7mfEp5Phuc4jpSKB6Y",
+        "pubkey": "030ced9a64cfab4b4b8e4933d2e5a8f52171e19f0d8d8321338c83ddbb4c825b2a",
+        "wif": "Kz5Vq2jJ9HQGqAjTbYp6NBtAJeas5rx3RyjYrivgEWXpeFEd6HiT"
+       },
+       {
+        "path": "m/44'/0'/0'/0/1",
+        "address": "1DudVjM9UpEybW9TEpobqPiXnZvYuRexAk",
+        "pubkey": "02add5b52a0c880ea078b554eda23e245e110d18c258042b88f21a0b68908bd794",
+        "wif": "KzmBnR2ENqJidxKgFEjxrqTRqngD6425ryvLdxbYPCg5tTwKeyaQ"
+       },
+       {
+        "path": "m/44'/0'/0'/0/2",
+        "address": "1Jcv8CbHAkctDNF9DUoqcV5dEoLomXuH8d",
+        "pubkey": "0333b308f478e9b3cbd5f6f60c5b2cac6f7a7ea72dc95b7033c0aac28657c638c2",
+        "wif": "KxkVu7cAsejJSHk5MZszWqbtRvTjhFi5bF8wurWCPnykFqBUV24k"
+       }
+      ]
+     },
+     "bip49": {
+      "account_path": "m/49'/0'/0'",
+      "xprv": "xprv9yuVgjoaULGdYGnzXLttwCo7WfKrnYJr5CbRe6c9b7pof28tSVwXdcMdTMPhruDhRTHJ6x3MiRPJV1LnTJUYpdQutFurdYpuGL6cdGGF1rg",
+      "xpub": "xpub6Ctr6FLUJhpvkksTdNRuJLjr4hAMC12hSRX2SV1m9TMnXpU2z3FnBQg7Jf4Fc9yKdqiK2v51VpCXkZrmyFiW4Awu7H92aMoZrS7ZWz8g515",
+      "slip132_prv": "yprvAJjkzQUVd1p7PZz7MhgX9HtcgdUJjAJLzK7eRVW2y8Cgi7x7hA76Fg1mUZMHroscq6Q6rRdvB5jrNHxMAztZcs6WkbcHDTePY4AG1wRCQDZ",
+      "slip132_pub": "ypub6Xj7Pv1PTPNQc44aTjDXWRqMEfJo8d2CMY3FDsueXTjfavHGEhRLoULFKs1qc4dF3Uq7nPfZxUZ5drULgx8WrQdVycqTAGd48ABCuevw27k",
+      "rows": [
+       {
+        "path": "m/49'/0'/0'/0/0",
+        "address": "3GLhbTbgvRAjRkNVFvp3eVNV3Mkh9YRjkS",
+        "pubkey": "02bc58303b8c0ab19f288c86c679fb14bdb8d218d59cbb1d844279ee46c83e2384",
+        "wif": "KxxWczQMwBksQFjqpmZduCB4KmwFKBtKT1PYzvtx7XHC2ZR1F5Eb"
+       },
+       {
+        "path": "m/49'/0'/0'/0/1",
+        "address": "3BJsHbq6DrkuQQcUwNhXwYG1a9Rj7QQYTj",
+        "pubkey": "02b464418b70afb43efe5beb758d3a0a9010ae470fa73ca43a4cee8119683c4b42",
+        "wif": "L3qTFXSbqKUoGYFYLEDnmPyWitk8DawxU11m1CS23g9iE4CKjfzo"
+       },
+       {
+        "path": "m/49'/0'/0'/0/2",
+        "address": "3EQJSrsK9FFQwkdBQt6a5KcvWhoqPXE7Bk",
+        "pubkey": "03807dd7c5a6c943d4e0dc6c85b1c87fb87ae487522ca79dff3e1c813900027690",
+        "wif": "Kz1ncWweMScDfN8ck7jQKZdwXT8N5Qo4nexG9zJ1fFJxv4Q8XbD3"
+       }
+      ]
+     },
+     "bip84": {
+      "account_path": "m/84'/0'/0'",
+      "xprv": "xprv9ydMh2pwfpXxFnrbhAixFxLv1hEGiXwbxfN23MhaJfxcCRDKDHtbNJ62HctC3AdyWxTZAEhrjgejSSRj1mquMcbzDFdeY4dxfvTj7xwSMAe",
+      "xpub": "xpub6Cci6YMqWC6FUGw4oCFxd6HeZj4m7zfTKtHcqk7Bs1Vb5DYTkqCqv6QW8tGwGmR9q9NUcK5xEnu6nVqJ3S2qUzhXnre6YrFkWDd6CnP1J4G",
+      "slip132_prv": "zprvAdHtJNAmyBcuxPEqMtJCg8XvMdXAbmvbntQTc9VM4giNJcqmicDicRQJL2oN2ywpLEhAfBtyf1MqD1erTAfvx5yBww2VhtGwDNb1u3opQjY",
+      "slip132_pub": "zpub6rHEhshfoZBDAsKJTuqD3GUeufMf1EeTA7L4QXtxd2FMBRAvG9XyADinBJC7GaizeRc67GH5A7cCZ54RUprs5U4jXY2wiftj3fkNz1B36RW",
+      "rows": [
+       {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1qt0vl8xcxvts76q89t5xh9y4jse8y0hftxalge2",
+        "pubkey": "02a2ab449aa478be6fccc369dba0900609c69a7202e6f65de370e2bfeb6a36b080",
+        "wif": "L1ME4YDy5vDykrmmMVpZQwnHkbjiQV6Z8jTtFB5SVcTWzSfZJiWz"
+       },
+       {
+        "path": "m/84'/0'/0'/0/1",
+        "address": "bc1q2yhzpnf5fd3dekamaky7wpdyze3rf5kyl2j6vc",
+        "pubkey": "02025182794a6b6f68bee564d9c8c32834ddece2dea857cad5232bdf4cee6a3189",
+        "wif": "L1UhThopuYUuo83F7ZvebwdscoTQjNckCpJKZMbtReEREyChQqnF"
+       },
+       {
+        "path": "m/84'/0'/0'/0/2",
+        "address": "bc1q8lf32qkx5twf0k7gavll0meytzsu6n4888tq4c",
+        "pubkey": "0285bbb257c6f9006cdf27766a897bf970af414ce8e67d9f1487dbf89d12c06634",
+        "wif": "KxiYMQEpWdi1Q4RsGzYpnP94JVNEoE6U5bEECq7aUZsSuWbdmky3"
+       }
+      ]
+     },
+     "bip86": {
+      "account_path": "m/86'/0'/0'",
+      "xprv": "xprv9yfRKMYw15MajQA8Gs7uZUbv1SEQWBegnMatJ2uZ46zipiyJfWcNd6XHKbM8bvqcKczQQHcsWnAAG4SATiuBVAKuuZNv7Qj35CYrr4xJE5u",
+      "xpub": "xpub6Cemis5pqSuswtEbNteuvcYeZU4tueNY9aWV6RKAcSXhhXJTD3vdAtqmAtUc49LC748N33YvTrSqMUfnJAWrfrPnGrE8WzdP9m42MVMG5aQ",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/86'/0'/0'/0/0",
+        "address": "bc1p50rhmt22dq0nxenajltaqrgenzj47fkq0jxmpqhztjsvqgc60phqalfxtp",
+        "pubkey": "03a2302c5c78723ad92ea6e0d01a52c103775d064a708b9864ff437da1c3f01c8a",
+        "wif": "L3s9bVTNUo48hdvAqXMZK64c8ki3dbo8wp2wNGFaxUhCV3cDYWg7"
+       },
+       {
+        "path": "m/86'/0'/0'/0/1",
+        "address": "bc1p63n0cd4lghwc8tetu046s8q8xl3qxuxkcjnsrzz9j4kvdhfq68eq90ht72",
+        "pubkey": "02da25f08209bad542903211a3337d0826227bc713da83b9b1c19fec4b371ad1dd",
+        "wif": "L2pVpEoDtjQPaA7YejDqBrfaSa8vwDYGs87zFX1iaxzEyQLvMDz2"
+       },
+       {
+        "path": "m/86'/0'/0'/0/2",
+        "address": "bc1p6608yrjdd5caq4vgwj69ku6ka82gpe2mmj3etdvamdz2g75sk02q4r3dnv",
+        "pubkey": "028461a7b0d976db87fa6b9092b4882e0f2349ab664800cf374d1b5d835d93792c",
+        "wif": "L5j75tea4qZ6asSmW2yDxsgonWuQQh6SBrAmYHesrSm6VisqzXtc"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "rand_n200_00",
+   "note": "200 rolls: the count the tool is usually driven with",
+   "n_rolls": 200,
+   "input": "42132652513266146116362323635631421312431265434211514421223523632116451656665212611416341451364113343423432613142232353133364564143212126622426612516624513664544533366416441436626122436252644261155634",
+   "rolls": "42132652513266146116362323635631421312431265434211514421223523632116451656665212611416341451364113343423432613142232353133364564143212126622426612516624513664544533366416441436626122436252644261155634",
+   "expected": {
+    "events": 200,
+    "clean": "42132052513200140110302323035031421312431205434211514421223523032110451050005212011410341451304113343423432013142232353133304504143212120022420012510024513004544533300410441430020122430252044201155034",
+    "binary": "010011110001101011110000001000010100110010111011001110011010100111011001101100010110100101101001001101011110110011100101000101001000000110011000010100100110010101110000101111101101011011100001110101010111011111011111110001000010111001100110000010100100000011010100001001011100000100111111100000010000010110000100001101001100101100000100001011100110",
+    "bits": 348,
+    "bits_used": 320,
+    "entropy_hex": "14cbb39a9d9b1696935ece5148198526570bed6e1d577dfc42e660a40d425c13f81058434cb042e6",
+    "word_count": 30,
+    "phrase": "below frown trade depth ramp ensure estate supply eyebrow dolphin genuine erosion idle wall reveal priority law tilt ridge scout dolphin patrol icon lecture aware search spring gauge common hockey",
+    "seed_hex": "3a8d37956985eca002dad759316f7aa9d0fac0eda5a77d7b5ead73e2a1f8e111eae5cd1ef4237762ff8369f3148c697a86fc5af8141722c5aa92e5d9d6cd2168",
+    "root_xprv": "xprv9s21ZrQH143K3pnVAtRXuh9aUVso8NLe5dGGFwGH7r1CabB4E6hYZ3emAwhUHNyWFwEirmSNuW5uBUgURYKCqH2vjwVzq8KLxge4cjfGU4f",
+    "schemes": {
+     "bip44": {
+      "account_path": "m/44'/0'/0'",
+      "xprv": "xprv9yGPbZFHXCiQ8DW4UFgC9bDrvojfRFMnwXiciWd1BmYDFBWd2zw9QaEcWuaTTyaosPZZPr3Cccc7S5knzLvHA9J4gA6GjXDkvRUj8foKXTc",
+      "xpub": "xpub6CFk14nBMaGhLhaXaHDCWjAbUqa9pi5eJkeDWu2ck75C7yqmaYFPxNZ6N9HLtBwuC1QcxqSTrtRERdnxP2M3rnCz8wCKNqHQgpTPWvTqo1v",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "1PuLmRz2jA45BxeGAwC3CYYj7EUZLcxBeM",
+        "pubkey": "02a41f83e84b68c7ce11e26461101ea4c67ad02d7809563f0fc50d6afa7fd04beb",
+        "wif": "L2G1W2KAqYYcKSG6JHvfo6wUVyCSXNnDgdCFynD5zjspHirJmBxH"
+       },
+       {
+        "path": "m/44'/0'/0'/0/1",
+        "address": "1AygE3QG8fZRSi1Y87ebSx3HsmuvHGG9Up",
+        "pubkey": "026b26ab7c428f64d408266efac9e1bb1f9fd1d3ec64edf4dbd4ebfffdbe3257c0",
+        "wif": "L3X6vXDPkvd9xMWdeqEN7kNoEQx698q1a6wyqf1ArniPKnFD7EBU"
+       },
+       {
+        "path": "m/44'/0'/0'/0/2",
+        "address": "1MQeZDUBSatCJ6YpPmrY1gzFJUZc9ywBJD",
+        "pubkey": "02bb3966e21ce467a70f3b400548d8839d44bac845376ba72b72a56cbb38cdcf2d",
+        "wif": "L2EY9sYSQhgTZJRqh3tVvL1sqptxFKQgzJ6H5M8MG42h9hLUXrtc"
+       }
+      ]
+     },
+     "bip49": {
+      "account_path": "m/49'/0'/0'",
+      "xprv": "xprv9y9xyLS6dyLZyPA2dGPKjY4vuXHjm1FTRLZQffwsHidhTvRVve6fuBiTmJBzGy1SkbBkbdNBdjqrEBPxFsgfqxCTr9FAMj3pVNXZ6TXyMTZ",
+      "xpub": "xpub6C9KNqxzULtsBsEVjHvL6g1fTZ8EATyJnZV1U4MUr4AgLikeUBQvSz2wcanxeSqg1xYqLdX4aYnDcVRuz1FY8CzuARjiFrf4CUAH6RRRnpw",
+      "slip132_prv": "yprvAHzEH171net3pgM9TdAwwdAS5VSBhdExLT5dT4qkfj1aX2EjBJGEXFNbnW9aGsfNAEJZM6xk6QCQ7U1Wya6geBt4iUwawdsJm6bCUyfcatP",
+      "slip132_pub": "ypub6WyagWdud2SM3ARcZehxJm7AdXGg75xohg1EFTFNE4YZPpZsiqaV53h5dnkYeMVbRbfe677d3D8mVn3UhhfYvSgW2mS8qmUYUCDvUyeUSh3",
+      "rows": [
+       {
+        "path": "m/49'/0'/0'/0/0",
+        "address": "337zCjSxPQSYmW7kHJrNxDSGc7JYvJtKz6",
+        "pubkey": "02ec2d63ea5cbfbf34234857bdcfa69f50058bfda2bc7a1fc4c01dde1d5d60f96e",
+        "wif": "L2cq4MjJwML8eeQDZzm6CUKNyJ9vm5rQEDMt7fwe5tLosgyuvY2A"
+       },
+       {
+        "path": "m/49'/0'/0'/0/1",
+        "address": "3FtkS6Q9vLiV8WrbWdp4HRVkLy4JVJUEZP",
+        "pubkey": "028c8a2c4b248fc4a77fdb51cbfa25e9b69c0b07b7290d92da16866b5f09d4fc2d",
+        "wif": "Ky8p98VHiPdDnntHV3TnuZTBsN3CSe8vgTNb8S1xBXCGgK6M5cjw"
+       },
+       {
+        "path": "m/49'/0'/0'/0/2",
+        "address": "3BxR7H5uF7tZbyHLqejDW942nBBzJeNxqt",
+        "pubkey": "039f26eacf6f25e48c39496db81a0df2658683dae369a81f6c34c48259294d44bc",
+        "wif": "KwEgKJX7L9W2kvnJZezKFYmkMoqoPYWBHwwqvZeL1dyVcmgrsAeW"
+       }
+      ]
+     },
+     "bip84": {
+      "account_path": "m/84'/0'/0'",
+      "xprv": "xprv9z7RJe1f2GConRq166mE3qz9Z7prBGp46F6kTxypTqsedmfuwU6oDvbKAHBKUHobQaNyiP8HSKeLvxKsS72a8inr6EgL3PETEufVayutJtE",
+      "xpub": "xpub6D6mi9YYrdm6zuuUC8JEQyvt79fLajXuTU2MGMPS2BQdWa14V1R3miuo1XmLaWnsZnwBQf258wevjs5VrGiHmCXj7cCUr6MnkGNsVewS6fn",
+      "slip132_prv": "zprvAdmwuyMVKdHmV2DEkpLUU2B9u47k4Wo3vU9C2kmbDrdQjyJNSnRvU3ubCh6VU77SDrcbDLKQMeMShXYzsVrbjCA3pv5BDCsRnMnnNDntQtN",
+      "slip132_pub": "zpub6rmJKUtP9zr4hWHhrqsUqA7tT5xETyWuHh4nq9BCnCAPcmdWzKkB1rE53wgWaL6iP5AnucDC4GN2WSJdHfYKMftvrHbL1uzmHiWAGojdRBX",
+      "rows": [
+       {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1q28hrmz69v85jm7zjhwyupmgpv2hrjrk373lyav",
+        "pubkey": "024486d8349ae30f80ea5b553eb0e2b4ff706b8da1d37e146f528885fd089e6507",
+        "wif": "L45bHSipbA7gQULbMgsbAhuvsPNi9TuVBiYFDAz4sXUK7kismvoQ"
+       },
+       {
+        "path": "m/84'/0'/0'/0/1",
+        "address": "bc1qgu0vl24z6fq4aynrx0tnzrr7kg45hs036de59y",
+        "pubkey": "0295a05682c1ed64bd9858bb530052392e2c58d86b31601b8aa55deea39b27aff2",
+        "wif": "L2eJkqMhqe9PARz4VVTXnHstD8eqQiicoUEBoo6LSX35W6Yo58pD"
+       },
+       {
+        "path": "m/84'/0'/0'/0/2",
+        "address": "bc1q5q9hglzdz3vy3qzncy7hsl5l3eavr47h94lfwv",
+        "pubkey": "0317cc07ea38eb91e2a1cd07bd58433d2306f8f3147f457fb41728acfe5436d2a8",
+        "wif": "L3yfgSSydPG9W5augPoyTfg8DLEE6wpgSTTUpAV9gTvKX2ougb3u"
+       }
+      ]
+     },
+     "bip86": {
+      "account_path": "m/86'/0'/0'",
+      "xprv": "xprv9yYoa1XhpTahp3PB2aJLi21ypKLkzrxZHkM9gcXYuC6j7dNtmsg5hHHn2Am6nibFWduWUDJW6EcY21QdxuheSwryTEE9GXLAcxRvZHAew47",
+      "xpub": "xpub6CY9yX4beq912XTe8bqM59xiNMBFQKgQeyGkUzwATXdhzRi3KQzLF5cFsRMqumWWPSvmrezb2A8hhuHeGQVDf9yi139EvjfC3bAa9crBXxW",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/86'/0'/0'/0/0",
+        "address": "bc1p2p45qq44csc52xpru3x7xs62exxn655tle8rsjcazk4h34dw3qpqpuyae9",
+        "pubkey": "035b9600e0081de5f1ed595b6f65bf26af9bec5dac5bab2fa78a2270fd0a51d0aa",
+        "wif": "L5mtvBj9kTnLNF32DiD3JyA1Ru48rr2iSgUqinCyThoGeRHueVx1"
+       },
+       {
+        "path": "m/86'/0'/0'/0/1",
+        "address": "bc1psz93tujmakydght3af4xxtfuu5unwgmcxkrlyygmdayscc6l0zss70h9cs",
+        "pubkey": "02eeca72a7460169c387a742aeddcb1075d836eba2a2c38be61811fbf23dc1bd33",
+        "wif": "L1Jd56YbmzUb2RdN1SiQkLJ5wWQKESzDN2JeF16jx4Zi46iQ4JiQ"
+       },
+       {
+        "path": "m/86'/0'/0'/0/2",
+        "address": "bc1p9p3f6nq5edjxt7r063unj7t3383dtd2v8e5pkr4vg32u72rknleq95wx5c",
+        "pubkey": "02e2ec5b5031570216869a3dc594d9dae7e639b8bd4bcddd873fc2da659030e391",
+        "wif": "KzQrkzHHjtAxbzq7wctCSc54HBhZGNn15v7n6GCHwnyMsZoTd62Y"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "rand_n500_00",
+   "note": "500 rolls: the longest length in the corpus",
+   "n_rolls": 500,
+   "input": "34554656256612531154244155634562131442224245255141524365362432623464614456243663225211251422521344232126123622565635164514366135562443356531156144511154156361516346335153346221123314333641626146146533234421645435651415236413151242655511211353241221524225233326562345441225463416454433321655321564513123354412364215251221516624436356165462526314362532652351536312163131433544222642666336163353661426541626464632213141331551362345126115422111661153461644323561541165116361631543523233436555324612431645",
+   "rolls": "34554656256612531154244155634562131442224245255141524365362432623464614456243663225211251422521344232126123622565635164514366135562443356531156144511154156361516346335153346221123314333641626146146533234421645435651415236413151242655511211353241221524225233326562345441225463416454433321655321564513123354412364215251221516624436356165462526314362532652351536312163131433544222642666336163353661426541626464632213141331551362345126115422111661153461644323561541165116361631543523233436555324612431645",
+   "expected": {
+    "events": 500,
+    "clean": "34554050250012531154244155034502131442224245255141524305302432023404014450243003225211251422521344232120123022505035104514300135502443350531150144511154150301510340335153340221123314333041020140140533234421045435051415230413151242055511211353241221524225233320502345441225403410454433321055321504513123354412304215251221510024430350105402520314302532052351530312103131433544222042000330103353001420541020404032213141331551302345120115422111001153401044323501541105110301031543523233430555324012431045",
+    "binary": "110110001001010000011011101011010000111001101001001110100101010010011011010011100110011100100111000101100000001001001001100001110101100101101010101011001110010111001100001101100101010010011101000101011000001111100100011111001110101100010010101011001100110001101001100011111011111100010100101101111010111111000010010000100001000111111011001001000101110010100111011000011101101100100011101011001011111110001101001110010101101111111000100101101000110101000110010001001111111001001111100110001011101101111100011011000100111010110100110100001000110011100010010001011000110101100101111000110111011110011011001001101110101111100101010000100000001111000100111111100000101000100100100000000011101001110100111110111011100101101011000010110101001010100000101111000010000111011100011001010010101001100010011011011110111011110110011111100000110011010001",
+    "bits": 840,
+    "bits_used": 832,
+    "entropy_hex": "941bad0e693a549b4e672716024987596aace5cc36549d1583e47ceb12accc698fbf14b7afc24211fb245ca761db23acbf8d395bf8968d4644fe4f98bb7c6c4eb4d08ce2458d65e3779b26ebe54203c4fe0a24803a74fbb96b0b52a0bc21dc652a626deef67e0cd1",
+    "word_count": 78,
+    "phrase": "neglect talent drum sponsor pipe ethics define top bid banner gift ready print indicate cotton skin other project weekend what raise filter coyote cradle sample pizza typical loyal canal work multiply neutral gift suit twenty lecture squeeze pupil time spider edge child negative cousin result curtain depart old mind banana globe slim danger snow option lake dragon bullet display begin elite brush stadium jaguar help fold popular joke build crater praise ethics upon recycle lobster perfect note conduct",
+    "seed_hex": "cd89194384ca63fd3f238200125643b734f9798929db26bac7b4f468f8086aad026cbd03b0309aa10ddc98886e5407f22c244c20d5519d6caacd9a114b996df5",
+    "root_xprv": "xprv9s21ZrQH143K2yRcE7MZ5PHKJwmGTRirmVazU3KRaC82bHgXbXA9jW6cFNag8S6JVifEubCyymoxiywYDPNJzCvpx54CmhjwGS2tBCqdH4Y",
+    "schemes": {
+     "bip44": {
+      "account_path": "m/44'/0'/0'",
+      "xprv": "xprv9zUx1NQf6WK4jsRG14zo3KhZPzxy6MxCVF9ZdMQUhesmJGUDMcwTz1vQpEchgJkW856ion7peA4qbvQj5ZR2Ls5rJKpFNk77FKSMiqj9atT",
+      "xpub": "xpub6DUJQswYvssMxMVj76XoQTeHx2oTVpg3rU5ARjp6FzQkB4oMuAFiXpEtfVntfxu9CZzPfx8wQDqCWxvog6Jtqa2hxvzEXhD922PFakikHNe",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "1A9zM4sGEdGDRyRSaGT7vuxGbh4aWxzZMc",
+        "pubkey": "0353f0ee6b1a6b9a64627e0f8fd31b9c759ed317bff5904c0559cd3c6a0098ff58",
+        "wif": "L3dbWAhseDk3XRa4U2jkpW6qmNNK34sDorKHLCFJDAeB8PmqxC2X"
+       },
+       {
+        "path": "m/44'/0'/0'/0/1",
+        "address": "1GeYg4sR4Y6tZxLhmXpkmuEnpUzcjbFRcf",
+        "pubkey": "02e6fb3fd06caa6b65842533e4eccc37962abc404db8969f0d8cd0d7fd597fb659",
+        "wif": "L3UuUvm6g51xU7VVrbtmgWYgmyqc9UU72mVPSd7jR1E7WtjjVsBF"
+       },
+       {
+        "path": "m/44'/0'/0'/0/2",
+        "address": "17TmGJKSPhGCBsLSk6Z3W9KsZJURdtCDBF",
+        "pubkey": "03b29d7dd2c74b9ca1f27a025ae77d3a584b18e68f3a97a44279e2cb7dd62247da",
+        "wif": "L2dbcFL9XWUKNm8yQLSCV1pi2o4hTvgfh2QXXgVuRRW7cwbvLHF1"
+       }
+      ]
+     },
+     "bip49": {
+      "account_path": "m/49'/0'/0'",
+      "xprv": "xprv9yYUbM1iZcSr5EW45YUJXF9yC8CkNey9XTVQoF4kj8B4BvSoxpJ9oQPvqwpzVQnx5Tq4wEozuevDULZReQ1ZZVqVej8okJD48nsR6hjFghs",
+      "xpub": "xpub6CXpzrYcPz19HiaXBa1JtP6hkA3En7gztgR1bdUNHTi34imxWMcQMCiQhErcinkhWvDTEuQMEhhHowLbdfeP17rdXCMjJNKtNAHN15jQasz",
+      "slip132_prv": "yprvAJNju1gdiHzKvXhAuuFvjLFUN6MCKGxeSa1dadxe78YwF2G3DUTiRU44s9naVKSsV6wsgiQZNKGmMdAzN6RaMjX6X4qELD2YQWw4VHDdYHH",
+      "slip132_pub": "ypub6XN6JXDXYfYd91me1vnw6UCCv8BgijgVonwEP2NFfU5v7pbBm1mxyGNYiSpCihQcvZLFzNzuhN3qhDxAMN4PoMYEPY49tH9NdtM1PgwBiZ2",
+      "rows": [
+       {
+        "path": "m/49'/0'/0'/0/0",
+        "address": "34ocP7Sk5MAKc5eNZipV6puY3Pp1A9gnyg",
+        "pubkey": "0297ab5713a28283ab34cb20aef37a271751065babbcdad82072bea2b345d44be7",
+        "wif": "L3Qp8j3A6VSiba2gvrogrLnJs2Q4msjqoqheFWtVXeCuqFmuhcET"
+       },
+       {
+        "path": "m/49'/0'/0'/0/1",
+        "address": "35pHppkpvDsT1x8UD6Tgzm4dT87cyaE122",
+        "pubkey": "029010e38eca2f6bf52313ad65e581af39ff257c6e333ac262bb43ca65c9699edf",
+        "wif": "L1xqgFqEcmZM4SxQrhZSNAKAb5imTqodri1AfaKMjXHE3MHKX6oC"
+       },
+       {
+        "path": "m/49'/0'/0'/0/2",
+        "address": "39Rrojs5VuzPhXZVfD5Kpx6XnBhEniyGQv",
+        "pubkey": "035940c0840a031a67a150ecba9544042db4b220df4f35120f284ba719bfa2a8d8",
+        "wif": "KzedT8TTEe3zJ4krTDXWiqCecxBKCQesUKwAT6wShYgxe4UNNa6P"
+       }
+      ]
+     },
+     "bip84": {
+      "account_path": "m/84'/0'/0'",
+      "xprv": "xprv9xk8rhk8Lu6HfE6v8bsJxV16Xa7GRtwgfXJDapFWmscquNMRH4v6xaB9hwkkwAwXzhWc8zymQmq4WnyrpjWBcXkrD3G4WBjj8AoG1abGuCv",
+      "xpub": "xpub6BjVGDH2BGeasiBPEdQKKcwq5bwkqMfY2kDpPCf8LD9pnAgZpcEMWNVdZFqqZ4bp7YYSKZ2Pz6dqrAE4ofLsLTeAYKuzuoLqmnfRPp1Sn2E",
+      "slip132_prv": "zprvAcQfU35xeGBFMpV9oKSZNfC6sWQAK8vgVkLf9c3HXtNc1ZysnPFEChVRkMfvvzFNoykDdxAtL6YAHNCzG8LDD183wieug1NhfcvYni8UNgC",
+      "slip132_pub": "zpub6qQ1sYcrUdjYaJZcuLyZjo8qRYEeibeXryGFwzSu6DuatNK2KvZUkVoubfm1Ysuevpn3pWDWuRLwcjTCF4Atvw1NH1Jr5cypKEniAuaAb5g",
+      "rows": [
+       {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1quqeuz34gr0f4c3emakj55n3w8yj5aentq7rs0j",
+        "pubkey": "02af86111ee17848231d30454f734f2ff66e37b98188bae418b212b2c896e12908",
+        "wif": "L3FkdfgDLmacnGPWUXfpJfa4QvXxKd3s95USsoqZPb8DwxYAYb3S"
+       },
+       {
+        "path": "m/84'/0'/0'/0/1",
+        "address": "bc1qr4zqs7neguuvj7nmz3yck2y90myytzfd9s2e2e",
+        "pubkey": "03f81087259ceb689c7d63010ae5abb063ebeee8a34573ac1cc67db0d90f6e004c",
+        "wif": "L4XoU3qgANVQuVgcJRRSW7y1KWFBtGLJtF1ycaagKXy6z2yYtazX"
+       },
+       {
+        "path": "m/84'/0'/0'/0/2",
+        "address": "bc1q0e8pcnv2w48h35a4c89ev7sv34w4kn4ly4x6gm",
+        "pubkey": "027ee666f63487c5d073818017fddb70defb282659fe95bddbf4bd43f8414a4f79",
+        "wif": "Kzp7YeybNofLQEbRZuLu9kjphDv5Hturqg8qJsupHk4tYxtUQ2pX"
+       }
+      ]
+     },
+     "bip86": {
+      "account_path": "m/86'/0'/0'",
+      "xprv": "xprv9z4s6yXCWSgeFQXh7UppdEgxx5pWmgZGWGAPVfKR5A8e4JjqkcP2Lai3nRtxC5JzcaBLSS63zyzhdxXju8TjXobjh73Vy9b5Wx1Ph77rUCZ",
+      "xpub": "xpub6D4DWV46LpEwTtcADWMpzNdhW7f1B9H7sV5zJ3j2dVfcw74zJ9hGtP2Xdi5JmjdwoVVN7qKSVtP2T8qK1Rsxy4VEXWm5cvvEMAoh3mTTpUK",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/86'/0'/0'/0/0",
+        "address": "bc1pel46z0s2zry5m2895rk7kfykgar0satlk2gfpyxqzv64jppxnf5q9yexmh",
+        "pubkey": "03b9b2359cc519cf3872e0ac91ac01aec937fcc789a83f50105d7440940a8ce26f",
+        "wif": "KzQUhXPnrYuN3GcgGHkXCdXjqRZgrPdwcWifK2CF4VtQYgN8Loe9"
+       },
+       {
+        "path": "m/86'/0'/0'/0/1",
+        "address": "bc1plhwgxc2cxxlzu4rc4gv9nand5ypm6ys3lfr2e3y28ke2zxfvks4qccek3l",
+        "pubkey": "026286d7c31d721f997c61dba1a5c2e6339f6a1cd19ea7cf2bc66b738d07a975ef",
+        "wif": "L3Cw4Tkjruqihja3KE3qrrvM3ipx4X73wAGZi6hwgUkp1ZQ79LHe"
+       },
+       {
+        "path": "m/86'/0'/0'/0/2",
+        "address": "bc1pvp3pag363wfl2t20n374zmrszpqn9qlk5rmtkm4d09v6jysdkheqtghmjt",
+        "pubkey": "03bf6b6e3843bc143ee3363876ebf15efdb399c0c9b0a8646c947340374c135f51",
+        "wif": "L2e8WxQeF8d592jb6AYxuTkVXkZgQs1V4xJ65eiXxCDM7eJyzzn5"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "noisy_00",
+   "note": "noise characters spliced through the rolls; extraction must ignore them",
+   "n_rolls": 20,
+   "input": "01532;ZQo/8/;62126i5:CsS56(;e33235g c645UqE",
+   "rolls": "15326212655633235645",
+   "expected": {
+    "events": 20,
+    "clean": "15320212055033235045",
+    "binary": "0111110001001100011001111101110001",
+    "bits": 34,
+    "bits_used": 32,
+    "entropy_hex": "f1319f71",
+    "word_count": 3,
+    "phrase": "van mind sword",
+    "seed_hex": "909c1224da22d71e7af3415fbe19c01ff8d39b95bdca2c21617c7482d2753ceb2a2908b408c49900910f909e162b3d96102f9d6e00a86bf9d3dc596d8d6c65e1",
+    "root_xprv": "xprv9s21ZrQH143K317EixxTD93ZpfoJbrvEJ5CUnH68MDdrahKeVAsKVfkaAC7CCvBaiKHpgXQcqNcXQm1RPbi1bwZDJh6LMeoKo8Q2HvFHrXG",
+    "schemes": {
+     "bip44": {
+      "account_path": "m/44'/0'/0'",
+      "xprv": "xprv9yun3XKT37VdAGNVFKTyhhTXnpjidwqTrZeJF4hTqNLU1FdT5cJbLEjG7wjxsWsb6A2puebUSKc4AUV1n6ku1y5RV3azEbtMSNe5EifWhC9",
+      "xpub": "xpub6Cu8T2rLsV3vNkSxMLzz4qQGLraD3QZKDnZu3T75PhsSt3xbd9cqt33jyEPeJ5vZDSQfpXTK1SK814Sxexj1K5Zj5n3RjaeizzqkW5WUSsN",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "1VdeDsWu7io8m5moaqJ8YoQ2oTwqdbVHH",
+        "pubkey": "03ffc2f57f12bfe6e7645f0254b15af5bd5d788058e68f1a9d9d2dce9c1606a3b0",
+        "wif": "L3AMnapYkydVrWjrxAtR9joDDQudLjafZ77Wc7uPMhmWPa79HJyJ"
+       },
+       {
+        "path": "m/44'/0'/0'/0/1",
+        "address": "1N8QoBrEf4bJzQwqU6feoNwMTK9fzg5xjX",
+        "pubkey": "03065f1bdcdde7cc36706039d346e63fddc8f0317e7a65237630ff794a2d8ecbf6",
+        "wif": "L2GrZytf4e1y3BgFS3mUKSZnsAUu9tCT6sMMUmjEtAoEwacSFU82"
+       },
+       {
+        "path": "m/44'/0'/0'/0/2",
+        "address": "1FkUPKAiy6Rzfko6akCkAkF6kT5ok6R8Mi",
+        "pubkey": "029a63ade4e652fbc97c351e59290d7de8e33f99d611ed8aaae24dbc8dd1e2e1d3",
+        "wif": "KxpubdhWDpvingb15Q2cnQ9QXCE3AcKGNMF4YcDeGLztqy89Cw8Q"
+       }
+      ]
+     },
+     "bip49": {
+      "account_path": "m/49'/0'/0'",
+      "xprv": "xprv9xscqK5CfNXLDMTNkAkH2DYEAJeyRecE4RQXiT8FjyAp3QBrjEXtq8B3SRMMaoou26qmAuRKbsqnajumFyJmMB8QaHu1AFGBArqi9arfJoP",
+      "xpub": "xpub6BryEpc6Vk5dRqXqrCHHPMUxiLVTq7L5ReL8WqXsJJhnvCX1Gmr9NvVXHj3YGPYBWNrs6pgeGoEL25dBsP9ypqNq1iEiyEcx3A3DL9EJDQ9",
+      "slip132_prv": "yprvAHht8yk7p44p4eeVaXXuEJdjLGoRNGbiyXvkVr297yYh6W15ythTTBqBTdJwaiTpRjxZvP1t4YCLU2XKyfin9Qp1SdbRkA5fSauMYBuqrKt",
+      "slip132_pub": "ypub6WhEYVH1eRd7H8ixgZ4ubSaTtJdumjKaLkrMJERkgK5fyJLEXS1hzz9fJw18GJC6v1yfrJHCjTasuNEkb5Zzd54Rt3w9Z9SSJt6rifTu5Tz",
+      "rows": [
+       {
+        "path": "m/49'/0'/0'/0/0",
+        "address": "36Y4MMFpnmFagfTYEZh9gqeLTpiWDLsQZA",
+        "pubkey": "03065ccecdc40fa414cdfa04b1fb5b536fb805c329e52a4500f95e683437573807",
+        "wif": "L5j91Uw1GcTQAG1PVWpTZqy53ZNnPj6CDSG6ZwyBNXZopNZApLmv"
+       },
+       {
+        "path": "m/49'/0'/0'/0/1",
+        "address": "3DNAe1KzihGzSa9P9iyst5ik22Cw2Fv64e",
+        "pubkey": "03398b7faf847c971581fb81d68608e5877ca8acd12344edaadcba9aabf6069c87",
+        "wif": "Kwf27JsCkDERX1RhjaREeQFNoFv9EmkwrMUcmGERAiz8S4DYB7zv"
+       },
+       {
+        "path": "m/49'/0'/0'/0/2",
+        "address": "38mehcaVpq4KugQZxd3tPAxUxmpytRGVxP",
+        "pubkey": "023d1752c3fa4c8e1ee66176aaf54bf8bdf18ce35d41e5bcde11d33d6be3c909e5",
+        "wif": "L3GX4RzSsWC9UnbEHWsXxmpv2ovc9xbNVtQmsRZUA5JWxpWPd9UL"
+       }
+      ]
+     },
+     "bip84": {
+      "account_path": "m/84'/0'/0'",
+      "xprv": "xprv9xj73a9W5Jr6fBuYpCsK8iyoJPQ5DvfM7MHU5huLrUnxtrqZ4sgJ4YEh55cLp6Wz4nwx8sNp8vBjP4fGLB8V9bBkNHK1mQ7Ba6R3wtfExbQ",
+      "xpub": "xpub6BiTT5gPugQPsfz1vEQKVrvXrREZdPPCUaD4t6JxQpKwmfAhcQzYcLZAvPC93ZYiokG1Jb1dty5BD4bUbrxAT6TYuGpV5npPvHXnrmgofpn",
+      "slip132_prv": "zprvAcPdeuVLNfw4MnHnUvSZYuAoeKgy7AeLwaKueVh7cVYj14U1aC1RJfYy7VXWouppt5BZdpZw4Etq9dtPmZxWk4Yx6xhrwDkA7YYLj2b36Ar",
+      "slip132_pub": "zpub6qNz4R2ED3VMaGNFawyZv37YCMXTWdNCJoFWSt6jAq5hsroA7jKfrTsSxo7K3NrZd2VcoYCkpHnGydpc3FnC3ZpkdxDLFcTNTjf5dt5UQdC",
+      "rows": [
+       {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1qx6jkwkl7f77zmfhekrcef7kl892379y6838w70",
+        "pubkey": "03b7639e7c6d3d51d8382ff320de244063d5bd8f48d409907ddf615a93780df226",
+        "wif": "L2H11EiBNoWrXwm15BJewphnQsWTp7miER5jPNBH6BmDzBNDNJ4W"
+       },
+       {
+        "path": "m/84'/0'/0'/0/1",
+        "address": "bc1qksu93wwheerfnqtdufrxs575pw2wspwr7avc47",
+        "pubkey": "03865f3a1f815d3536c40e172177a71af6bca1ef76189a673f528025e90fe91dd7",
+        "wif": "KzorQurj5Fvcwt8VZCrGSWppKwp3pxQyEhaAy6QB8jmUy8UJ8x5b"
+       },
+       {
+        "path": "m/84'/0'/0'/0/2",
+        "address": "bc1q3utw9w99ftqnv6zyfuwx0m4zfq4tn4q5h8cnch",
+        "pubkey": "030a38a136241cf65c8df8a54a13308ee4dcccb4c8575169e2f8dd188f4749b2be",
+        "wif": "L4x81hSee2Z8itsBkLW5U36vgs7JdF5ChPaZQoaKQCS2ZLfVAcAc"
+       }
+      ]
+     },
+     "bip86": {
+      "account_path": "m/86'/0'/0'",
+      "xprv": "xprv9yfUnpqaKw41gBUQ2WD4Kd99dyushmX5uK9dN2oyKhwtQhGdarN1cq2C1yieBHAH5GFM3BHLRRSLn6YgBuhnq4MJLaGrXDHM3paB1H7Rorq",
+      "xpub": "xpub6CeqCLNUAJcJtfYs8Xk4gm5tC1kN7EEwGY5EARDat3UsHVbn8PgGAdLfsFKACSFu27AumUEthnYJghxVvFNSFVG9yvoEVcuY76DEcM9TPhV",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/86'/0'/0'/0/0",
+        "address": "bc1p9g5egcxy5rnmfgfn0rae593ljaca0gt945ac6psjmte92erlf9tquk660q",
+        "pubkey": "02f41da47fe716d3d5a3070506b6add95351f7ca80908e1d533d8ec0d976e79e00",
+        "wif": "L1cbvxCpofhj3STTYDKxuoGGQQkWXEMAwqTADWDZugcY7vdqX7bP"
+       },
+       {
+        "path": "m/86'/0'/0'/0/1",
+        "address": "bc1pdrkk439lr75drdlcfxuss08fh22n29l0p43acchchadlzjt7jx7ql2vxvn",
+        "pubkey": "0377653846b15c5017be31a97ef20a602139bf141f80cdf12f03687c1465e464f6",
+        "wif": "KzsX8GyAzrWXCdLnyYWw8pw8uReuExADrQ9jXZpEcT87HfoxCVPw"
+       },
+       {
+        "path": "m/86'/0'/0'/0/2",
+        "address": "bc1p3x2heuqr5upnttz5hcyg942pn32fgavqy8g7juq4gfgkawq4gy7shlh45f",
+        "pubkey": "0280c4a1a22056242de68fc0a4887d68c34c9686a72d84c0f75f1f465e9b4e2787",
+        "wif": "Kwzv7Ygdj9QwuYMbDP2FpCUQz13AKNLeyQKNW4wnS2qWPnLgpUzP"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "edge_all6_100",
+   "note": "100 sixes: every roll maps to 0, so the entropy is all zero bits",
+   "n_rolls": 100,
+   "input": "6666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666",
+   "rolls": "6666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666",
+   "expected": {
+    "events": 100,
+    "clean": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "binary": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "bits": 200,
+    "bits_used": 192,
+    "entropy_hex": "000000000000000000000000000000000000000000000000",
+    "word_count": 18,
+    "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon agent",
+    "seed_hex": "4975bb3d1faf5308c86a30893ee903a976296609db223fd717e227da5a813a34dc1428b71c84a787fc51f3b9f9dc28e9459f48c08bd9578e9d1b170f2d7ea506",
+    "root_xprv": "xprv9s21ZrQH143K48UaviLRexBBQSB7EmGa5J9hjUf91xP9RSr2e9BrBZ67ks4jLKuXXSzw1gYXmX9vtbYBcANxztsb2yWCQXYyEBtrv88EXDw",
+    "schemes": {
+     "bip44": {
+      "account_path": "m/44'/0'/0'",
+      "xprv": "xprv9yVwTQrvRyYXJqCxYZrxfj4CtxEtU7PuTBiHCcAhkbjCSS3y72SogkHTHXYdLwyVe6ChXzQ3SdGdF8CKxuzjYdxokJsMBsK8KnU68Fx9jq9",
+      "xpub": "xpub6CVHrvPpGM6pXKHRebPy2rzwSz5Nsa7kpQdszzaKJwGBKEP7eZm4EYbw8nNvhfY15Y31LXVzpxGBtmL5GK4PDZ8enSp21buTfm3VH8RPJ8y",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "1LfuPLgJd2sAe5QNNt4tDNYvgQAe12YDr2",
+        "pubkey": "02160a548d69c7a0a40c3437cafab8cd93a7fb7e670d4b2375f65cd86cda59e7eb",
+        "wif": "KwPhSXhf2abw5JeXZhXDjX9PTmMj68inSdGHgyZQ4VrZdNj5yVfE"
+       },
+       {
+        "path": "m/44'/0'/0'/0/1",
+        "address": "15M1gSduZRfUu8FNuQQp4VVrqXuxjkK62c",
+        "pubkey": "0385aaa8af449b0771ee77577dfa41c22ab72075901aa2f3b07d53c1bc1023d01c",
+        "wif": "L2QWwtYQ5V3KBsF5UpKcvJCfCqsUMcq7V3N9GQjC5nnBXQeVeAFo"
+       },
+       {
+        "path": "m/44'/0'/0'/0/2",
+        "address": "1Hdpd9n1yCzoU9KnRCtys8JeWXm9bzc9Qp",
+        "pubkey": "03c35effc15e4354806bd42ef4ee502bb4508f7c788ca237b12351a8a831ccd9a1",
+        "wif": "L1EfwYFXeSFJBYzGRjXRzofcbrvoyNUnQ1GF3eMtfMfehMQj3L5e"
+       }
+      ]
+     },
+     "bip49": {
+      "account_path": "m/49'/0'/0'",
+      "xprv": "xprv9ypMMbbHto9ZNhYnMweAT1Unya2S56oPoH1Rg892VamksfFyj6r1aHjXfS1h81WNjzqDGMvBD2sptTxbfZbxvJQP6LyTPNRArAj8vf9FJPR",
+      "xpub": "xpub6Cohm78BjAhrbBdFTyBAp9RXXbrvUZXFAVw2UWYe3vJjkTb8GeAG8641WgzFqhMExd1PPxZRuzsP1feuLprnPrx3EAU4eLXNgTwvGovv9ZQ",
+      "slip132_prv": "yprvAJecfGGD3Uh3DzjuCJRnf6aJ9YAt1intiPXeTX2usb9dvm5Cym1aCMPfgdyH7vAJ9dx21qWjfhENmkaAPG1yiY5yxgfsyHEf7tnnKASGKYn",
+      "slip132_pub": "ypub6Xdy4mo6srFLSUpNJKxo2EX2ha1NRBWk5cTFFuSXRvgcoZQMXJKpk9i9Xtwqqc1ANG8C9S9zNfDvtxGU4XGoC6de6WAVEFLrxC1ZfRLUoxm",
+      "rows": [
+       {
+        "path": "m/49'/0'/0'/0/0",
+        "address": "3JLtadQcsaEoH1ApEcWYtL9k3oGfxbhtc4",
+        "pubkey": "02dcc5b14214846b61774f760a98e9d3d6d640a2f3680fda1ebac65933cafa56f7",
+        "wif": "L2LCqtguuZCNuwN7TXtgFcx4AN1ufK21Vwz36QWBiPyqZ8BpfTbv"
+       },
+       {
+        "path": "m/49'/0'/0'/0/1",
+        "address": "3QHqX9tFF7LmNdWoT1jPVvgqcJP5rpxhzG",
+        "pubkey": "03d99bdb5d1efa6b1673d900a23ebdd58af5b02e2c2f169649c7d028244fb57cf8",
+        "wif": "L4kNAyctvZFo4Hac8gAk5NzTub3vcKwPMjFPCESAaJTA7mvcqvCn"
+       },
+       {
+        "path": "m/49'/0'/0'/0/2",
+        "address": "3M754iYtHP9y91BcPAtWog8aPgh2qXrYFT",
+        "pubkey": "038ac1798528e893dd6334c90330c8bc5b9c8e41807c069cc2c765592397d4e450",
+        "wif": "Kyt5myE8MRswoPfVrmR9AdeGTzs6VqCMXKQfYy78umJGaLjhbZr8"
+       }
+      ]
+     },
+     "bip84": {
+      "account_path": "m/84'/0'/0'",
+      "xprv": "xprv9ypAHbZJkAMfaLAV7nxRQGvzLbqyXiwnGBYTcewt9SN7e3cxfYrNAMfxR64nTf4f1Sj1nnAqReEJVAm7yTwSgQ7pirpwQmzvfRhC1K1t1j6",
+      "xpub": "xpub6CoWh76CaXuxnpExDpVRmQsitdgTwBfddQU4R3MVhmu6Wqx7D6Aci9zSGLq4wBFDw8HtRhm8F4yYZ1r2wHR37rxu1MVLuREdko6FDJpVJgr",
+      "slip132_prv": "zprvAdUgtvu93XSdGvYinWXfpT7zgY8sQxvn6QauBSjeuT7skFFRAsBVQUzETVyxTUNVpixdHjMxLxwQFjzFQrmUGsV2TYDnabduCspUnWBcm34",
+      "slip132_pub": "zpub6rU3JSS2stzvVQdBtY4gBb4jEZyMpRedTdWVyq9GTnerd3aZiQVjxHJiJkkEvzZ4kQXVvexFAPgeKb5ANgF4iLL6k2tC5EscJFDXzSujkHn",
+      "rows": [
+       {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1qvckqrk6ad7fu9fkj2xeknssjldncap3csvnck0",
+        "pubkey": "02825f54b512fe4dcf055720834d513ba22e5a7dd71ba79631e687e4ea4a4e02ef",
+        "wif": "L3sCjTQpCH9HYnGBbaVKpYoLQJdWtd12qsENeTdD5nWEnWjLBsHz"
+       },
+       {
+        "path": "m/84'/0'/0'/0/1",
+        "address": "bc1qpauz4wavpkax047pxdhfew6x6sc9rglfrmduwh",
+        "pubkey": "02eacb238c98aa6ecbacc56ac749cb8c13f92d989e05866921f39a72959b098f7d",
+        "wif": "L3LX7sZ7H4238Nx4tr7phs6eVBXKXsmB6ZLwgRkwL4LyegC5jyBX"
+       },
+       {
+        "path": "m/84'/0'/0'/0/2",
+        "address": "bc1qkthsfx6g8rupqqaakzcv6yrjnvqr2u6vqgxvk5",
+        "pubkey": "03f703f1b47493b0d29753a63c17b14eddcb28ef7e4f0802e7c43ccb46707d00b6",
+        "wif": "KyvGLeowpL1fWT18oxeNP9CbUJwbWxDLqJ7d9PSA4HcvbsRUTwPJ"
+       }
+      ]
+     },
+     "bip86": {
+      "account_path": "m/86'/0'/0'",
+      "xprv": "xprv9yAdAWRtdkgdpmRdubX9dtkBcGUvP16GgqQZ2XLVHxiBqVKkZoUnSMsB6irc8yEz5ik1WbETwfmUH1zhSCWbbUpArQaDLJj9g1FnyMmy1os",
+      "xpub": "xpub6C9ya1xnU8Ew3FW71d4A12gvAJKQnTp844L9puk6rJFAiHeu7Lo2zABex2DttHTd6T11hjVzHQrWNJ2m2SjF6rsjZmLJxUSg8HK9ibjsHyN",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/86'/0'/0'/0/0",
+        "address": "bc1pf6updzutcgyudhhlwqlckg8uc2vcv089s4f6lk3udc3q5w8rmlcq26g5w4",
+        "pubkey": "025e8c484c982746acf1a22b73505a2fd12eaed63aa85135099b06fa744e7ffbef",
+        "wif": "L14zjidbdxBXAse9SMic2CXzgCzzgBrzJNf8GjmzNWN9H6nQuV7c"
+       },
+       {
+        "path": "m/86'/0'/0'/0/1",
+        "address": "bc1ppk0cn2ndwuew76pxhd5yvculupgt0tpp84wlksqlppu93zlk3l9sdkvfka",
+        "pubkey": "03351c9cfdebdf4d68231f636f74c1b4eec538c873c34728632f984341d1bf6d1d",
+        "wif": "L46MJT7vKZAMTHPuU7uUAhYRheJ8rPwTdw3dkMFR5hEbeZS7p4MR"
+       },
+       {
+        "path": "m/86'/0'/0'/0/2",
+        "address": "bc1p06rtc9ktazuqsgr9waxx7wzapuz8rr4ml5y4dt8hd3ykznefaluskpua7c",
+        "pubkey": "0282605447fa35c8900e3d51442a9f70692e8fe33cad6ea471c9c5f63c27020b2c",
+        "wif": "L5LU2TqPcSK9FwCJMxAr3nqj8UEMNbYAkFeLRQs3MsJkiMmMbUVc"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "edge_all1_256",
+   "note": "256 ones: 512 bits, a raw phrase of 48 words (past the BIP39 24 maximum)",
+   "n_rolls": 256,
+   "input": "1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+   "rolls": "1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+   "expected": {
+    "events": 256,
+    "clean": "1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+    "binary": "01010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101",
+    "bits": 512,
+    "bits_used": 512,
+    "entropy_hex": "55555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555",
+    "word_count": 48,
+    "phrase": "fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary fetch primary female record",
+    "seed_hex": "bb03fef3b499d6626c1c3c5eece1d1a3b9de266d75000930813d770e0e7b504acac8ca092cfdcdaf3d93f23dbb821012108ffb11b0e7922ed4ef6c3c7b7288d1",
+    "root_xprv": "xprv9s21ZrQH143K4PidrYnMS8zxMm2NEwK4pnmBsxnVvNWSe7NGXzzqoXekVd4Q4RG9FzcFH9B7gvKewoBM3tKpUQTN6rkYVr7srKWfwJQCGGY",
+    "schemes": {
+     "bip44": {
+      "account_path": "m/44'/0'/0'",
+      "xprv": "xprv9z6VmNBGkJREiFcXhVwZoVdKsa4TdR91aYiojAaSCbxTaV2L4kBvmUdv7NMYHLDkMPiS9mB6jvpvdiwkqMCGbgUxTxoFZnbXyjPKqnpAtbE",
+      "xpub": "xpub6D5rAsiAafyXvjgzoXUaAda4Rbtx2srrwmeQXYz3kwVSTHMUcHWBKGxPxeYCbavCKS2ecL2ajYBShPWjZ72NvSgqtnHRniNLPajr5vQR4k7",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "1MkHwoyqK9qFxgLBwdhVmNUtxGxcThQgwM",
+        "pubkey": "02eef8c16d1ab913e6e961fd76652ac09bf3906107e872386ebcc60a8718940a74",
+        "wif": "L5PR4ymTt8X6jTEket76yuyzKVDjUrpDcPFQq5UPaz97KoFbxw6P"
+       },
+       {
+        "path": "m/44'/0'/0'/0/1",
+        "address": "1CDHDte9xmvVqYZTMymwSXpn3bfQJtQei5",
+        "pubkey": "02480e984f1225a0466c9ca16c5c7678ecfe87c5d9f891637981bdd8ad77201b30",
+        "wif": "KzXncFh2JJbKsDhfRnLM38CkV1uBoEX11JnFBrdu13wnNSmycuGJ"
+       },
+       {
+        "path": "m/44'/0'/0'/0/2",
+        "address": "1L9NXZQjPf2SoTnyc8J3kAQ647SrjiDNib",
+        "pubkey": "02b5a4f8ba0b70febe16ffc02c4ac0b40cbeef1bb550099c72aef61cb542ac1432",
+        "wif": "L1hvUZ9NEFHWAVCHdSiqFDQS1mv2zaRhMoYGDpUjs52u5uQqDMDc"
+       }
+      ]
+     },
+     "bip49": {
+      "account_path": "m/49'/0'/0'",
+      "xprv": "xprv9z1sCVeHC2xj839sifZKHKRHxUaTTjddhqHYokhXuewS3g7Y9NB4sHKpvJnmX4tKKWGoAXEVuAYCXVa8r9a8ATxSQXEJMFAzPs8sMsBNqH1",
+      "xpub": "xpub6D1Dc1BB2QX2LXELph6KeTN2WWQwsCMV54D9c979TzUQvUSgguVKR5eJmbQS8EPytKz6R1pFBVq7qVY5UFE8Jh4dXW5fkSH5RNv4MFGMSa6",
+      "slip132_prv": "yprvAJr8WAKCLiWCyLLzZ2LwVQWo8SiuQMd8cwomb9bRHfKK6mvmQ2LdVLyxwWkMWyYEj9Pbuzq4MptkQnBhZqz8xhe3Grviw9zUfbCWkRX1bzT",
+      "slip132_pub": "ypub6XqUufr6B64WBpRTf3swrYTXgUZPopLyzAjNPY12qzrHyaFuwZet39JSnoN2893uHy6uAVQoeABfin9eBwe96vkEPqn6LM6Zh6yhjqz56iS",
+      "rows": [
+       {
+        "path": "m/49'/0'/0'/0/0",
+        "address": "3Gcq7DHqkcLMbezDd1eq4yJkpNPnnY9FDV",
+        "pubkey": "03c28cf6853f98bea863ce5aba17711d339e531ecb49edb3d579caad16652a3757",
+        "wif": "L2Y7hgNfnt5kmtnq4uxZytN8eQ6bQ2DQCQPEWSsVDTYFZS4C7Ro1"
+       },
+       {
+        "path": "m/49'/0'/0'/0/1",
+        "address": "3QKat1apM1yR8kFD6ZiFzQNLuN1VQ2ib4U",
+        "pubkey": "0380ef7bfe6d841bf81f8edb0de0993d63666474c2fee5ee8c90d9bfeda3d4ee9d",
+        "wif": "L3Dd372botTUA1gMDgae6F39BuxjaD6uXsWUpW7H4mfju9qJLcEG"
+       },
+       {
+        "path": "m/49'/0'/0'/0/2",
+        "address": "3PYBX7XKkbSvhtDxFkmyyJSpDfUU1Up63j",
+        "pubkey": "03734c4809989aabab4794d7a49d6d66995ee07f949283484cfa1e263e1ba56ea5",
+        "wif": "L2hcL5GeJMPMP4JSwURHukqJ89N1vR6yBDU1M7UHEj7AbXXiq29P"
+       }
+      ]
+     },
+     "bip84": {
+      "account_path": "m/84'/0'/0'",
+      "xprv": "xprv9z966Aq3PadqdwGHbp2SFi1CEXJqAfBZ3ETFA4W5kNHghPLFJc1Y6xBwbYGvtCMj1LpjudU6TrRLjTz29TDvvzDAaPiHDcMMfTXWhx85EaJ",
+      "xpub": "xpub6D8SVgMwDxC8rRLkhqZScqwvnZ9Ka7uQQTNqxSuhJhpfaBfPr9KnekWRSqQeBWWwnVKj1WGLLj7imJJNfFNJt7cTqDH42UEtWSiQF1EER12",
+      "slip132_prv": "zprvAdochWAsgwioLXeXGXbgftCCaTbj3uAYsTVgirHrWP3SoaxhovLfM5WDdxC6t1fZpd4MQafDPB8SW3D9ar3xXTaNK578PRzLCueoV7tpeLq",
+      "slip132_pub": "zpub6rny71hmXKH6Z1izNZ8h328w8VSDTMtQEgRHXEhU4iaRgPHrMTeutsphVFKpBKpnbmZLWTTTG3ppXsXW6eCLUayfZtfuCHss3tqh2C6W7id",
+      "rows": [
+       {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1qk4awret2qn330tyvnq4ag0zql8mja4zga3sm9s",
+        "pubkey": "0323c2b86c4badf7379d9ebfa59db3c8b24b9648896a895e3e3e2dd3293e1a076f",
+        "wif": "L1gcSUYB9rCMzJF7RbKzZTASvUYBBVgCNBS4Dceqr1M3kbMNDMLG"
+       },
+       {
+        "path": "m/84'/0'/0'/0/1",
+        "address": "bc1qycw39jrlr26rvktltptxkysr7nykutpv92dtyd",
+        "pubkey": "0394bcad5f107ee89b152529f6a0bb42f505c5435427ea0176db6beeae98c488ab",
+        "wif": "KwFdX8HjjNg9Z765yiBqp3Z8W8qHeVkBYfsx2ioyxwcwur5JCXcL"
+       },
+       {
+        "path": "m/84'/0'/0'/0/2",
+        "address": "bc1q7hl4a4r9wvs34agg2mku2rv7uqauachv3ts3qh",
+        "pubkey": "02a493aaf08cd743e85c0c80cc9e0d99526e22919af6030fd3fc398f3369cad387",
+        "wif": "L2PTYqFHqYeiBewkDNNzpo3UuSAKwQuRirZdLzc3YbB8NKrbaEzu"
+       }
+      ]
+     },
+     "bip86": {
+      "account_path": "m/86'/0'/0'",
+      "xprv": "xprv9yTJatRwBHCw3WND1xgQCu9mtcrM2z6nFXHjKy4T3DsPUMMXPMYXpzMtQzvUfo1CWBPemgx2q8vMbjYQTAeDgCVRPchz46EEoWvZ6pV4oQe",
+      "xpub": "xpub6CSezPxq1emEFzSg7zDQa36WSegqSSpdckDL8MU4bZQNM9gfvtrnNngNGJkTzhyGJtk5mm2QwXerPUfMqufMbfEQXmcLkuhyJeNrAAjkcyM",
+      "slip132_prv": null,
+      "slip132_pub": null,
+      "rows": [
+       {
+        "path": "m/86'/0'/0'/0/0",
+        "address": "bc1pgpfd9hsp2auejxsvxzsru4hsjnjz60s490ck6uy484za4f6fncdsp0dw2j",
+        "pubkey": "02ab6bd16a3d95d34a16a939b503845e774bfcecb3db9624c80ecc265af285e947",
+        "wif": "L35f9581DPKDro3omvPm26ihKEk9L6JfW96rfMZ7WPMLwxD1F8Xw"
+       },
+       {
+        "path": "m/86'/0'/0'/0/1",
+        "address": "bc1pd7ecsw2hhdl2gju3fyzxtnc93r2rw0ng23ku484yenzujzlf274qp9z4gg",
+        "pubkey": "03e4d566ff45ae3a0001e6978820232e805160f5bd8d3e10fe58b8c105c6789148",
+        "wif": "Kxu58YakarG79iozbRBkKVf1a9mmT8YToz6ADsgFa5m2VJFCm1Yj"
+       },
+       {
+        "path": "m/86'/0'/0'/0/2",
+        "address": "bc1p4ymy2lr7ap4kx8r7y5h8z8sucvj7kkpgjpdwkxhzskuk3dkf8l9qmc3pgy",
+        "pubkey": "037676c8d13258c89e8b8e96716f5f0c24a7b2aee8aa8f0d1e8f52997fac00c583",
+        "wif": "KwGyRk4TGy3akZcVCMpE9Qkz3X8jZD5RnhfrPocDPMJaT9rAH6Uk"
+       }
+      ]
+     }
+    }
+   }
+  }
+ ],
+ "negative_vectors": [
+  {
+   "id": "edge_all4_19",
+   "note": "19 fours = 19 bits, under the 32-bit floor",
+   "input": "4444444444444444444",
+   "rolls": "4444444444444444444",
+   "expected": {
+    "events": 19,
+    "bits": 19,
+    "error": "not enough entropy: raw mode needs at least 32 bits",
+    "exit_nonzero": true
+   }
+  },
+  {
+   "id": "edge_boundary_31b",
+   "note": "31 bits, one bit under the floor",
+   "input": "1111111111111114",
+   "rolls": "1111111111111114",
+   "expected": {
+    "events": 16,
+    "bits": 31,
+    "error": "not enough entropy: raw mode needs at least 32 bits",
+    "exit_nonzero": true
+   }
+  },
+  {
+   "id": "edge_short_123",
+   "note": "6 bits",
+   "input": "123",
+   "rolls": "123",
+   "expected": {
+    "events": 3,
+    "bits": 6,
+    "error": "not enough entropy: raw mode needs at least 32 bits",
+    "exit_nonzero": true
+   }
+  },
+  {
+   "id": "edge_noise_only",
+   "note": "no [1-6] characters at all",
+   "input": "hello, world! 0789 --- no dice here",
+   "rolls": "",
+   "expected": {
+    "events": 0,
+    "bits": 0,
+    "error": "not enough entropy: raw mode needs at least 32 bits",
+    "exit_nonzero": true
+   }
+  }
+ ]
+}

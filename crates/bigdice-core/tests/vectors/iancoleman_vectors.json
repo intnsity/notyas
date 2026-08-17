@@ -1,0 +1,154 @@
+{
+  "generated_by": "jsvec/gen_vectors.js under node v24.16.0",
+  "source": "iancoleman master (real JS executed under node)",
+  "vectors": {
+    "v20": {
+      "input": "12345612345612345612",
+      "events": 20,
+      "clean": "12345012345012345012",
+      "binary": "0110110100011011010001101101000110",
+      "bits": 34,
+      "raw": {
+        "bits_used": 32,
+        "entropy_hex": "b46d1b46",
+        "phrase": "refuse hand spice",
+        "seed_hex_nopass": "fb42d70f4342111a9f3e5d893864c253c03133781140aea48af86172c5358b7f3cc0f2cdfbd57f3f76e6257cd4b812860d199beccde887df29bb27735fca8afd",
+        "seed_hex_trezor": "431515f3ea94392978f7c68e3fccc3b66dee2c713087ce579ffc33825dff7ffc792e476ffea8e9aa1e423c351c4d292f55c04567504e3c38422a90502f3b507f"
+      },
+      "w12": {
+        "entropy_hex": "596165d321bc358e35082431e0246451",
+        "phrase": "floor arctic inquiry drop select shove stage afraid cradle abuse boil pepper"
+      },
+      "w24": {
+        "entropy_hex": "596165d321bc358e35082431e024645149440ad6072fefed5796447d7ff07f5e",
+        "phrase": "floor arctic inquiry drop select shove stage afraid cradle abuse boil penalty nephew air fix tourist useful height tortoise material subject wealth word task"
+      }
+    },
+    "v36_sixes": {
+      "input": "666666666666666666666666666666666666",
+      "events": 36,
+      "clean": "000000000000000000000000000000000000",
+      "binary": "000000000000000000000000000000000000000000000000000000000000000000000000",
+      "bits": 72,
+      "raw": {
+        "bits_used": 64,
+        "entropy_hex": "0000000000000000",
+        "phrase": "abandon abandon abandon abandon abandon able",
+        "seed_hex_nopass": "d6b648dcde0c3bb7ab8dd3e87806994a424a6161109bdbe2cc0ad45c037f11e1c88fd9291bb6f24df1a2e1342e5db8d5347abd66c1f9d7ce40a1689ddf8be8a9",
+        "seed_hex_trezor": "5abb87daba4bee09a4a359b4dd21e5d5aa9ce51291a315f8ef966f87af76e7d71a9359b2333c22f2800bda7ca5d7e764e81bf8caeb1437b669d6c604267c30f3"
+      },
+      "w12": {
+        "entropy_hex": "415d687c468bb19a9f6742faa8f82b67",
+        "phrase": "donor twice business minimum roast snap laugh tribe wide elephant approve soda"
+      },
+      "w24": {
+        "entropy_hex": "415d687c468bb19a9f6742faa8f82b677d2a2ec361339de42613c7133af3adad",
+        "phrase": "donor twice business minimum roast snap laugh tribe wide elephant approve solve sport blast assault chapter over cancel lumber mixed crisp keep repeat rural"
+      }
+    },
+    "v96_onebit": {
+      "input": "444455554444555544445555444455554444555544445555444455554444555544445555444455554444555544445555",
+      "events": 96,
+      "clean": "444455554444555544445555444455554444555544445555444455554444555544445555444455554444555544445555",
+      "binary": "000011110000111100001111000011110000111100001111000011110000111100001111000011110000111100001111",
+      "bits": 96,
+      "raw": {
+        "bits_used": 96,
+        "entropy_hex": "0f0f0f0f0f0f0f0f0f0f0f0f",
+        "phrase": "audit journey sense bulk valley maple destroy tiger author",
+        "seed_hex_nopass": "0206b2d2f17776e6d7b16e037ade9b12e047739b9c3deb18443beb91a1ccbd76620d3c6d0ed393999ef87941372eaf4d36bb4e7c052cb54405b77562e7caa9f1",
+        "seed_hex_trezor": "a46fdb1ab43ba2cc81b5752b6ceecc3c4cd515c16d736c4a360b23973f0fe55dbd95fcb7deb0ff982900c5b3a3a6fe9262a91c6a2e7d4f0c33af53e482ba4637"
+      },
+      "w12": {
+        "entropy_hex": "a339e88897034e1bdf58ad7be208d0ed",
+        "phrase": "permit soon captain come crunch assume latin between know aware crouch surge"
+      },
+      "w24": {
+        "entropy_hex": "a339e88897034e1bdf58ad7be208d0ede69a4b2c9a6b4279552f2ecb12ee6b36",
+        "phrase": "permit soon captain come crunch assume latin between know aware crouch swift have cereal raven estate draw skirt envelope frown raise jaguar proud shrimp"
+      }
+    },
+    "v100": {
+      "input": "1234512345123451234512345123451234512345123451234512345123451234512345123451234512345123451234512345",
+      "events": 100,
+      "clean": "1234512345123451234512345123451234512345123451234512345123451234512345123451234512345123451234512345",
+      "binary": "0110110101101101011011010110110101101101011011010110110101101101011011010110110101101101011011010110110101101101011011010110110101101101011011010110110101101101",
+      "bits": 160,
+      "raw": {
+        "bits_used": 160,
+        "entropy_hex": "6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d",
+        "phrase": "hope hidden forget suspect strategy repeat remember pumpkin hope hidden forget suspect strategy repeat resist",
+        "seed_hex_nopass": "bcec2c3476bcad05d6def820d89486e7d7daf1bc41d265b6465c50e3744f2dcb36e528f70b673164bed44a67751f518ed1fd15e35bbc9dd34c08f07f5c11a62f",
+        "seed_hex_trezor": "a57ed3d7f4646f8b0fb29a78aaf7b8a181a69647a7a0b0d5c8869f9c80e07965cea3ef9f1b4614b56585d92d57c38a75d422d91370fde33f133a0f2a473dfb75"
+      },
+      "w12": {
+        "entropy_hex": "20f7af76be8f1a933cf732ad7cb7830a",
+        "phrase": "can runway tank laptop vast end video town pulp toss this best"
+      },
+      "w24": {
+        "entropy_hex": "20f7af76be8f1a933cf732ad7cb7830a3471f4417d1723b4586121dcfeb50e4c",
+        "phrase": "can runway tank laptop vast end video town pulp toss this behave either when album pepper casual people blue dry soup fold decrease muscle"
+      }
+    },
+    "v200": {
+      "input": "65432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432165432112",
+      "events": 200,
+      "clean": "05432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432105432112",
+      "binary": "0010111001001011100100101110010010111001001011100100101110010010111001001011100100101110010010111001001011100100101110010010111001001011100100101110010010111001001011100100101110010010111001001011100100101110010010111001001011100100101110010010111001001011100100101110010010111001001011100100101110010010111001001011100100101110010110",
+      "bits": 334,
+      "raw": {
+        "bits_used": 320,
+        "entropy_hex": "e4b92e4b92e4b92e4b92e4b92e4b92e4b92e4b92e4b92e4b92e4b92e4b92e4b92e4b92e4b92e4b96",
+        "phrase": "tool siren napkin chair entire now comic frame rice inch tool siren napkin chair entire now comic frame rice inch tool siren napkin chair entire now comic frame ride first",
+        "seed_hex_nopass": "5c421dcd54ecdb95aad1b0afbb316b687a00fd476099375e16ce20f8b0f28c20fd193a5e36802f19c60a0cb6c362c43f67c5effb175e6337ee687df1c2e13190",
+        "seed_hex_trezor": "6471fdf4e02f5322e4f8ef8aae6315fe6cff9aba48139c8154182266fe95480aab6cc0f80193e25f9b4720c35bd5ddcd873b72b5a7fa0e5d75ecf67706ccc10e"
+      },
+      "w12": {
+        "entropy_hex": "29ff8f8626f5e4d51ccb0b36d5d7d2dd",
+        "phrase": "clarify wise thunder evil furnace hedgehog industry gesture cycle push visa roof"
+      },
+      "w24": {
+        "entropy_hex": "29ff8f8626f5e4d51ccb0b36d5d7d2dd77964b1c9ba92c10bc7cc9056dd4da22",
+        "phrase": "clarify wise thunder evil furnace hedgehog industry gesture cycle push visa road just cereal include inside clown magnet busy must fine tuna hammer fringe"
+      }
+    },
+    "v_pi_noise": {
+      "input": "3.14159 26535 89793 23846 26433 83279 50288 41971 69399 37510 58209 74944 59230 78164 06286 20899 86280 34825 34211 70679 82148 08651 32823 06647 09384 46095 50582 23172 53594 08128 48111 74502 84102 70193 85211 05559 64462 29489 54930 38196",
+      "events": 122,
+      "clean": "31415205353234020433325241103351524445231040202023425342110214051322300434405552231253541241114524121352115550440224543310",
+      "binary": "1101001110001111111011000100001111111011000101001111101110000110110100000100010001011010111010010100100100010111101011000001100001111010110110111100110001010101100011001111100101111000000101001011110100",
+      "bits": 202,
+      "raw": {
+        "bits_used": 192,
+        "entropy_hex": "3fb10fec53ee1b41116ba5245eb061eb6f315633e5e052f4",
+        "phrase": "distance mask wild pond ticket party east input cattle void blur strategy vessel prison sort rose fancy polar",
+        "seed_hex_nopass": "e6c879f5cb4b469b1811b2a79e70ee07fd382ac52d5f7f9e194c52da1d5f02aaafd090b91ce26ed28a5ee121f7b5569d1bb243b9f27768525e3a5ad8f5521899",
+        "seed_hex_trezor": "7375c6668f668dad452c908f4a5e63efbcfb6dc0aa986ff9f941bc5b8915ef914cbe226ac8dd7c901b8595b51ac9d38370c77c78ae1f2c15fe5d2a048f2dc921"
+      },
+      "w12": {
+        "entropy_hex": "65134ab81a79ae8636391f2473264f97",
+        "phrase": "govern olympic puppy crunch online drink suggest catalog caught odor negative come"
+      },
+      "w24": {
+        "entropy_hex": "65134ab81a79ae8636391f2473264f971697854ffd822aa3bd725ef450db46c2",
+        "phrase": "govern olympic puppy crunch online drink suggest catalog caught odor negative comfort harvest section divide raccoon click bulb frame sadness eagle horror brand exercise"
+      }
+    },
+    "v_short": {
+      "input": "123",
+      "events": 3,
+      "clean": "123",
+      "binary": "011011",
+      "bits": 6,
+      "raw": null,
+      "w12": {
+        "entropy_hex": "a665a45920422f9d417e4867efdc4fb8",
+        "phrase": "please coffee bind dog carry solid album simple gun leave become illness"
+      },
+      "w24": {
+        "entropy_hex": "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+        "phrase": "please coffee bind dog carry solid album simple gun leave become image again auto zoo token parrot visit glove assume legal spell twist hero"
+      }
+    }
+  }
+}

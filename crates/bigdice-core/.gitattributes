@@ -1,0 +1,3 @@
+# build.rs verifies this file's SHA-256 against the published upstream digest, so a
+# CRLF-normalizing checkout would fail every build. Keep the bytes exactly as committed.
+src/wordlist_english.txt -text

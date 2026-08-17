@@ -1,0 +1,58 @@
+[package]
+name = "bigdice-core"
+version = "0.1.0"
+edition = "2021"
+# 1.85 is the floor imposed by the RustCrypto 2026 generation (sha2 0.11 / hmac 0.13 / pbkdf2 0.13),
+# same as the desktop crate this is ported from.
+rust-version = "1.85"
+description = "no_std cryptographic core of BigDice: dice entropy, BIP39, BIP32/44/48/49/84/86 derivation and QR symbols"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/intnsity/BigDice"
+publish = false
+
+[features]
+default = ["qr"]
+# QR symbol generation. A feature only because qrcode 0.14.1 is not a no_std crate
+# (it imports std unconditionally); the firmware runs std Rust on ESP-IDF and keeps this
+# on, while the bare-metal no_std proof builds with --no-default-features. See PORTING.md.
+qr = ["dep:qrcode"]
+
+[dependencies]
+# default-features = false drops "std" and "secp-recovery"; there is no separate "alloc"
+# feature - the crate is no_std + alloc as soon as "std" is off, and it enables
+# secp256k1's "alloc" itself, so Secp256k1::new still exists. Keeping the rand/OS-entropy
+# paths of secp256k1 out of the build is unchanged from desktop: the dice rolls are the
+# only entropy this code is allowed to consume.
+# Exact pin: a caret 0.32 always takes the newest 0.32.x, never a backport branch. Bump by hand.
+bitcoin = { version = "=0.32.102", default-features = false }
+# sha2 0.11 defaults are "alloc" + "oid" - no std - so the desktop declaration carries over.
+sha2 = "0.11"
+hmac = "0.13"
+# "hmac" exposes pbkdf2::pbkdf2_hmac, and 0.13.0 enables exactly that by default. Naming it
+# with default-features = false is defensive, not corrective: it fixes the feature set against
+# a future change of default. The features to keep out are the optional "getrandom",
+# "rand_core", "mcf" and "phc", which are what pull password-hash and getrandom into the graph.
+pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
+# default-features = false drops its "std" feature; NFKD itself is no_std + alloc.
+unicode-normalization = { version = "0.1", default-features = false }
+# QR symbols for the values a report shows. `default-features = false` drops the image, SVG
+# and pic renderers, and with the image one goes the only dependency this crate has: what
+# remains is a single package with no edges at all. Exact pin, for the reason given under
+# `bitcoin`. Optional - see the "qr" feature above.
+qrcode = { version = "=0.14.1", default-features = false, optional = true }
+# zeroize defaults are "alloc" only - no std - so the desktop declaration carries over.
+zeroize = { version = "1", features = ["derive"] }
+
+# build.rs verifies the embedded wordlist's SHA-256 against the published upstream digest
+# and generates the compile-time word table (the no_std replacement for the desktop
+# crate's OnceLock cache). Same sha2 version as the runtime dependency above.
+[build-dependencies]
+sha2 = "0.11"
+
+[dev-dependencies]
+serde_json = "1"
+hex = "0.4"
+# The integration tests drive bitcoin::bip32/base58 directly and hold Zeroizing seeds,
+# exactly as the desktop test suite does; same pins and features as the runtime deps.
+bitcoin = { version = "=0.32.102", default-features = false }
+zeroize = "1"
