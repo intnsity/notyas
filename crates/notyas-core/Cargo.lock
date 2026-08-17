@@ -24,21 +24,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 
 [[package]]
-name = "bigdice-core"
-version = "0.1.0"
-dependencies = [
- "bitcoin",
- "hex",
- "hmac",
- "pbkdf2",
- "qrcode",
- "serde_json",
- "sha2",
- "unicode-normalization",
- "zeroize",
-]
-
-[[package]]
 name = "bitcoin"
 version = "0.32.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -246,6 +231,21 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "notyas-core"
+version = "0.1.0"
+dependencies = [
+ "bitcoin",
+ "hex",
+ "hmac",
+ "pbkdf2",
+ "qrcode",
+ "serde_json",
+ "sha2",
+ "unicode-normalization",
+ "zeroize",
+]
 
 [[package]]
 name = "pbkdf2"

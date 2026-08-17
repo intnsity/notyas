@@ -1,4 +1,4 @@
-# bigdice32-firmware
+# notyas-firmware
 
 std Rust on ESP-IDF for the Waveshare ESP32-P4-WiFi6-Touch-LCD-4B. Milestone
 0.1.0-m1: proves the toolchain end-to-end - builds, flashes, boots on the real
@@ -65,14 +65,14 @@ into C:\Users\<user>\.espressif because ESP_IDF_TOOLS_INSTALL_DIR=global).
 Then, from anywhere:
 
 ```powershell
-\\172.16.0.9\bear\code\btc\dice_generator\bigdice32\tools\build.ps1            # debug build
-\\172.16.0.9\bear\code\btc\dice_generator\bigdice32\tools\flash.ps1 -Monitor   # flash COM3 + monitor
+\\172.16.0.9\bear\code\btc\notyas\tools\build.ps1            # debug build
+\\172.16.0.9\bear\code\btc\notyas\tools\flash.ps1 -Monitor   # flash COM3 + monitor
 ```
 
 Notes the scripts encode:
 
 - Sources build fine directly from the UNC share, but CARGO_TARGET_DIR must be
-  a **short local path** (default `C:\bd32t`). esp-idf-sys hard-fails with
+  a **short local path** (default `C:\nyt`). esp-idf-sys hard-fails with
   "Too long output directory" otherwise - Windows path-length limits in the
   IDF CMake/ninja build.
 - `LIBCLANG_PATH` must point at a dir containing libclang.dll. The esp-clang
@@ -89,10 +89,13 @@ Notes the scripts encode:
 2. **Airgap lockdown first**: GPIO54 (the ESP32-C6 radio module's CHIP_PU
    enable) is driven LOW and held for the whole power cycle - the radio chip
    sits in reset. Logs `C6 radio held in reset (GPIO54 low)`.
-3. Once per second: banner `BigDice32 0.1.0-m1 hello`, IDF version, chip
+3. Once per second: banner `notyas 0.1.0-m1 hello`, IDF version, chip
    revision from eFuse (major.minor), free heap.
 
 ## Captured boot log (COM3, 2026-08-17)
+
+The log predates the bigdice32 -> notyas rename; log tags and the banner then
+read `bigdice32_firmware` / `BigDice32`. Kept verbatim as captured.
 
 ```
 ESP-ROM:esp32p4-eco2-20240710
@@ -130,7 +133,7 @@ I (1389) bigdice32_firmware: IDF v5.5.4 | chip ESP32-P4 rev v1.3 | free heap 596
    always refreshed; flash.ps1 uses the newest one from the esp-idf-sys out
    dir instead.
 3. Long target paths: esp-idf-sys refuses CARGO_TARGET_DIR paths that are too
-   long ("Too long output directory") - hence C:\bd32t.
+   long ("Too long output directory") - hence C:\nyt.
 4. Pre-v3 eFuse table differences: `esp_chip_info` is not in the default
    esp-idf-sys binding allowlist, and on the pre-v3 table the wafer major
    version is split into LO(2b)/HI(1b) fields - main.rs composes

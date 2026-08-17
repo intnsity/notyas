@@ -1,7 +1,8 @@
-# BigDice32 - Architecture
+# notyas - Architecture
 
 Version target: 0.1.0. License: GPL-3.0-or-later. Status: decided 2026-08-17 after
 hardware/toolchain/feature research; see HARDWARE.md for the board fact sheet.
+Renamed from bigdice32 to notyas 2026-08-17.
 
 ## What this is
 
@@ -33,26 +34,26 @@ cryptography. Rationale, from the 2026-08 ecosystem survey:
 ## Crate layout
 
 ```
-bigdice32/
+notyas/
   Cargo.toml            workspace
   crates/
-    bigdice-core/       #![no_std] + alloc. Ported from the desktop BigDice crate:
+    notyas-core/        #![no_std] + alloc. Ported from the desktop BigDice crate:
                         entropy (SPEC 1-3), bip39 (SPEC 4-8), derive (SPEC 9), qr.
                         No IDF, no std, no clocks, no RNG, no I/O. Host-testable
                         (tests run with std as dev-dependency). This is the audit
                         surface; it must stay byte-for-byte equivalent to desktop
                         BigDice (same SPEC, same vectors).
     firmware/           std Rust on esp-idf. Owns hardware bring-up (display, touch,
-                        SD, lockdown), the UI, and calls into bigdice-core. Nothing
+                        SD, lockdown), the UI, and calls into notyas-core. Nothing
                         cryptographic lives here.
   docs/                 this file, HARDWARE.md, SECURITY.md, research reports
   tools/                build/flash/verify scripts (PowerShell)
 ```
 
-## Porting rules for bigdice-core
+## Porting rules for notyas-core
 
-The desktop crate (`..\..\` = dice_generator) is the normative source; its docs/SPEC.md
-governs. The port changes exactly:
+The desktop crate (\\172.16.0.9\bear\code\btc\dice_generator) is the normative source;
+its docs/SPEC.md governs. The port changes exactly:
 
 1. `std::` imports -> `core::`/`alloc::`.
 2. The two `OnceLock`s (wordlist cache in bip39.rs, secp context in derive.rs) become
@@ -125,7 +126,7 @@ cards, hairline rules, no animation.
 - 0.1.0-m1: toolchain proven - hello-world boots on the device, serial banner, radio
   lockdown verified (C6 held in reset).
 - 0.1.0-m2: display + touch up - Butter Paper shell renders, touch keypad works.
-- 0.1.0-m3: bigdice-core ported, host test suite green, boot self-test on device.
+- 0.1.0-m3: notyas-core ported, host test suite green, boot self-test on device.
 - 0.1.0-m4: full flow - dice entry -> mnemonic -> passphrase -> schemes/addresses ->
   QR display; Verify screen; release 0.1.0.
 - 0.2.x (planned): microSD PSBT signing (Coldcard file conventions, UR2 QR-out),

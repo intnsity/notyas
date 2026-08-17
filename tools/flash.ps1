@@ -1,4 +1,4 @@
-# flash.ps1 - flash the BigDice32 firmware to the board over serial.
+# flash.ps1 - flash the notyas firmware to the board over serial.
 #
 # Flashes the app ELF together with the bootloader and partition table that
 # the esp-idf-sys build produced. Do NOT let espflash substitute its bundled
@@ -6,7 +6,7 @@
 # bootloader built with CONFIG_ESP32P4_SELECTS_REV_LESS_V3 boots on it.
 #
 # Usage: .\flash.ps1 [-Port COM3] [-Profile debug|release] [-Monitor]
-# Respects BIGDICE32_TARGET_DIR like build.ps1. Build first (build.ps1).
+# Respects NOTYAS_TARGET_DIR like build.ps1. Build first (build.ps1).
 
 param(
     [string]$Port = "COM3",
@@ -23,16 +23,16 @@ if (-not (Test-Path (Join-Path $firmwareDir "Cargo.toml"))) {
     exit 1
 }
 
-if ($env:BIGDICE32_TARGET_DIR) {
-    $targetDir = $env:BIGDICE32_TARGET_DIR
+if ($env:NOTYAS_TARGET_DIR) {
+    $targetDir = $env:NOTYAS_TARGET_DIR
 } else {
-    $targetDir = "C:\bd32t"
+    $targetDir = "C:\nyt"
 }
 
 $outDir = Join-Path $targetDir "riscv32imafc-esp-espidf\$Profile"
-$elf = Join-Path $outDir "bigdice32-firmware"
+$elf = Join-Path $outDir "notyas-firmware"
 if (-not (Test-Path $elf)) {
-    Write-Error "App ELF not found: $elf`nRun tools\build.ps1 first (same BIGDICE32_TARGET_DIR)."
+    Write-Error "App ELF not found: $elf`nRun tools\build.ps1 first (same NOTYAS_TARGET_DIR)."
     exit 1
 }
 

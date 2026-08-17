@@ -1,5 +1,5 @@
 [package]
-name = "bigdice32-firmware"
+name = "notyas-firmware"
 version = "0.1.0"
 authors = ["intnsity <at@intnsity.com>"]
 edition = "2021"
@@ -7,7 +7,7 @@ license = "GPL-3.0-or-later"
 rust-version = "1.77"
 
 [[bin]]
-name = "bigdice32-firmware"
+name = "notyas-firmware"
 harness = false # do not use the built-in cargo test harness -> resolve rust-analyzer errors
 
 [profile.release]

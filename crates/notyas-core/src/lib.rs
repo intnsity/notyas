@@ -1,7 +1,7 @@
 // Copyright (C) 2025-2026 intnsity
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The cryptographic core of BigDice, ported to no_std for the BigDice32 device.
+//! The cryptographic core of BigDice, ported to no_std for the notyas device.
 //!
 //! This crate is the desktop BigDice library (github.com/intnsity/BigDice) minus its
 //! front ends: the same SPEC (the desktop crate's `docs/SPEC.md` is normative, and every

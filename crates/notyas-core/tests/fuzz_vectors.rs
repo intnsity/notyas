@@ -16,10 +16,10 @@
 //! `--dice-file` / `--dice` equivalence, and byte-identity of the rendered JSON document.
 //! Every derived VALUE the corpus records is compared.
 
-use bigdice_core::bip39::MnemonicMode;
-use bigdice_core::derive::{ChildIndex, Scheme};
-use bigdice_core::entropy;
-use bigdice_core::report::{BuildError, Parameters, Report};
+use notyas_core::bip39::MnemonicMode;
+use notyas_core::derive::{ChildIndex, Scheme};
+use notyas_core::entropy;
+use notyas_core::report::{BuildError, Parameters, Report};
 use bitcoin::Network;
 use serde_json::Value;
 
@@ -244,7 +244,7 @@ fn insufficient_entropy_vectors_are_refused() {
         let expected = if dice.events() == 0 {
             BuildError::NoRolls
         } else {
-            BuildError::Bip39(bigdice_core::bip39::Bip39Error::NotEnoughEntropy {
+            BuildError::Bip39(notyas_core::bip39::Bip39Error::NotEnoughEntropy {
                 bits: dice.binary().len(),
             })
         };

@@ -1,7 +1,7 @@
-# bigdice-core - port record
+# notyas-core - port record
 
 Port of the desktop BigDice crate (`\\...\btc\dice_generator`, `bigdice` v0.3.0) into a
-`#![no_std]` + `alloc` crate for the BigDice32 device. The desktop crate's `docs/SPEC.md`
+`#![no_std]` + `alloc` crate for the notyas device. The desktop crate's `docs/SPEC.md`
 is normative; every "SPEC step N" reference in the sources carries over unchanged.
 Divergence from desktop BigDice output on identical input is a release-blocking bug.
 
@@ -91,7 +91,7 @@ build and pinned against checkout-time line-ending rewrites by `.gitattributes`:
   the writer; `the_json_buffer_is_never_outgrown` is replaced by
   `capacity_covers_every_string_the_report_holds`, which bounds `capacity` against the
   report's own contents since there is no writer to drive it end to end.
-- `tests/spec_vectors.rs` is the desktop file with `bigdice::` -> `bigdice_core::` and
+- `tests/spec_vectors.rs` is the desktop file with `bigdice::` -> `notyas_core::` and
   nothing else: BIP-32 vectors 1-5, BIP-39 Trezor vectors, BIP-44/49/84/86 and SLIP-132.
   The one `#[ignore]`d test (`vector_5_invalid_keys_are_rejected`) is ignored on desktop
   too; it documents a bitcoin 0.32 parser laxness, not a defect in this crate.

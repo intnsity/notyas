@@ -1,10 +1,10 @@
-# build.ps1 - build the BigDice32 firmware.
+# build.ps1 - build the notyas firmware.
 #
 # Sources live on the NAS share; build artifacts MUST go to a local disk
 # (UNC paths + the heavy IDF/CMake build do not mix). The esp-idf-sys build
 # additionally hard-fails when the target path is long (Windows path-length
 # limits in the CMake/ninja IDF build), so the default is the very short
-# C:\bd32t. Override by setting BIGDICE32_TARGET_DIR before calling - keep
+# C:\nyt. Override by setting NOTYAS_TARGET_DIR before calling - keep
 # it SHORT (the build errors out with "Too long output directory" otherwise).
 #
 # Usage: .\build.ps1 [extra cargo build args, e.g. --release]
@@ -18,10 +18,10 @@ if (-not (Test-Path (Join-Path $firmwareDir "Cargo.toml"))) {
     exit 1
 }
 
-if ($env:BIGDICE32_TARGET_DIR) {
-    $env:CARGO_TARGET_DIR = $env:BIGDICE32_TARGET_DIR
+if ($env:NOTYAS_TARGET_DIR) {
+    $env:CARGO_TARGET_DIR = $env:NOTYAS_TARGET_DIR
 } else {
-    $env:CARGO_TARGET_DIR = "C:\bd32t"
+    $env:CARGO_TARGET_DIR = "C:\nyt"
 }
 Write-Host "CARGO_TARGET_DIR = $env:CARGO_TARGET_DIR"
 

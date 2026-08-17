@@ -1,4 +1,4 @@
-# BigDice32 firmware - sdkconfig defaults.
+# notyas firmware - sdkconfig defaults.
 # Board: Waveshare ESP32-P4-WiFi6-Touch-LCD-4B (ESP32-P4NRW32, rev v1.3, 32 MB flash).
 
 # --- Chip revision (make-or-break) -------------------------------------------

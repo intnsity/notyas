@@ -1,4 +1,4 @@
-//! BigDice32 firmware, milestone 0.1.0-m1: toolchain proof.
+//! notyas firmware, milestone 0.1.0-m1: toolchain proof.
 //!
 //! Boots on the Waveshare ESP32-P4-WiFi6-Touch-LCD-4B (rev v1.3), locks down
 //! the radio, and logs a heartbeat banner once per second over UART0 (CH343).
@@ -47,7 +47,7 @@ fn main() {
         read_efuse_field(core::ptr::addr_of_mut!(sys::ESP_EFUSE_WAFER_VERSION_MINOR).cast());
 
     loop {
-        log::info!("BigDice32 0.1.0-m1 hello");
+        log::info!("notyas 0.1.0-m1 hello");
         log::info!(
             "IDF {idf_version} | chip ESP32-P4 rev v{rev_major}.{rev_minor} | free heap {} bytes",
             unsafe { sys::esp_get_free_heap_size() }

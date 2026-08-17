@@ -1,5 +1,5 @@
 [package]
-name = "bigdice-core"
+name = "notyas-core"
 version = "0.1.0"
 edition = "2021"
 # 1.85 is the floor imposed by the RustCrypto 2026 generation (sha2 0.11 / hmac 0.13 / pbkdf2 0.13),

@@ -34,8 +34,8 @@
 //!    "converted" in a way that could mask a mismatch: a wrong node would still differ in
 //!    the remaining 74 bytes.
 
-use bigdice_core::bip39;
-use bigdice_core::derive::{self, ChildIndex, Scheme};
+use notyas_core::bip39;
+use notyas_core::derive::{self, ChildIndex, Scheme};
 use bitcoin::Network;
 
 // ---------------------------------------------------------------------------------------
@@ -355,8 +355,8 @@ fn bip39_trezor_seed_and_root() {
 /// and all-one entropy, i.e. the two extremes of the 11-bit group packing.
 #[test]
 fn bip39_trezor_entropy_to_mnemonic() {
-    use bigdice_core::bip39::MnemonicMode;
-    use bigdice_core::entropy::DiceEntropy;
+    use notyas_core::bip39::MnemonicMode;
+    use notyas_core::entropy::DiceEntropy;
 
     for (entropy_hex, want_mnemonic, _, _) in BIP39_TREZOR {
         let entropy = hex(entropy_hex);

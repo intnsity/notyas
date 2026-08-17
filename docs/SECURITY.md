@@ -1,4 +1,4 @@
-# BigDice32 - Security model (normative)
+# notyas - Security model (normative)
 
 Every claim here must be mechanically enforced (compile-time, test, or hardware) or it
 does not get made. Marketing copy derives from this file, never the reverse.
@@ -30,7 +30,7 @@ storage" claims are impossible and are not made.
 3. **Deterministic.** Key material derives exclusively from user-supplied dice rolls or
    a typed mnemonic, plus optional passphrase, per the desktop BigDice SPEC. No TRNG,
    no clock, no OS entropy on any derivation path - the property is inherited from
-   bigdice-core, which has no API for any of those.
+   notyas-core, which has no API for any of those.
 4. **Equivalence.** Identical input produces byte-identical output to desktop BigDice
    (and thus to iancoleman in RAW mode, Coldcard/SeedSigner math in FIXED mode).
    Enforced by shared test vectors run in CI on host and as the on-device boot

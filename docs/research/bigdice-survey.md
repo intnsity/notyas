@@ -2,7 +2,7 @@
 
 Agent-produced survey of \\172.16.0.9\bear\code\btc\dice_generator (crate `bigdice`
 v0.3.0, GPL-3.0-or-later, github.com/intnsity/BigDice). This is the porting map for
-crates/bigdice-core.
+crates/notyas-core.
 
 ## 1. What it does end to end
 
