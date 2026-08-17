@@ -1,0 +1,28 @@
+[package]
+name = "bigdice32-firmware"
+version = "0.1.0"
+authors = ["intnsity <at@intnsity.com>"]
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.77"
+
+[[bin]]
+name = "bigdice32-firmware"
+harness = false # do not use the built-in cargo test harness -> resolve rust-analyzer errors
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true # symbols are nice and they don't increase the size on flash
+opt-level = "z"
+
+[features]
+default = []
+
+[dependencies]
+log = "0.4"
+esp-idf-svc = { version = "0.52", features = ["binstart"] }
+
+[build-dependencies]
+embuild = "0.33"

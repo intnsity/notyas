@@ -1,0 +1,8 @@
+# Pinned nightly: rustc 1.99.0-nightly (dc3f85158 2026-07-26).
+# Tier 3 target riscv32imafc-esp-espidf requires nightly + -Zbuild-std (see .cargo/config.toml).
+# Do NOT bump past 2026-07-28 blindly: rust-lang/rust#158168 (merged 2026-07-29) added a
+# std::fs set_perm_nofollow whose fallback arm references libc::AT_FDCWD, which the espidf
+# libc does not define - build-std fails with E0425 on newer nightlies until fixed upstream.
+[toolchain]
+channel = "nightly-2026-07-27"
+components = ["rust-src"]

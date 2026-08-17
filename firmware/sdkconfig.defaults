@@ -1,0 +1,29 @@
+# BigDice32 firmware - sdkconfig defaults.
+# Board: Waveshare ESP32-P4-WiFi6-Touch-LCD-4B (ESP32-P4NRW32, rev v1.3, 32 MB flash).
+
+# --- Chip revision (make-or-break) -------------------------------------------
+# Our dev silicon is rev v1.3, i.e. the pre-v3.0 engineering-sample family.
+# IDF v5.5 defaults to CONFIG_ESP32P4_REV_MIN_301 (rev >= v3.1); an image built
+# for the v3.x family flashes fine on v1.3 silicon but never boots (ROM banner
+# only / boot loop, no output). Numbering note: ESP32P4_REV_MIN_1 is rev v0.1
+# and ESP32P4_REV_MIN_100 is rev v1.0 (REV_MIN_FULL = major*100 + minor).
+# SELECTS_REV_LESS_V3 caps REV_MAX_FULL at 199, excluding v3.x chips entirely.
+# Release builds for production (rev >= v3.1) hardware MUST revisit this.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# --- Flash -------------------------------------------------------------------
+# 32 MB external QSPI NOR (Waveshare's own example sdkconfigs wrongly say 16MB).
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+
+# --- Logging -----------------------------------------------------------------
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# --- FreeRTOS / std runtime --------------------------------------------------
+# Rust needs a bigger main task stack than the C default (3.5 KB).
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8000
+# 1 ms tick so std::thread::sleep has 1 ms granularity (default is 100 Hz).
+CONFIG_FREERTOS_HZ=1000
+
+# NOTE: SPIRAM deliberately NOT enabled yet - hello world (0.1.0-m1) stays
+# minimal. Display work (0.1.0-m2) will add CONFIG_SPIRAM and friends.

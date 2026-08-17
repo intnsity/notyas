@@ -1,0 +1,28 @@
+[build]
+target = "riscv32imafc-esp-espidf"
+
+[target.riscv32imafc-esp-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["--cfg", "espidf_time64"]
+
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+MCU = "esp32p4"
+# Pass the defaults file EXPLICITLY. Relying on esp-idf-sys's automatic
+# root-crate discovery silently fails here (its `cargo metadata` probe runs in
+# CARGO_TARGET_DIR and finds no Cargo.toml), and the build then proceeds with
+# stock IDF defaults - i.e. rev v3.1+ family - producing an image that boots
+# nothing on our rev v1.3 silicon.
+ESP_IDF_SDKCONFIG_DEFAULTS = { value = "sdkconfig.defaults", relative = true }
+# ESP-IDF release tag, checked out and managed by esp-idf-sys/embuild.
+# v5.5.5 is rejected in practice: it backports new struct fields
+# (sdmmc_host_t.unaligned_multi_block_rw_max_chunk_size,
+# esp_lcd_dsi_bus_config_t.flags) that break esp-idf-hal 0.46.2's
+# struct initializers. v5.5.4 is the newest v5.5.x these crates build against.
+ESP_IDF_VERSION = "v5.5.4"
+# Keep the multi-GB IDF checkout + tools in C:\Users\<user>\.espressif,
+# never on the (UNC) source share.
+ESP_IDF_TOOLS_INSTALL_DIR = "global"
