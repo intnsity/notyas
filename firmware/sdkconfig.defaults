@@ -25,5 +25,17 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8000
 # 1 ms tick so std::thread::sleep has 1 ms granularity (default is 100 Hz).
 CONFIG_FREERTOS_HZ=1000
 
-# NOTE: SPIRAM deliberately NOT enabled yet - hello world (0.1.0-m1) stays
-# minimal. Display work (0.1.0-m2) will add CONFIG_SPIRAM and friends.
+# --- PSRAM (0.1.0-m2) --------------------------------------------------------
+# 32 MB in-package PSRAM (ESP32-P4NRW32). The DPI panel driver allocates the
+# 720x720 RGB565 framebuffer (~1 MB) from this heap, so display work needs it.
+# Speed combination is Waveshare's own proven config (their esp_lcd_st7703
+# test app): 200 MHz PSRAM clock, which IDF gates behind the experimental
+# features flag. XIP from PSRAM + 256 KB L2 cache with 128 B lines per the
+# Waveshare BSP examples - code/rodata execute from PSRAM, freeing internal
+# RAM and keeping the DSI stream from starving flash cache.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
