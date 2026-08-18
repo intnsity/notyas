@@ -1,169 +1,347 @@
 # notyas 0.2.0 - Decision list
 
-Status: **RATIFIED 2026-08-17.** Sixty-one numbered questions are merged here from wave 1,
-wave 2, the red team and the wave-3 design documents. On 2026-08-17 the project owner
-instructed that every question with a clear technical optimum be decided for them,
-leaving only the ones that turn on money, law, doctrine or risk appetite. That pass is
-applied. **Fifty-one are now settled** (thirty-nine ratified in the main pass, Q8 answered
-directly by the owner during it, Q22 answered earlier, and Q52-Q61 ratified in the
-VERIFY.md sweep below). **Ten remain open**, and they are the only thing the owner needs
-to read: they are in the OWNER DECISIONS section directly below, and nothing else in this
-file is required to answer them.
+Status: **OWNER-ANSWERED AND RE-SCOPED 2026-08-18.** Sixty-three numbered questions are
+merged here from wave 1, wave 2, the red team and the wave-3 design documents. On
+2026-08-17 the project owner instructed that every question with a clear technical
+optimum be decided for them; fifty-one were settled in that pass. **On 2026-08-18 the
+owner answered the remaining ten**, and those answers re-scoped 0.2.0. All sixty-one
+original questions are now settled. **Two new questions are open**, both raised by the
+owner's own answers rather than carried over: Q62 (must disabling wipe require a longer
+PIN?) and Q63 (what flash-encryption mode do release units burn, now that Secure Boot is
+deferred?). They are in the OWNER DECISIONS section directly below, and nothing else in
+this file is required to answer them.
 
-**The VERIFY.md sweep (2026-08-17) added ten questions and no owner decisions.** That
-document landed after the ratification pass; its section 14 raised ten open items, every
-one of which turns on a technical optimum, a measurement, or a consequence of a decision
-already taken. They are ratified in place as Q52-Q61 under the milestones that consume
-them. The owner's list is unchanged at ten.
+**What the 2026-08-18 answers changed, in one place.** Six things left 0.2.0 entirely and
+are recorded in "Deferred to 0.3.0" below: encrypted backups (Q14), BSMS (Q15), the
+release-key hardware token (Q30), independent builder attestation (Q31), secure-boot key
+ownership and therefore Secure Boot v2 itself (Q32), the backup format publication (Q34)
+and the HIL power-cut rig (Q43). Three things changed shape: licensing became a per-crate
+split (Q8), the wipe policy became user-settable and therefore a format change inside the
+m3 freeze (Q5), and the storage geometry gained a reserved media region (Q7). One thing
+stayed and got a gating rule: the camera (Q6) is in 0.2.0, and every exit gate that needs
+a physical module is marked **[HW-CAMERA]** so the rest of 0.2.0 can finish without it.
+
+**Read Q32's consequence before anything else, because it is the one that changes what
+the product claims.** Deferring Q32 means **0.2.0 ships without Secure Boot v2 burned**.
+VERIFY.md is explicit that secure boot is the only check on the Verify screen that does
+not depend on the firmware being honest, so without it every value that screen prints is
+self-reported by software an attacker may have replaced. This is written into SECURITY.md
+tier 1 and invariant 6, into m13's release documentation, and into VERIFYING.md. It is
+recorded as a stated limitation of the release, not as an open item.
 
 No question was deleted. Every settled question keeps its full reasoning in the
 RATIFIED DECISIONS section, ordered by milestone so that section doubles as an
 implementation reference and as the audit record for why the device behaves as it
 does.
 
-**New m1 blocking set: empty.** The original text said "Q1-Q8 block milestone 1". Of
-those eight, Q1, Q3, Q4, Q5, Q6, Q7 are ratified, Q8 is answered, and Q2's deadline is
-m4b (ESP-SEAL.md 3.6 showed duress needs no format change). **No question the owner
-still holds blocks m1**, and none blocks the m3 format freeze. Two owner items have
-lead time rather than a milestone - Q43 and Q50 are purchases - and Q50 de-risks m1's
-camera spike without gating it.
+**Blocking set: empty for every milestone.** Neither open question gates m1, and neither
+gates the m3 format freeze - Q62 tunes a threshold inside a policy mechanism whose format
+Q5 now specifies in full, and Q63 is a release-runbook decision due at m13.
 
 ---
 
 # OWNER DECISIONS
 
-Ten questions. Each one turns on something that is not a technical optimum: money,
-licence, doctrine, an outside person, or a tolerance for user harm. Everything else in
-this file is decided.
+**One live question (Q63) and one re-presentation (Q62).** Both were raised by the owner's
+own 2026-08-18 answers. Q62 turned out to have been answered already in a document that
+landed in parallel, so it is recorded as answered and re-presented once, with the
+arithmetic, rather than left hanging.
 
-### Q2. Should the duress PIN hide the number of wallets, at a cost paid by every user?
-- **Options:** (a) full deniability package - unused slots always filled with
-  device-derived ciphertext, and the Verify screen's storage readout degraded to
-  "present / blank" permanently and for ALL users, duress or not; (b) duress without
-  the package, documented as "a coercer can see how many wallets exist"; (c) no duress
-  in 0.2.0, keep the honest "N sealed slots" readout.
-- **Recommendation:** (a), off by default. A duress feature that leaks the wallet count
-  invites the coercion it cannot survive.
-- **What it blocks:** the m4b capacity line, three screens (S-01, S-03, S-46), SECURITY
-  invariant 5's wording, and the ratified half of Q37. Not the storage format.
-- **Deadline:** m4b.
-- **Why it is yours:** (a) imposes a permanent honesty cost on every user, including
-  every user who will never enable duress, to protect a minority under coercion. That
-  is a values trade, not an engineering one.
+**Two documents landed in this directory alongside the re-scope and both are authoritative
+inside their subject. Neither is superseded by anything below.**
 
-### Q9. Which ESP32-P4 silicon revision do production units ship on?
-- **Options:** confirm rev v1.x (both bench units are v1.3) and ship the HMAC-eFuse
-  ladder as designed; or source rev >= v3.0 and schedule a Key-Manager-backed ladder as
-  0.3.x.
-- **Recommendation:** confirm the revision before release units are provisioned; if
-  >= v3.0, schedule the stronger ladder for 0.3.x on the same record format.
-- **What it blocks:** m13's provisioning runbook only. No 0.2.0 code depends on it.
-- **Deadline:** before m13.
-- **Why it is yours:** it is a purchasing and supply decision.
+- **PIN-MODES.md** (owner-directed, 2026-08-17) is authoritative for PIN, wipe and
+  stateless BEHAVIOUR - the three device states, which modal appears where, and the copy
+  rules. Q4 and Q5 below defer to it on behaviour and own the on-flash FORMAT and the
+  authentication mechanism, which it does not specify. Where the two texts differed, the
+  difference is recorded in Q5.1 rather than silently resolved.
+- **SECUREBOOT.md** (target 0.3.0) is authoritative for Secure Boot v2, the key-ownership
+  decision that was Q32, the burn order and the runbook. The Q32 entry below stays as the
+  record of the deferral and its consequences for the security claims; SECUREBOOT.md owns
+  the mechanism and the eventual ceremony.
 
-### Q14. Should a backup that carries seed material ever be written to microSD?
-- **Options:** (a) seedless backup only - multisig registrations, labels, settings, no
-  seed material; (b) also a seed-bearing backup, plus device clone and a Key Teleport
-  equivalent, behind an advanced gate.
-- **Recommendation:** (a) in 0.2.0 (m9), and decline (b). BACKUP-FEATURES.md OPEN-B1
-  recommends the opposite; both positions are honest.
-- **What it blocks:** m9 scope, three PARITY rows, the wipe-screen copy, and the m13
-  claims audit. Under (b), SECURITY invariant 2b must be amended explicitly.
-- **Deadline:** by m9.
-- **Why it is yours:** (b) amends the invariant that forbids key material on removable
-  media. That is a doctrine change, and this plan's credibility rests on that
-  invariant being hard.
+### Q62. Should disabling wipe-on-N require a PIN longer than the 4-digit floor? [raised 2026-08-18; ALREADY ANSWERED NO - see the note first]
 
-### Q30. Move the release signing key onto a hardware token before 0.2.0 ships?
-- **Options:** buy an OpenPGP card / YubiKey, generate a revocation certificate and
-  hold it offline; or keep the key on disk.
-- **Recommendation:** yes, buy it. A wallet vendor's release key on a general-purpose
-  disk is the weakest link in the whole verification chain this plan builds.
-- **What it blocks:** m13's release gate and every future signed tag. The key identity
-  (A1E9 53B2 5C6A 623B 77A1 D522 3AC4 BBCF E51A B37D) does not change.
-- **Deadline:** procure now, gate at m13. Lead time means deciding late is deciding
-  badly.
-- **Why it is yours:** it costs money and it is your key.
+**STATUS: answered, not open.** PIN-MODES.md records the owner's direct decision of
+2026-08-17: *"disabling wipe does NOT require a longer PIN. The 4-digit floor applies in
+every state. The warning still states the concrete guess count for the PIN length in use,
+so the user makes the trade knowingly; the device does not withhold the setting from
+them."* That is a coherent position, it is the owner's, and it is implemented as written.
 
-### Q31. Recruit an independent builder to publish their own signed SHA256SUMS.txt?
-- **Options:** recruit at least one third party and add an `attestations/` directory;
-  or ship with only our own claim.
-- **Recommendation:** recruit one. Coldcard's credibility here comes from third parties
-  publicly matching builds, not from the vendor's own assertion.
-- **What it blocks:** release timing (a human has to be lined up in advance) and the
-  repo layout.
-- **Deadline:** m13.
-- **Why it is yours:** it means asking a named outside person for their time.
+**It is re-presented here exactly once, with the arithmetic, and then it closes.** The
+instruction that produced this entry was to make sure the interaction between a 4-digit
+floor and a disable switch was in view before it was decided, and the honest way to
+satisfy that is to put the numbers in front of the decision rather than to reopen it. If
+the owner reads the table below and does not change the answer, **the answer stands and
+this entry is moved into the ratified section unchanged.** No milestone waits on it: m4b
+builds the disable-floor as a parameter, so either answer costs the same.
 
-### Q32. Whose secure-boot key is burned into release hardware?
-- **Options:** (a) we sign and burn our digest, which locks owners out of running their
-  own builds; (b) ship unsigned images plus a documented procedure for the USER to
-  generate and burn their own key; (c) both, as separate download channels.
-- **Recommendation:** (b) as the default, with (a) only if assembled units are ever
-  sold. Under (a) the UNSIGNED image must also be published and be the object of the
-  reproducibility claim, because a vendor-signed image can never be byte-reproduced by
-  anyone without the key.
-- **What it blocks:** SECURITY invariant 6's text and m13's provisioning runbook. It
-  also settles the burn ordering the ratified Q45 needs written down, because under
-  (b) a self-builder performs two separate one-way eFuse ceremonies.
-- **Deadline:** m13.
-- **Why it is yours:** it decides whether an owner of this device can build and run
-  their own firmware. That is the product's whole premise.
+- **The arithmetic, which is the part that may not have been in view.** The PIN floor is 4
+  characters (Q4) and the wipe may be turned off (Q5). Each is defensible alone; together
+  they interact, and the interaction is not close. The device-bound HMAC-eFuse ladder stops
+  OFFLINE attack: every guess must run on this physical board. It does nothing about
+  ON-DEVICE guessing, and wipe-on-N is the only thing that bounds that. With wipe off, an
+  attacker holding the device grinds the PIN at the pinned Argon2id cost and nothing stops
+  them.
 
-### Q34. Publish the backup container format as a public specification?
-- **Options:** publish the format document so other software can read a notyas backup;
-  or keep it in-repo and undocumented externally.
-- **Recommendation:** yes, publish the format document. A backup format nobody else can
-  read is lock-in by omission. The in-repo reference decoder is a release gate either
-  way. Applies only if Q14 ships a backup at all.
-- **What it blocks:** m12 documentation. No firmware change.
-- **Deadline:** by m12.
-- **Why it is yours:** a published format is a standing compatibility commitment.
+  At the m1 target of roughly 1 second per unlock attempt (the pinned range is 0.5-2 s),
+  exhausting the whole keyspace costs:
 
-### Q43. Buy the HIL power-cut rig now?
-- **Options:** buy a USB-controlled relay or FET (and optionally an SD-mux); or test by
-  hand.
-- **Recommendation:** buy the relay/FET now; treat the SD-mux as optional. m4a's "power
-  cut taken mid-decrement" gate cannot be faked, and the ratified Q5 makes that gate
-  load-bearing: a power cut consumes an attempt by design.
-- **What it blocks:** m4a's exit gate.
-- **Deadline:** now; lead time.
-- **Why it is yours:** it costs money.
+  | PIN | Keyspace | Worst case at 1 s/guess | Mean |
+  |---|---|---|---|
+  | 4 digits | 10,000 | 2.8 hours | 1.4 hours |
+  | 6 digits | 1,000,000 | 11.6 days | 5.8 days |
+  | 8 digits | 10^8 | 3.2 years | 1.6 years |
+  | 10 digits | 10^10 | 317 years | 158 years |
+  | 6 chars, digits + lowercase | 2.2 x 10^9 | 69 years | 35 years |
+  | 8 chars, digits + lowercase | 2.8 x 10^12 | 89,000 years | 45,000 years |
 
-### Q50. Buy a known-good Waveshare OV5647 reference module?
-- **Options:** buy one (about 10 USD); or run the m1 spike on the bench's existing
-  SeedSigner-class module only.
-- **Recommendation:** buy it, before the m1 spike if lead time allows. The bench module
-  is plausibly a 25 MHz clone against drivers that assume 24 MHz, which makes every
-  derived rate 4.17% high and garbled frames an expected outcome of the spike rather
-  than a defeat. A clean module turns every future "is it the camera or the firmware"
-  question into a two-minute swap.
-- **What it blocks:** nothing. It de-risks the m1 camera spike that the ratified Q6
-  depends on.
-- **Deadline:** now; lead time.
-- **Why it is yours:** it costs money.
+  Halve every figure for an attacker who runs their own firmware on both P4 cores, which
+  in 0.2.0 needs no key because Secure Boot is not burned (Q32). **A 4-digit PIN with wipe
+  disabled is an afternoon's work.** Raising the Argon2 cost does not rescue it: even at a
+  punishing 5 s per guess, 4 digits is 14 hours. The PIN length is the only lever.
+- **Options, for the record:** (a) disabling wipe requires at least 10 digits, or at least
+  8 characters if any non-digit is used, and the settings screen refuses otherwise and
+  says why; **(b) any PIN may disable wipe, with the arithmetic stated plainly at the
+  moment of the change - THE OWNER'S ANSWER**; (c) a middle floor of 8 digits (1.6 years
+  mean), which beats a thief's patience but not a funded lab's.
+- **My recommendation was (a); the owner chose (b) and (b) is what ships.** The case for
+  (a) is that 10 digits is the shortest all-digit PIN whose exhaustive on-device search
+  exceeds a century at the pinned cost. The case for (b), which PIN-MODES.md makes
+  explicitly and which is not weak, is that the device should not withhold a setting from
+  an informed owner: the warning states the concrete guess count for the PIN actually in
+  use, so the trade is made knowingly rather than prevented paternalistically. Under (b)
+  the burden moves entirely onto the copy, which is why the disclosure requirements below
+  are acceptance criteria and not suggestions.
+- **What (b) makes mandatory, and none of it is optional:** the S-44 wipe-policy
+  sub-screen computes the warning from the user's ACTUAL PIN length - never a generic
+  sentence - naming the keyspace, the measured per-guess cost from m1 and the resulting
+  time; the modal offers the longer-PIN path as an action rather than only accept/cancel
+  (PIN-MODES.md's requirement, and it is what turns a warning into a choice); and turning
+  wipe off is a typed confirmation, not a tap. **SECURITY.md additionally records the
+  snapshot consequence** (Q5.3): a flash image captured while wipe was disabled is a
+  permanent unlimited-guess oracle for that device, and turning wipe back on does not
+  repair it.
+- **What it blocks:** nothing. m4b builds the disable-floor as a parameter so both answers
+  cost the same, and the policy record carries a `min_pin_len` byte either way, so there
+  is no format impact under any outcome.
+- **Deadline:** none. It is answered. If the owner does not revisit it, this entry moves
+  to the ratified section as answered (b) at the next sweep.
 
-### Q51. May we contribute code and test data to outside projects under THEIR permissive licence? [NEW 2026-08-17, raised by the Q8 answer]
-- **Context:** Q8 settled that everything notyas produces is GPL-3.0-or-later. Two
-  planned contributions are not notyas products: the `bbqr` no_std decode is an
-  upstream feature PR to SatoshiPortal's MIT crate (PLATFORM.md item 5, MILESTONES
-  m12), and the ratified Q39 offers selected adversarial PSBT vectors upstream to HWI
-  and Coldcard's psbt_faker, which are permissively licensed. Contributing to either
-  means our patch is licensed under the receiving project's terms, not ours.
-- **Options:** (a) contribute both, accepting that those specific patches and vector
-  files go out permissively; (b) contribute the vectors but not the code patch; (c)
-  contribute neither - keep the no_std BBQr work in-tree under GPL-3.0 and keep the
-  vectors in-repo under GPL-3.0.
-- **Recommendation:** (a). A test vector carries no implementation to protect and gains
-  its value from adoption, and a small upstream patch to a crate we depend on is
-  maintenance we would otherwise carry forever in a fork. Neither gives away anything
-  that handles user keys, which is what the Q8 stance protects.
-- **What it blocks:** m12's contribution scope and the SPDX headers on the vector files
-  (the harness stays GPL-3.0-or-later under all three options). Nothing in the firmware.
-- **Deadline:** by m12.
-- **Why it is yours:** Q8 was answered as a position, not just a licence field. Whether
-  that position extends to outbound patches under someone else's terms is the same kind
-  of call and is not mine to infer.
+### Q63. Does "no eFuse burned in 0.2.0" include the HMAC key the sealed storage depends on? [NEW 2026-08-18, forced by the Q32 answer and sharpened by SECUREBOOT.md]
+
+**THIS IS THE ONE GENUINELY OPEN QUESTION IN THE SET, and it is not a preference - it is a
+contradiction between two documents that cannot both be implemented.**
+
+- **What SECUREBOOT.md says.** It landed in parallel with this re-scope, it is
+  authoritative for secure boot, and its opening states that 0.2.0 ships "without Secure
+  Boot v2, without flash encryption, and with **no eFuse burned on any device, at any
+  point**." Read as written, that is a broader statement than secure boot, and it settles
+  the flash-encryption half of this question in the same direction I had recommended:
+  **burn nothing, keep the device reflashable.** Agreed, adopted, and the reasoning below
+  is retained only as the record of why.
+- **What it collides with.** The ratified Q45 provisions a **32-byte HMAC_UP key into an
+  eFuse block, host-side with `espefuse.py`, before m4a's firmware runs**, and the entire
+  sealed-storage design hangs off it: `device_binding = hmac_efuse(0x01, domain_tag)` is
+  the root of `guard_key`, `hdr_key`, `filler_root` and the `bound` session secret. It is
+  also what makes each PIN guess require this physical board, which is SECURITY.md tier
+  1's whole claim.
+- **The consequence if the sweeping reading is the intended one, stated plainly because it
+  is severe.** With no HMAC key burned, `KeyProvenance` is absent, `StoreState` is
+  `Unprovisioned`, and a correctly implemented device **refuses to format and stores
+  nothing at all**. 0.2.0 would then be 0.1.0 with a better signing engine: no stored
+  wallets, no multisig registrations, no PIN, no wipe policy - and m3, m4a and m4b would
+  lose most of their reason to exist. That is the opposite of the release the owner asked
+  for ("a working storage + signing + multisig wallet").
+- **Options:** (a) **"no eFuse burned" means no SECURE-BOOT-related eFuse burned** - no
+  secure-boot digest, no anti-rollback, no flash-encryption key - **and the HMAC_UP
+  provisioning of Q45 proceeds as designed.** This is almost certainly the intent, since
+  SECUREBOOT.md's subject is secure boot and its own section 2 excludes "any burn tooling
+  pointed at a real device" from ITS preparatory slice rather than from the release; (b)
+  literally no eFuse at all, which means no sealed storage in 0.2.0 and a very different
+  release; (c) no eFuse at all AND a software-only device binding, which is not a real
+  option - a key the software can read is a key an attacker who dumps flash can read, so
+  it would make tier 1's "each guess requires the physical device" false and must not be
+  built.
+- **Recommendation: (a), and the wording in SECUREBOOT.md is narrowed to say so.** One
+  sentence there ("no eFuse burned on any device, at any point") needs to become "no
+  secure-boot, anti-rollback or flash-encryption eFuse is burned in 0.2.0; the HMAC_UP
+  provisioning of Q45 is unaffected and is the one burn 0.2.0 performs." I have not made
+  that edit: SECUREBOOT.md is another document's subject and the sentence may be
+  deliberate, in which case the answer is a scope decision far larger than a wording fix.
+- **What it blocks:** everything storage, if the answer is (b). Under (a) it blocks
+  nothing and only a sentence changes.
+- **Deadline:** before m4a orders its first burn, which under (a) is imminent - so this is
+  the one open item worth answering quickly, and it should be answered before m3 closes.
+- **Why it is yours:** it is a one-way burn on hardware you own, and under (b) it deletes
+  the feature the release was named for.
+
+**The flash-encryption reasoning, retained because it is why (a) burns nothing else.**
+m13's runbook had four burns: HMAC key, XTS-AES flash encryption, Secure Boot v2,
+anti-rollback. Q32's deferral removes the last two (anti-rollback is only meaningful with
+secure boot, since without it an attacker flashes any image they like). That leaves flash
+encryption, whose mode choice was previously masked by secure boot being present:
+  - **Release mode** permanently disables the UART download path. That is the path
+    `espefuse.py` uses and the path a user reflashes over. The device would have no
+    firmware update route at all, because there is no OTA by design (ARCHITECTURE 2.7,
+    factory-only partition table) and 0.2.0 does not ship one.
+  - **Development mode** keeps the download path and a bounded re-flash count (m1
+    measurement M7 reads the actual field), at the cost that plaintext can still be
+    written over the UART downloader by anyone holding the device.
+  - **Not burned at all** leaves the `wallets` partition's `encrypted` flag inert: a
+    stored wallet is protected by the PIN ladder alone, which the Verify screen already
+    reports truthfully.
+**Settled by SECUREBOOT.md, and it matches the recommendation: burn no flash-encryption
+key in 0.2.0.** It is the only option that keeps the device reflashable, keeps the
+reproducible-build story usable by the person it is for - a verifier can flash what they
+built - and avoids spending a one-way eFuse on a half-configuration. Release mode is
+disqualified outright: it permanently disables the UART download path, and a signer with
+no update path is a signer that cannot ship a security fix. The cost is the at-rest
+encryption of the `wallets` partition, which matters against a bench attacker with a flash
+programmer, and **SECURITY.md tier 1 now says so plainly rather than implying encryption
+is present.**
+
+**A pre-existing three-way conflict closes with it, and is recorded so it is not
+rediscovered:** m13's runbook scoped flash encryption IN, REPRODUCIBLE.md scoped eFuse
+burning OUT of 0.2.0, and ARCHITECTURE's "an airgapped signer updates by USB reflash" is
+incompatible with Release mode. All three now agree on "burn nothing but the HMAC key",
+subject to the one question above (R29).
+
+---
+
+# DEFERRED TO 0.3.0 (owner instruction, 2026-08-18)
+
+Seven questions were answered "not in 0.2.0". They are settled decisions, not open
+items: nothing in 0.2.0 waits on them, and each one names what leaves the release with
+it. The consequence of Q32 is the significant one and is stated first.
+
+### Q32. Whose secure-boot key is burned into release hardware? DEFERRED - and 0.2.0 therefore ships WITHOUT Secure Boot v2
+**DECISION: held for 0.3.0. Release units do not have Secure Boot v2 burned, and eFuse
+anti-rollback goes with it** (anti-rollback protects a signature chain that does not
+exist without secure boot).
+
+**This is the one deferral that changes what the product can claim, so it is written
+into the security text rather than into a schedule.** VERIFY.md section 9 is explicit
+that the Verify screen is produced by the software under suspicion, and that **secure
+boot is the only check on that screen which does not depend on the firmware being
+honest**: every other row - the running-app digest, the eFuse readout, the storage
+state, the boot counter - is a value the firmware reports about itself. With secure boot
+burned, a modified image cannot boot, so the readout is trustworthy because the reader
+is. Without it, an attacker who has held the device can flash a modified image that
+prints whatever digests the owner expects, and nothing on the screen contradicts it.
+
+Stated in plain terms, and this is the sentence the release notes carry: **on a 0.2.0
+release unit the Verify screen tells you what the running firmware says about itself. If
+you did not build and flash that firmware yourself from a reproduced image, the screen
+cannot prove it is the firmware you think it is.** The reproducible-build chain still
+works and is still the answer - it just has to be exercised by the owner, on their own
+machine, rather than certified by the device.
+
+**Where this lands, all of it required at m13, none of it optional:** SECURITY.md tier 1
+and invariant 6 (both rewritten 2026-08-18); the m13 release-unit runbook, which loses
+two of its four burns; VERIFYING.md's opening statement of what the procedure does and
+does not establish; and the release announcement. Nothing about the record format, the
+key ladder or the reproducible build changes.
+
+**What comes back in 0.3.0:** the Q32 options are unchanged and the recommendation
+stands - (b), ship unsigned images plus a documented procedure for the USER to generate
+and burn their own key, with (a) only if assembled units are ever sold, and with the
+UNSIGNED image published and made the object of the reproducibility claim under (a). The
+burn ORDER the ratified Q45 needs written down travels with it: HMAC key before flash
+encryption and secure boot, because Release-mode flash encryption disables the UART
+download path `espefuse.py` uses.
+
+**One question it leaves behind for 0.2.0, which is why Q63 exists:** flash encryption
+was going to be burned in the same ceremony, and on its own it has a mode choice that
+secure boot's presence used to mask. See Q63.
+
+### Q14. Encrypted backups. DEFERRED whole, both profiles
+**DECISION: no backup in 0.2.0** - not the seedless profile the reconciliation
+recommended, and not the seed-bearing profile BACKUP-FEATURES.md OPEN-B1 recommended.
+Both move to 0.3.0 with their positions intact and undecided between.
+
+**The cost, stated because it is real and it is now unmitigated for the life of 0.2.0.**
+Multisig registrations, labels and device settings are the only state a mnemonic cannot
+re-derive, and with no backup there is no recovery path for them at all. A wipe - whether
+deliberate, or on N failures, or by a power cut that consumed the last attempt - destroys
+them permanently. **Requirement, carried from Q5's ratification and now load-bearing
+rather than conditional: every wipe surface must name registrations and settings as
+things that are destroyed and not recoverable.** That is the S-06 setup line, the S-44
+wipe-policy sub-screen, the post-wipe S-48b text, and the deliberate-erase S-48 screen.
+SECURITY.md's deterministic-wipe posture paragraph is corrected in the same edit: "every
+notyas wallet is re-derivable" was already struck as false, and with Q14 gone there is no
+compensating control to point at.
+
+**Consequences applied:** m9's backup scope is removed; PARITY's encrypted-backup, device
+clone and Key Teleport rows stay deferred with the honest "no equivalent in 0.2.0"
+statement (R10); Q34 goes with it; SECURITY invariant 2b needs no amendment, because
+nothing new is written to SD.
+
+### Q34. Publish the backup container format. DEFERRED with Q14
+**DECISION: moot for 0.2.0.** There is no backup container to specify. The recommendation
+is unchanged for 0.3.0: publish the format, because a backup format nobody else can read
+is lock-in by omission, and keep the in-repo reference decoder as a release gate.
+
+### Q15. On-device BSMS (BIP-129). DEFERRED, and the `bsms` module is not built at all
+**DECISION: no BSMS in 0.2.0, and no speculative `bsms` module at m12 either.** The
+earlier ratification said "build it at m12 only if m7 finishes with capacity"; the
+owner's scope instruction removes the conditional. Descriptor import plus the mandatory
+first-address cross-device comparison covers the security need, and that is what ships.
+
+### Q16. Taproot multisig. Unchanged and confirmed
+**DECISION: 0.2.0 multisig is P2WSH `sortedmulti` (BIP-48) only.** Taproot single-sig
+(BIP-86) is fully supported for signing; tapscript, multi-leaf and MuSig2 revisit at
+0.3.x. Ratified 2026-08-17, re-confirmed by the owner 2026-08-18. The descriptor model
+accepts taproot descriptors later without a format change, so this costs nothing later.
+
+### Q30. Release signing key on a hardware token. DEFERRED
+**DECISION: 0.2.0 signs with the existing on-disk key** (A1E9 53B2 5C6A 623B 77A1 D522
+3AC4 BBCF E51A B37D). The recommendation is unchanged and stands for 0.3.0: an OpenPGP
+card or YubiKey plus an offline revocation certificate. **Documented rather than
+implied:** the release documentation states that the signing key is held on a
+general-purpose machine, because a verifier's trust in SHA256SUMS.txt is exactly as good
+as that key's custody and they are entitled to know which regime it is under. The key
+identity does not change when the key later moves to a token.
+
+### Q31. Independent builder attestation. DEFERRED
+**DECISION: 0.2.0 ships with only our own signed SHA256SUMS.txt.** No `attestations/`
+directory and no recruited third party. The recommendation stands for 0.3.0. **Stated
+plainly in the release notes:** the reproducibility claim is currently ours alone, the
+recipe is published so anyone can check it, and a matching third-party build is invited
+rather than presented as already existing.
+
+### Q43. HIL power-cut rig. DEFERRED, and m4a's gate degrades to a manual method
+**DECISION: no rig purchase for 0.2.0; the power-cut gates are performed by hand.**
+m4a's "power cut taken mid-decrement" gate cannot be faked and does not go away - it is
+load-bearing, because the ratified Q5 makes a power cut consume an attempt by design.
+**The method is therefore specified rather than left to improvisation:** pull power at
+the USB connector (or a bench inline switch) at a scripted delay after the attempt-cell
+program begins, repeated at least twenty times across the window, with the resulting
+ledger state read back over the HIL console after each cut and recorded in the milestone
+note. That is weaker than a relay in exactly one way - the timing is not repeatable to
+the millisecond, so the window is sampled rather than swept - and the milestone note says
+so instead of claiming coverage it does not have. The rig moves to 0.3.0, where the sweep
+becomes exhaustive.
+
+### Q50. Reference camera module. ANSWERED: the owner will buy a mating module
+**DECISION: buy one.** Recorded here with the mating specification so the purchase is
+right the first time. Board A (Waveshare ESP32-P4-NANO / 4B class) exposes a **15-pin,
+1.0 mm pitch, Raspberry Pi-compatible CSI FPC at J1**, and the supported sensor is the
+**OV5647** (the module class SeedSigner already uses). A Waveshare or Raspberry Pi
+Camera Module v1.3 (OV5647, 15-pin ribbon) mates directly. Two things to avoid: a
+Raspberry Pi Camera v2 (IMX219) or v3 (IMX708), which are different sensors, and a 22-pin
+CM4-style ribbon, which is the wrong connector. Board B (Elecrow 5inch) is **not**
+compatible with any of these - its path is a 24-pin FPC with a factory SC2336 - and no
+purchase makes board B work in 0.2.0.
+
+**Why a known-good module matters even though the bench already has one:** the bench
+module is plausibly a 25 MHz clone against drivers that assume 24 MHz, which makes every
+derived rate 4.17% high, so garbled frames would be an expected outcome of the spike
+rather than a defeat. A clean module turns every future "is it the camera or the
+firmware" question into a two-minute swap.
+
+**Until the module arrives, every camera exit gate is marked [HW-CAMERA] and no other
+milestone waits on one.** See the ratified Q6.
 
 ---
 
@@ -196,74 +374,376 @@ that must not share code with the signing path's digest computation.
 SECURITY.md invariant 3, the record format, the whole m3 KDF ladder, and the
 build-graph ban list.
 
-### Q4. PIN format and floor [was Q5]
-**DECISION: minimum 6 characters, full alphanumeric supported and actively nudged, no
-maximum below 64 characters.**
-*Ratified 2026-08-17 on the project owner's instruction to settle all questions with a
-clear technical optimum.*
+### Q4. PIN format and floor [was Q5] - OWNER-ANSWERED 2026-08-18
+**DECISION: minimum 4 characters, full alphanumeric supported and actively nudged, no
+maximum below 64 characters.** The owner set the floor at 4; the 2026-08-17 ratification
+had proposed 6.
+*Owner-answered 2026-08-18. Everything else in the original ratification stands.*
 
-**Reasoning.** An entropy meter at creation, with the wording "a digits-only PIN
-protects against theft, not against a funded lab". Post-fault-injection, offline
-guessing is bounded only by this entropy, which makes the floor a SECURITY.md tier-2
-claim rather than a UX preference.
+**Reasoning as the owner set it.** A 4-digit minimum is what people expect from a device
+with a PIN pad, and the wipe counter is what makes a short PIN survivable. That is a
+coherent position and it is the one taken.
 
-**Blast radius.** m1 SPEC text, the m3 KDF ladder's NFKD normalization and cost target,
-and screens 2 and 4.
+**What the floor now rests on, stated because it moved.** With wipe-on-N enabled - the
+default, N = 15 - a 4-digit PIN gives an attacker holding the device 15 guesses out of
+10,000 before the records are destroyed, which is a 0.15% chance per wipe cycle and is
+perfectly sound. Post-fault-injection, offline guessing is bounded only by PIN entropy,
+and 4 digits does not survive that: SECURITY.md tier 2 must say so without hedging, and
+the entropy meter at creation stays, with the wording "a digits-only PIN protects against
+theft, not against a funded lab".
 
-### Q5. Wipe-after-N default [was Q3]
-**DECISION: default N = 10, range 3..=25 inclusive.** The setup screen states the
-policy and names what a wipe destroys.
-*Ratified 2026-08-17 on the project owner's instruction to settle all questions with a
-clear technical optimum.*
+**The floor and the wipe-off setting interact badly, and that is Q62, not this entry.**
+With wipe disabled there is no counter and 10,000 on-device guesses is an afternoon. The
+floor is not the wrong answer; combining it with a disable switch is the thing that needs
+a decision, and it is presented to the owner rather than resolved here.
 
-**Reasoning.** 10 is stricter than Coldcard's 13 and is affordable because the seed is
-re-derivable from the user's own dice rolls or words. The ceiling of 25 is not a
-preference: ESP-SEAL.md 8.x sizes the attempt ledger's tail reserve to exactly 25
-(rotation fires at `len(attempt_entry) >= 128 - 25`), so 25 is a frozen format
-constant and raising it later is a format migration.
+**Settled in place while it was in front of me: raising the Argon2id cost is not an
+alternative to the floor.** At the pinned 0.5-2 s target a 4-digit exhaustive search is
+1.4-5.6 hours; at a punishing 5 s per unlock it is 14 hours. An order of magnitude in
+per-guess cost buys an order of magnitude, and the gap that needs closing is four orders.
+The m1 parameter target is therefore unchanged, and no milestone re-litigates it.
 
-**Three corrections applied during ratification. None changes the number; all three are
-requirements on the milestones that own it.**
+**Blast radius.** m1 SPEC text, the m3 KDF ladder's NFKD normalization and cost target
+(unchanged), screens 2 and 4, and the `min_pin_len` byte in the policy record Q5
+specifies.
+
+### Q5. Wipe-after-N default, and a user-settable wipe policy [was Q3] - OWNER-ANSWERED 2026-08-18
+**DECISION, in four parts.**
+1. **Default N = 15**, range 3..=25 inclusive. (The 2026-08-17 ratification proposed 10;
+   the owner set 15.)
+2. **N is user-settable from an unlocked session**, through the SET-POLICY operation
+   specified below.
+3. **Wipe-on-N may be turned off entirely**, subject to the disclosure requirements
+   below and to whatever Q62 decides about a PIN-length precondition.
+4. **The PIN may be removed**, which means exactly one thing and is never presented as
+   anything else: the device reverts to 0.1.0 stateless operation and every stored wallet
+   is destroyed.
+
+*Owner-answered 2026-08-18. Parts 2, 3 and 4 are new capability and force a design change
+inside the m3 format freeze, which is specified here in full rather than deferred.*
+
+**Authority split with PIN-MODES.md, which landed in parallel and is owner-directed.**
+That document is authoritative for the BEHAVIOUR: the three device states, that stateless
+is a first-class default rather than a degraded mode, that the PIN is introduced at first
+save rather than at first boot, which modal appears where, and the copy rules - including
+the one that is easy to get wrong and is adopted verbatim here: **turning the PIN off is a
+DATA-LOSS event, not a security downgrade, and the copy must not claim the device is
+becoming less secure.** A device that stores nothing is the safest state this hardware has;
+saying otherwise is false and teaches the wrong instinct. This entry owns the on-flash
+FORMAT and the authentication mechanism, which PIN-MODES.md does not specify, and Q5.1
+records the one place the two texts differed and why the mechanism below is the way it is.
+
+**Reasoning for 15.** It is close to Coldcard's 13 and comfortably inside the frozen
+ceiling. The ceiling of 25 is not a preference: ESP-SEAL.md 8.x sizes the attempt
+ledger's tail reserve to exactly 25 (rotation fires at `len(attempt_entry) >= 128 - 25`),
+so 25 is a frozen format constant and raising it later is a format migration.
+
+**Corrections from the 2026-08-17 pass, all still binding.**
 
 1. **The original justification was false and is struck.** It read "every notyas wallet
    is re-derivable". It is not: multisig registrations, labels and device settings are
-   state no mnemonic can re-derive, which is exactly the fact BACKUP-FEATURES.md raised
-   and Q14 now owns. The honest justification is: *the seed is re-derivable; the
-   registrations and settings are not, which is why Q14(a) exists and why the wipe copy
-   must say so.* Until a backup ships at m9, a wipe between m4a and m9 destroys that
-   state with no recovery path at all. **Requirement:** the wipe-on-N screens (the
-   post-wipe S-48b text and the S-06 setup line) must name registrations and settings
-   the way the deliberate-erase screen S-48 already does. The accidental path currently
-   discloses less than the deliberate one, which is backwards.
-2. **The floor was inconsistent with the frozen API.** `ESP-SEAL.md` declared
+   state no mnemonic can re-derive. With Q14 deferred whole to 0.3.0 there is now **no
+   backup at all in 0.2.0**, so a wipe destroys that state permanently with no recovery
+   path for the life of the release. **Requirement, hardened accordingly:** every wipe
+   surface - the S-06 setup line, the S-44 policy sub-screen, the post-wipe S-48b text
+   and the deliberate-erase S-48 screen - names multisig registrations, labels and
+   settings as destroyed and not recoverable. The accidental path must not disclose less
+   than the deliberate one.
+2. **The floor was inconsistent with the frozen API.** ESP-SEAL.md declared
    `wipe_after: 1..=25`; `wipe_after = 1` means one mistyped PIN destroys the device.
    Ratified as `3..=25`, and ESP-SEAL.md is amended to match.
-3. **"Configurable" is not yet implementable and must be settled at m3.** N lives in
-   the superblock at format time and no set-policy operation exists in either
-   ESP-SEAL.md's state machine or WALLET-API.md's `Vault` surface, yet S-44 ships a
-   live "Wrong-PIN policy" row. **Requirement at m3:** either specify a superblock
-   rewrite path for N (using the same A/B commit discipline as a PIN change, permitted
-   only from an unlocked session and never lowered below the failures already
-   accumulated), or make N format-time-only and render the S-44 row read-only. This is
-   inside the m3 format freeze, so it cannot be deferred past it. **This sub-item is
-   recorded as open implementation design, not ratified.**
+3. **A power cut consumes an attempt, and this must be on the screen.** A cut taken
+   between the attempt-cell program and the success-cell write consumes an attempt even
+   when the PIN was correct. ESP-SEAL.md 4.5 makes this deliberate and fail-closed - "a
+   cut in the middle of a verification must cost a guess, or power-cutting becomes a free
+   oracle" - and m4a tests for it. On a portable device that is an N-attempt clock which
+   can run with zero wrong PINs entered. Every hardcoded number in the screen copy becomes
+   a format string, because N is now variable at runtime.
 
-**Also required, because it is real and currently undisclosed:** a power cut taken
-between the attempt-cell program and the success-cell write consumes an attempt even
-when the PIN was correct. ESP-SEAL.md 4.x makes this deliberate and fail-closed - "a
-cut in the middle of a verification must cost a guess, or power-cutting becomes a free
-oracle" - and m4a tests for it. The wrong-PIN policy sub-screen must say so, because on
-a battery-powered device it is an N-attempt clock that can run with zero wrong PINs
-entered. Every hardcoded "10" in the screen copy becomes a format string.
+---
 
-**Blast radius.** The m3 counter bit-log format (the bit budget is sized to N), m4a's
-wipe gate, and five copy sites.
+#### Q5.1 The policy record: where a settable policy lives, and how it is authenticated
 
-### Q6. Camera in 0.2.0 [wave 2, CAMERA.md; CAMERA-HW.md 6.2 merged in]
-**DECISION: camera lands in 0.2.0 as m11, subject to the m1 spike passing, sequenced
-LAST and individually droppable.**
-*Ratified 2026-08-17 on the project owner's instruction to settle all questions with a
-clear technical optimum.*
+The 2026-08-17 pass found that "configurable" was not implementable as designed: N lived
+in the plaintext superblock at format time and no set-policy operation existed in either
+ESP-SEAL.md's state machine or WALLET-API.md's `Vault` surface. The owner's answer makes
+a settable N and a settable wipe-off mandatory, so the mechanism is specified here, inside
+the m3 freeze, in the same terms as the rest of the format.
+
+**The requirement that shapes everything else: the policy must be enforceable with no PIN
+in hand.** MOUNT step M8 runs `if failures >= wipe_after { WIPE }` before any unlock is
+possible, so the enforced copy of the policy cannot live inside a PIN-sealed record. It
+must be readable at mount. That rules out the obvious answer for the enforced copy, and it
+is why the design below uses three copies with different jobs.
+
+**The one place PIN-MODES.md and this entry differ, recorded rather than resolved
+silently.** PIN-MODES.md states as non-negotiable that "the wipe policy MUST be
+authenticated inside the sealed record, covered by the AEAD's associated data alongside
+`wipe_epoch` and `seal_seq`", on the ground that a policy alterable without the PIN makes
+the attempt counter theatre. **The ground is correct and is fully honoured below.** The
+mechanism cannot be exactly as written, for a reason that is arithmetic rather than
+preference: **the wipe fires on FAILED attempts, when no AEAD ever opens.** A policy
+readable only after a successful AEAD open could never be enforced against the attacker it
+exists to stop, because that attacker never supplies a correct PIN. So the enforced copy
+must be readable while locked. What the design does instead is give the AEAD copy the job
+PIN-MODES.md actually needs it for - proving a human who knew the PIN authorised this
+policy - and put the enforced copy behind a device-bound MAC that an attacker cannot forge
+either. **The requirement "policy cannot be altered without the PIN" is met in full:** both
+writes that constitute a change need `bound`. PIN-MODES.md's other consequence is adopted
+as written - this is a change-PIN-class operation, it commits by the same power-loss rules,
+and it cannot be performed from a locked device.
+
+**Policy bytes, 8 bytes, one fixed little-endian encoding used everywhere:**
+
+```
+off len field
+0    1  wipe_after      u8. 0 = wipe DISABLED (PIN-MODES.md's sentinel); otherwise 3..=25
+1    1  flags           bit0 occupancy (0 Sparse, 1 AlwaysFilled; pinned to 1 by Q2),
+                        bits1-7 MBZ
+2    1  min_pin_len     u8, the floor in force when this policy was written
+3    1  MBZ
+4    4  policy_gen      u32, strictly increasing, device-global
+```
+
+**`wipe_after = 0` is the disabled sentinel, adopted from PIN-MODES.md in preference to a
+separate enable flag.** Two encodings for one fact is a defect waiting to happen: a record
+with `wipe_after = 7` and the flag clear would have no defined meaning, and something would
+eventually pick the wrong half. One field, one meaning, and the floor of 3 applies to
+enabled values only.
+
+**Three homes, three jobs. This is the whole answer to "how is it authenticated".**
+
+1. **The ledger `policy_log` is the AUTHORITY.** A new bit-clear cell array in the
+   plaintext `counters` partition, in the same guarded-cell style as `pin_gen_log`:
+
+   ```
+   cell[i] = policy_bytes[0..8]
+           || HMAC(guard_key, b"ESLY" || side || rotation_ctr || u16_le(i)
+                              || policy_bytes[0..8])[0..8]           16 bytes
+   ```
+
+   `guard_key = HKDF(device_binding, ...)` and `device_binding = hmac_efuse(0x01,
+   domain_tag)`, so a valid cell cannot be fabricated without the read-protected eFuse
+   key. The effective policy is the highest-index well-formed cell; if the array is empty,
+   it is the superblock's format-time policy. `policy_gen` equals the cell's index plus
+   one, so the array is self-describing and monotonic by construction.
+
+2. **The superblock carries a MIRROR.** The existing plaintext superblock body keeps
+   `wipe_after` and `occupancy` at 0x26/0x27 and gains `policy_gen` (u32, in the MBZ words
+   at 0x32) and `min_pin_len` (u8). The body is covered by `body_digest` and `header_mac`
+   under `hdr_key`, which is device-bound, so it cannot be edited offline either. Its job
+   is speed and readability: mount reads it in one sector read, and the Verify screen
+   prints it. **It is never the authority.** If the mirror and the ledger disagree, the
+   ledger wins and mount rewrites the mirror.
+
+3. **The canary carries a WITNESS, inside the AEAD.** Identity 0's canary plaintext gains
+   `policy_bytes[0..8]` in eight of its trailing MBZ bytes. This copy is sealed under
+   `bound`, so writing it requires the PIN. It proves that a human who knew the PIN
+   authorised this policy, which is the property neither of the other two copies can
+   supply on its own.
+
+**Reconciliation at unlock, once the canary has opened and the PIN is therefore proven:**
+
+| Condition | Meaning | Action |
+|---|---|---|
+| `canary.policy_gen == ledger.policy_gen` and bytes equal | normal | proceed |
+| `canary.policy_gen == ledger.policy_gen` and bytes differ | impossible without forgery | `TamperSuspected(PolicyMismatch)`, fall back to the strict default |
+| `canary.policy_gen == ledger.policy_gen - 1` | SET-POLICY was interrupted after its commit | repair: re-seal the canary with the ledger's policy, no user action |
+| `canary.policy_gen > ledger.policy_gen` | the ledger was rolled back independently | `TamperSuspected(LedgerRollback)`, strict default |
+| any other gap | unreachable | `TamperSuspected`, strict default |
+
+**The strict default, defined once so "fail closed" means something specific:**
+`wipe_enabled = 1`, `wipe_after` = the superblock's format-time value, occupancy
+unchanged. Every fail-closed path in this design resolves toward wipe being ON, never OFF.
+A malformed `policy_log` cell counts as consumed for generation purposes, flags tamper,
+and forces the strict default until a later well-formed cell supersedes it - so glitching
+a cell during a "turn wipe back on" write cannot preserve an "off" policy.
+
+#### Q5.2 SET-POLICY, and how the change commits power-loss-safely
+
+```
+Y1  Require an Unlocked session AND Session::confirm_pin (constant-time compare of a
+      recomputed ladder against the session's `bound`; touches no flash, consumes no
+      attempt). No PIN, no policy change - this is the whole answer to the attacker
+      question below.
+Y2  Validate: 3 <= wipe_after <= 25 when enabling; never lower wipe_after below the
+      failures already accumulated (that would wipe on commit); occupancy is not
+      settable in 0.2.0 (Q2 fixes it to AlwaysFilled) and a request to change it is
+      refused rather than ignored.
+Y3  If the request DISABLES wipe: under the owner's answer (Q62(b), PIN-MODES.md) there
+      is NO PIN-length precondition and the operation proceeds at any PIN length. The
+      check is still implemented as a parameter, defaulting to "no floor", so the answer
+      is a constant rather than a code change if it is ever revisited. The disclosure
+      that replaces the precondition is computed from the PIN just confirmed at Y1, in
+      RAM, never from a stored length.
+Y4  Program one policy_log cell.                                  <-- COMMIT POINT
+Y5  Re-seal identity 0's canary with the new policy bytes into its inactive side,
+      following SEAL S1-S8 in full including the read-back verification.
+Y6  Rewrite the superblock mirror into its inactive side; erase the stale side.
+Y7  Erase the stale canary side.
+```
+
+| Cut at | Result |
+|---|---|
+| before Y4 | Nothing written. Old policy in force. |
+| during Y4's cell program | Malformed cell: counts as consumed, flags tamper, forces the strict default. The user re-runs the change. Fail-closed toward wipe ON. |
+| after Y4, before Y5 | New policy is in force (the ledger is the authority). The canary is one generation behind, which the reconciliation table repairs at the next unlock without user action. |
+| Y5 | Standard SEAL power-loss behaviour: the header MAC either verifies or it does not, and mount elects by `seal_seq`. |
+| Y6 or Y7 | Mirror stale or a stale side left behind. Mount rewrites the mirror from the ledger and cleanup erases the stale side. Idempotent. |
+
+**One cell program is the commit, exactly like WIPE's epoch cell and CHANGE-PIN's
+`pin_gen` cell.** That is deliberate: the design already has one power-loss story for a
+single guarded cell program, and this reuses it rather than inventing a second.
+
+#### Q5.3 The attacker question: what stops someone holding the device from turning wipe off before guessing?
+
+This is the question that decides whether the counter is worth anything, so it is answered
+in full rather than asserted.
+
+**Three independent barriers, any one of which is sufficient:**
+
+1. **A policy change requires the PIN.** Both writes that constitute a change - the
+   `policy_log` cell and the canary re-seal - are gated on an Unlocked session plus a
+   fresh `confirm_pin`. An attacker without the PIN cannot reach SET-POLICY, and every
+   attempt to get an Unlocked session spends an attempt against the counter they are
+   trying to disable. The ordering is what makes this work: the counter is enforced at
+   MOUNT, before any UI exists, so there is no state in which the device is running,
+   reachable, and not yet counting.
+2. **Offline editing cannot do it.** The `policy_log` cell's guard is keyed by
+   `guard_key`, and the superblock mirror is covered by `header_mac` under `hdr_key`; both
+   descend from `hmac_efuse(0x01, domain_tag)` and therefore from a read-protected eFuse
+   key. An attacker with a flash programmer can write any bytes they like and cannot make
+   them verify. A failed guard is malformed, and malformed resolves to the strict default.
+   Note the domain separation that makes this hold in practice: embedder-facing
+   derivations (anti-phishing words, the PIN-pad permutation) go through `device_derive`
+   with tag `0x7F` and length-prefixed inputs, so the device cannot be used as an oracle
+   to produce `hmac_efuse(0x01, domain_tag)`.
+3. **Deleting is not weakening.** Erasing the `policy_log`, or the whole ledger, does not
+   turn wipe off: an empty array falls back to the superblock's format-time policy, which
+   has `wipe_enabled = 1`, and a blank ledger beside a non-blank records region is already
+   `TamperSuspected(LedgerMissing)` at M2, which refuses everything. There is no erase that
+   produces a permissive state.
+
+**What is NOT defended, stated plainly because the alternative is a false claim.** A
+consistent **full-flash snapshot and restore** restores the policy along with everything
+else, exactly as it already restores the attempt counter (SECURITY.md tier 3, ESP-SEAL.md
+7.2). This is not new, but the wipe-off setting makes its consequence qualitatively worse
+and that has to be written down:
+
+> With wipe enabled, a full-flash restore buys an attacker N more guesses per restore
+> cycle. If a snapshot was taken during a period when wipe was DISABLED, restoring it buys
+> unlimited guesses, permanently, for that snapshot. **Turning wipe back on afterwards
+> does not repair this**: the old image still exists and still opens with unlimited
+> attempts. Any device on which wipe has ever been disabled must be treated as having no
+> attempt limit from the moment of the earliest snapshot an attacker might hold.
+
+That sentence goes in SECURITY.md's duress and wipe stance, in VERIFYING.md, and on the
+S-44 sub-screen in the user's own words. It is also the strongest argument available for
+Q62's option (a).
+
+#### Q5.4 One format consequence the settable policy creates, and its fix
+
+**With wipe disabled, the attempt log can overflow.** `attempt_entry` holds 128 cells and
+rotation fires only on a **successful** unlock (ESP-SEAL.md 4.8), which is safe today only
+because a failure streak long enough to fill the log would have triggered a wipe first.
+Disable the wipe and that guarantee is gone: 128 consecutive failures with no success
+exhausts the log, and the existing rules leave the device with nowhere to write the next
+attempt. Refusing further attempts would be a permanent lockout, which is worse than the
+wipe the user just turned off.
+
+**Fix, inside the m3 freeze:** the ledger head gains `failures_base: u32` in its MBZ region
+at 0x40, and the derived quantity becomes
+
+```
+failures = head.failures_base + len(attempt_entry) - len(attempt_success)
+```
+
+Rotation writes `failures_base` = the failure count in force at rotation time. On today's
+post-success rotation that value is 0, so **behaviour on a wipe-enabled device is
+byte-for-byte unchanged**. On a wipe-disabled device the log may now rotate on failure as
+well, carrying the count forward, so rotation stops being a counter reset and can safely
+be reached without a PIN. The cost is flash wear, and it is bounded and worth stating: one
+rotation per 128 attempts, 100k erase cycles per sector, is on the order of 12 million
+attempts, which at 1 s per Argon2id evaluation is about 148 days of uninterrupted
+guessing. The wear is not the wall; the PIN is.
+
+**ESP-SEAL.md owns the resulting byte layout** for `policy_log` (allocated from the ledger
+sector's reserved region and the second reserved sector pair, alongside the boot log of
+Q53), for the two superblock fields, for the canary's witness bytes, and for
+`failures_base`. **All of it is sized against m1's measured M6 partial-page-program
+limit**, which now has three consumers: the attempt ledger, the boot log, and this. If M6
+comes back below 32 cells per 256-byte page, all three are re-laid-out together before m3
+writes a line of the format.
+
+#### Q5.5 Turning the PIN off means destroying the stored wallets, and the screen says exactly that
+
+The owner asked that the user be able to turn the PIN off. **"Keep the stored wallets with
+no PIN" is not a thing this device can do**, and the reason is structural rather than a
+policy choice: the sealing key is derived from the PIN
+(`prestretch = Argon2id(pin, ...)` -> `bound = hmac_efuse(0x02, prestretch)`), so with no
+PIN there is no key, and with no key there is no sealed storage. Storing wallets under a
+device-only key would mean anyone holding the device can read them, which is not "no PIN",
+it is "no protection", and it would falsify SECURITY invariant 2a.
+
+**So "turn the PIN off" is defined as: revert this device to 0.1.0 stateless operation.**
+The operation is a WIPE followed by leaving the store unformatted. What it destroys, named
+individually on the confirmation screen and not summarised:
+
+- every stored wallet (all sealed records),
+- every multisig registration, which cannot be re-derived from any seed and, with Q14
+  deferred, has no backup,
+- all labels and device settings,
+- the anti-phishing words and the lock-screen word, which are re-derived on the next
+  format but will not be the same words.
+
+**The copy rule PIN-MODES.md sets, adopted verbatim because it is easy to get backwards:
+the modal must NOT claim the device is becoming less secure.** It is becoming a device
+that stores nothing, which is the safest state this hardware can be in; the cost is
+convenience and data, not security. This is the opposite of the wipe-disable modal, where
+no data is lost and the security consequence is the whole point. Two "off" switches,
+opposite risks, and a design that describes them the same way teaches the wrong lesson.
+
+**Confirmation is the strongest gate the component library has:** the typed-name danger
+modal (grade 3), the same one that guards wallet deletion, with the counts read from the
+store - the number of wallets and registrations, not a generic phrase - and note that
+under the ratified Q2 those counts are shown *here*, post-PIN, where they are not a leak. After it completes the device is genuinely stateless: nothing is
+written to flash, the home screen returns to the 0.1.0 blank-device state, and the boot
+counter renders `not counted` again (Q61).
+
+**Blast radius.** The `counters` on-flash format for the life of the product (policy_log,
+`failures_base`); the superblock body (two fields); the canary plaintext (eight bytes); a
+new `Vault::set_policy` operation in WALLET-API.md's surface; the S-44 wrong-PIN policy
+sub-screen and a new PIN-removal flow at m4b; m4a's wipe gate; and every copy site that
+hardcoded a number, all of which become format strings.
+
+### Q6. Camera in 0.2.0 [wave 2, CAMERA.md; CAMERA-HW.md 6.2 merged in] - OWNER-CONFIRMED 2026-08-18
+**DECISION: the camera is IN 0.2.0. The software path is built now; only the HARDWARE
+verification waits on a module arriving.**
+*Ratified 2026-08-17, confirmed and re-scoped by the owner 2026-08-18.*
+
+**The gating rule, which is the operative part of the owner's answer.** The owner does not
+yet own a mating module and will buy one (Q50). Therefore:
+
+- **Every exit gate that requires a physical camera is marked `[HW-CAMERA]`** in
+  MILESTONES.md. A `[HW-CAMERA]` gate is met the day the module arrives and never before,
+  and no other milestone's closure depends on one.
+- **The m1 camera spike is one of them and moves out of m1.** m1's exit gate previously
+  required "the camera spike result committed as pass or fail"; that is now m-camera-0
+  inside m11, marked `[HW-CAMERA]`, and m1 closes without it. This is safe because the
+  ratified Q7 already removed the spike's only claimed dependency (the partition freeze),
+  and the spike's second deliverable - `app.bin`'s byte count with the `camera` feature on
+  - needs no module at all, only a build, so it stays in m1 as a pure build measurement.
+- **Everything that is not the physical bring-up ships on schedule:** the
+  `board::shared_i2c_bus()` refactor (m-camera-1, already pulled into m1's infrastructure
+  work), the cargo feature and `compile_error!` guard, the artifact split (Q47), the
+  ingress validator and its fuzz harness, the `seedqr` decoder, the autodetect classifier,
+  and the scan-session UI. All of it compiles, is unit-tested and is fuzzed on the host
+  with no hardware present.
+- **0.2.0 may therefore ship with the camera variant built but not hardware-verified.**
+  If that happens, BOARDS.md's support column says `camera: built, not hardware-verified`
+  and the artifact is published with that statement attached, per the standing rule that a
+  capability is hardware-verified or it is not claimed. It is not silently dropped and it
+  is not silently claimed.
 
 **Reasoning.** CAMERA.md ranks CSI + OV5647 (the module class a SeedSigner already
 uses) first, SD-only second, and rejects USB-UVC outright. A working camera closes the
@@ -306,17 +786,18 @@ depends-on line records the intent but no earlier milestone's scope carries it y
 additive; m11's shape and the position of the I2C-bus refactor. It no longer gates the
 partition freeze.
 
-### Q7. Freeze the storage geometry [reconciliation R2]
-**DECISION: the partition table below is frozen permanently, identical on both boards.
-AMENDED during ratification: the app partition is declared at its collision bound
-(0xDF0000) rather than at 8M, so that the frozen table is literally frozen and never
-needs a future edit.**
-*Ratified 2026-08-17 on the project owner's instruction to settle all questions with a
-clear technical optimum, with one amendment.*
+### Q7. Freeze the storage geometry [reconciliation R2] - OWNER-APPROVED 2026-08-18 WITH A MEDIA RESERVE
+**DECISION: the partition table below is frozen permanently, identical on both boards. It
+gains a 2 MiB reserved `media` region for camera and video assets, taken out of the app's
+declared span and not out of the tail, so that every already-frozen offset - `wallets` at
+0xE00000 and `counters` at 0xE40000 - is unchanged.**
+*Ratified 2026-08-17; amended 2026-08-18 on the owner's approval of the freeze with the
+added requirement to leave room for video if it is ever needed.*
 
 ```
 # Name,    Type, SubType, Offset,   Size,     Flags
-factory,   app,  factory, 0x10000,  0xDF0000
+factory,   app,  factory, 0x10000,  0xBF0000
+media,     data, 0x42,    0xC00000, 0x200000, encrypted
 wallets,   data, 0x40,    0xE00000, 256K,     encrypted
 counters,  data, 0x41,    0xE40000, 16K
 ```
@@ -327,36 +808,89 @@ esp_video; when the app outgrows 4 MB the data partitions move, and moving them
 destroys every sealed record on upgrade. Pushing the data to a fixed high offset makes
 app growth incapable of relocating a user's wallets.
 
-Arithmetic, checked: the table ends at 0xE44000 = 14,958,592 bytes = 14.27 MiB, inside
-board B's 16 MB (1.73 MiB spare) and unchanged on board A's 32 MB, whose extra flash is
-simply unused. The app spans 0x10000 to 0xE00000 = 0xDF0000 = 13.94 MiB. App offset
-0x10000 is unchanged from 0.1.0, so the Verify screen's running-partition SHA256
-procedure stays board-independent. All alignments are legal: 64 KiB for the app offset,
-4 KiB for the data partitions and every size.
+**Full arithmetic, re-verified end to end 2026-08-18 with the media reserve in place.**
 
-**Why the size field was amended, and it is the one place the original recommendation
-contradicted itself.** The recommendation declared `factory` at 8M and then claimed
-13.94 MiB of headroom "before a collision", with the table "frozen now, permanently".
-Those cannot both be true. ESP-IDF enforces the size field - the build fails with "app
-partition is too small for binary" - which is precisely what MILESTONES relies on when
-it says "CI asserts image size against the partition size". So the headroom is not
-reachable without editing `partitions.csv`, and the table would demonstrably change.
-Editing it is data-safe (growing `factory` moves nothing; the flashers rewrite only
-0x8000 and 0x10000, never 0xE00000 and above), but it is not free: REPRODUCIBLE.md
-makes `partition-table.bin` a pinned, published, byte-identical release artifact and
-offers it to verifiers as "a good first sanity check that your tooling works at all".
-Silently churning that hash on a product whose entire pitch is byte-reproducibility is
-the wrong trade.
+| Partition | Start | Size | End | Notes |
+|---|---|---|---|---|
+| (bootloader + table) | 0x0 | 0x10000 | 0x10000 | unchanged from 0.1.0 |
+| `factory` | 0x10000 | 0xBF0000 = 12,517,376 = 11.9375 MiB | 0xC00000 | declared at its collision bound |
+| `media` | 0xC00000 | 0x200000 = 2,097,152 = 2 MiB | 0xE00000 | reserved, declared, never written in 0.2.0 |
+| `wallets` | 0xE00000 | 0x40000 = 262,144 = 256 KiB | 0xE40000 | unchanged offset |
+| `counters` | 0xE40000 | 0x4000 = 16,384 = 16 KiB | 0xE44000 | unchanged offset |
 
-Declaring the app at 0xDF0000 from the first commit makes "frozen permanently" literally
-true: no future edit, no artifact-hash churn, and no 5.94 MiB gap belonging to no
-partition. **The one thing it costs is the accidental CI tripwire, and that is replaced
-deliberately: CI carries an explicit app-size BUDGET constant - fail above 8 MiB, warn
-above 6 MiB - which is a policy number that may be edited freely precisely because it is
-not a compatibility surface.** This separates the two concepts the 8M field was
-conflating: flash geometry, which is permanent, and size discipline, which is a
-judgement call. It also removes the coupling to Q6 entirely, because the camera only
-ever affected the size field.
+- Total consumed: 0xE44000 = 14,958,592 bytes = 14.2656 MiB. **Unchanged by the media
+  reserve**, because the reserve came out of the app's declared span rather than out of
+  the tail.
+- Board B (16 MB = 16,777,216): tail = 1,818,624 bytes = **1.7344 MiB spare, unchanged**.
+  That number is load-bearing beyond "spare": under R23 it is the fully trustworthy region
+  of VERIFY.md's reserved-space scan on an encrypted unit flashed from a merged image, and
+  taking the media reserve from the tail would have shrunk it to 732 KiB. That is the
+  single reason the reserve sits where it does.
+- Board A (32 MB = 33,554,432): tail = 18,595,840 bytes = 17.73 MiB, simply unused.
+- Alignment, all legal: app offset 0x10000 is 64 KiB aligned; `media` at 0xC00000 is both
+  64 KiB and 4 KiB aligned; `wallets` and `counters` are 4 KiB aligned; every size is a
+  4 KiB multiple. Data subtype 0x42 does not collide with 0x40 or 0x41.
+- App offset 0x10000 is unchanged from 0.1.0, so the Verify screen's running-partition
+  SHA256 procedure stays board-independent.
+- The CI app-size budget constant is unchanged (fail above 8 MiB, warn above 6 MiB). The
+  declared app span of 11.94 MiB is 1.49x the fail budget, so the budget still bites long
+  before the geometry does. For scale, 0.1.0's debug build's flash-loadable sections total
+  roughly 2.5 MiB.
+- Recorded while it is free, and revised for the new span: a future 0.2.x OTA scheme would
+  have 11.94 MiB to split, roughly 5.9 MiB per slot plus otadata. Nothing is stranded.
+
+**Why 2 MiB, and why the reserve is for camera ASSETS rather than for video.** The size is
+argued rather than rounded, because a reserved region nobody can justify is a region
+someone will later repurpose badly.
+
+- Sensor and ISP tuning data for a camera build - lens shading tables, colour correction
+  matrices, an `esp_cam_sensor` register-list blob for a variant module: tens of KiB each,
+  under 256 KiB together even generously.
+- One full-resolution still, staged for review: an OV5647 frame at 2592x1944 is roughly
+  600-900 KiB as JPEG; a 640x480 grayscale Y-plane is 300 KiB raw.
+- Headroom of about 2x over the sum of those, which is what makes it a reserve rather than
+  a fitted allocation.
+- **Video is explicitly NOT the use case, and the region must never become a recorder's
+  backing store.** One second of 640x480 MJPEG at 15 fps is roughly 1.5 MiB, so the whole
+  reserve holds under two seconds of footage; NOR flash rated at 100k erase cycles is the
+  wrong medium for streaming writes; and the device has a microSD slot, which is the right
+  one. The reserve exists so a camera build can persist assets and stage a single frame.
+  Written down here so nobody later "discovers" 2 MiB of free flash and builds the wrong
+  feature on it.
+
+**Two rules attached to the reserve, both mechanical.** (1) **0.2.0 writes nothing to
+`media`.** It reads all-`0xff`, its SHA256 is a Verify-screen row, and CI asserts no
+symbol in the image references it. Any non-blank content in a 0.2.0 release unit is a
+finding. (2) **It carries the `encrypted` flag from the first commit**, even though
+nothing writes it, because the flag is part of the frozen table and cannot be added later
+without changing the table. The justification is concrete rather than precautionary: the
+one thing most likely to be staged there is a camera frame, and under the ratified Q48 a
+camera frame can contain a SeedQR, which is a mnemonic. A partition that may one day hold
+a photograph of a seed phrase is inside the XTS boundary or it is a defect.
+
+**Why the size field was amended in the 2026-08-17 pass, and why that reasoning still
+governs.** The original recommendation declared `factory` at 8M and then claimed 13.94 MiB
+of headroom "before a collision", with the table "frozen now, permanently". Those cannot
+both be true. ESP-IDF enforces the size field - the build fails with "app partition is too
+small for binary" - so the headroom is not reachable without editing `partitions.csv`, and
+`partition-table.bin` is a pinned, published, byte-identical release artifact whose hash
+verifiers are told is stable (REPRODUCIBLE.md 3.5). Declaring the app at its collision
+bound makes "frozen permanently" literally true. **That bound is now 0xC00000 rather than
+0xE00000, and the same argument applies unchanged: the app is still declared right up to
+the next partition, so the table still never needs a future edit.**
+
+**This is the last moment the table can change at no cost, and it is being taken
+deliberately.** `partition-table.bin`'s hash changes once, now, before m1 freezes it and
+before anything is published. After m1 it never changes again.
+
+**The one thing the collision-bound declaration costs is the accidental CI tripwire, and
+that is replaced deliberately: CI carries an explicit app-size BUDGET constant - fail
+above 8 MiB, warn above 6 MiB - which is a policy number that may be edited freely
+precisely because it is not a compatibility surface.** This separates the two concepts the
+old 8M field was conflating: flash geometry, which is permanent, and size discipline,
+which is a judgement call. It also removes the coupling to Q6 entirely, because the camera
+only ever affected the size field - and now, additionally, the media reserve, which is
+declared rather than grown into.
 
 **No `nvs`, `otadata` or `phy_init` partition, and one guard to make that stick.** 0.1.0
 already ships a single-app table with none of them; NVS is never mounted (invariant 2),
@@ -372,12 +906,89 @@ these frozen offsets a future 0.2.x OTA scheme would have 13.94 MiB to split, ro
 6.9 MiB per slot plus otadata, so nothing is stranded.
 
 Slot budget inside 256 KiB is as designed: 8 wallet slot pairs, 8 registry record
-pairs, 1 header pair, so "8 wallets max" is displayed honestly. Capacity cannot be
-raised later without a format migration.
+pairs, 1 header pair. Under the ratified Q2 the device displays the maximum ("this device
+holds up to 8 wallets") and never the count in use, which is a constant rather than a
+leak. Capacity cannot be raised later without a format migration.
 
-**Blast radius.** m1's deliverable and every stored record for the life of the product.
-Interacts with Q2 (filler slots consume the same slot budget). No longer interacts with
-Q6.
+**Blast radius.** m1's deliverable and every stored record for the life of the product;
+`firmware/partitions.csv`; the reserved-space scan's span list and one new Verify row for
+the `media` digest; REPRODUCIBLE.md's `partition-table.bin` hash, once, now. Interacts
+with Q2 (filler slots consume the same slot budget). No longer interacts with Q6.
+
+### Q2. The full duress deniability package, off by default [OWNER-ANSWERED 2026-08-18]
+**DECISION: option (a).** Unused slots are ALWAYS filled with device-derived ciphertext,
+for every user; the Verify screen's storage readout is degraded to "present / blank"
+permanently and for all users, duress or not; and the duress PIN feature itself ships OFF
+by default.
+*Owner-answered 2026-08-18, as recommended.*
+
+**Reasoning as recorded.** A duress feature that leaks the wallet count invites the
+coercion it cannot survive. The cost is real, is paid by every user including every user
+who will never enable duress, and is accepted deliberately rather than minimised.
+
+**The distinction that matters and is easy to get wrong when implementing:**
+`Occupancy::AlwaysFilled` is **not** the duress feature and is not off by default. It is
+the permanent, only, unconditional storage mode - that is precisely what "a cost paid by
+every user" means. What is off by default is the second PIN identity that opens a decoy
+wallet set. Building the filler only for duress users would defeat the entire point,
+because "this device has filler" would itself be the tell.
+
+**Consequences, all of them now decided rather than pending.**
+- **`Occupancy::AlwaysFilled` is the only mode notyas ships.** m3 still builds the mode
+  switch (ESP-SEAL.md is a general layer and `Sparse` remains valid for other embedders),
+  but the notyas product pins it, and a request to change it through SET-POLICY is
+  refused rather than silently ignored (Q5.2 Y2).
+- **The m4b capacity line dies.** "3 of 8 slots" is replaced by the static capacity ("this
+  device holds up to 8 wallets") plus a binary state. Pre-PIN and on the Verify screen the
+  storage rows read `present` or `blank` and nothing else. **After a successful unlock the
+  user sees their real wallet list**, because that is post-PIN and leaks nothing to a
+  coercer who does not have the PIN. S-01, S-03 and S-46 all move together.
+- **Q37's count half resolves to present/blank**; its threshold half was already
+  unconditional. Nothing further is owed there.
+- **Q56 resolves to its Q2(a) branch: the `wallets` raw digest MAY sit pre-PIN.** Under
+  AlwaysFilled a blank partition never raw-reads as a recognisable all-`0xff` constant, so
+  the digest announces nothing. It joins the pre-PIN identity field set and the CI golden
+  list for that set is written accordingly.
+- **SECURITY invariant 5's wording takes the degraded readout** and states why, rather
+  than leaving the conditional in place.
+- **The duress PIN classification and its UX land at m13**, off by default; the record
+  format half already shipped at m3 and needs nothing further (revised R11).
+- **No indistinguishability claim is made beyond what the mechanism delivers**, and the
+  boundary is stated in SECURITY.md: an attacker without the eFuse key cannot tell filler
+  from a real record, and that is the claim. It is not a claim about an attacker who has
+  extracted the key, and it is not a claim that the device's behaviour under a duress PIN
+  is indistinguishable from its behaviour under the real one at every UI surface.
+
+**Blast radius.** Three screens (S-01, S-03, S-46), SECURITY invariant 5, the pre-PIN
+field set, and m13's duress UX. Not the storage format (revised R11).
+
+### Q9. Ship on rev v1.x silicon; the Key-Manager ladder is 0.3.x [OWNER-ANSWERED 2026-08-18]
+**DECISION: release units ship on the rev v1.x silicon both bench units already run (both
+are v1.3), with the HMAC-eFuse ladder exactly as designed.** A Key-Manager-backed ladder
+is scheduled for 0.3.x, on the same record format.
+*Owner-answered 2026-08-18 ("do what is optimal"), and recorded as decided rather than
+left open.*
+
+**Reasoning.** The HMAC-eFuse ladder is the design the whole storage layer is written
+against, it is verified on the two boards that exist, and the P4 Key Manager needs rev
+>= v3.0 silicon that nobody on this bench has. Sourcing v3.0 parts to get a better ladder
+would re-open m3h, m3 and m4a for a benefit no 0.2.0 user can perceive, and it would do it
+during the release the owner wants shipped.
+
+**Why 0.3.x costs nothing to schedule now.** The Key Manager would replace exactly one
+step - `hmac_efuse(0x02, prestretch)` - and the record format does not encode which
+mechanism produced `bound`. A future device on v3.0 silicon can carry a stronger ladder
+under the same format, and the `suite_id` field exists precisely so the two can be told
+apart if they ever need to be.
+
+**Two standing requirements this creates, both cheap and both easy to forget.** The
+`ESP_EFUSE_*` symbols the m3h readout surface uses are revision-family dependent and must
+be re-checked against the post-v3 table if production silicon ever moves. And the Verify
+screen's chip-revision row must print the real revision, never a compiled-in constant, so
+that a unit built on different silicon is visible rather than assumed.
+
+**Blast radius.** m13's provisioning runbook and one line in SECURITY.md's tier list. No
+0.2.0 code depends on it.
 
 ### Q47. Camera support is a build variant, not a runtime capability [CAMERA-HW.md 6.2]
 **DECISION: adopt the build-variant model, and replace m11's unachievable exit gate.**
@@ -432,18 +1043,46 @@ the per-variant column.
 PARITY.md's class assignment for four rows, m11's exit gate, and m12's
 reproducible-build matrix (one more artifact to rebuild bit-identically).
 
-### Q44. The sealing layer lives inside notyas-wallet, not in a separate crate [ESP-SEAL.md 2.4]
-**DECISION: no `esp-seal` crate. The sealing layer is a module inside notyas-wallet,
-and ESP-SEAL.md remains the authoritative DESIGN document for it.**
-*Ratified 2026-08-17 as the direct consequence of the owner's Q8 answer.*
+### Q44. The sealing layer lives inside notyas-wallet, not in a separate crate [ESP-SEAL.md 2.4] - REOPENED AND RE-DECIDED 2026-08-18
+**DECISION: unchanged - no `esp-seal` crate. The sealing layer is a module inside
+notyas-wallet, and ESP-SEAL.md remains the authoritative DESIGN document for it. The
+REASONING is replaced, because the reason it was decided on 2026-08-17 no longer exists.**
+*Reopened 2026-08-18 by the owner's split-licensing answer, re-argued on its merits, same
+outcome.*
 
-**Reasoning.** ESP-SEAL.md 9.1 stated the consequence up front: under a
-GPL-3.0-or-later answer the crate should not be extracted at all, because a GPL3
-"platform contribution" that the permissively licensed ESP32/Rust ecosystem will not
-depend on is worse than an honest internal module. Q8 answered GPL-3.0-or-later. The
-extraction therefore buys nothing and costs a crate boundary and a version-pin
-discipline to maintain, so it is not done. This is a scope reduction, consistent with
-the standing preference for fewer moving parts.
+**Why it had to be reopened, stated rather than skipped.** The 2026-08-17 decision rested
+entirely on the blanket GPL answer: "a GPL3 platform contribution the permissively
+licensed ESP32/Rust ecosystem will not depend on is worse than an honest internal module."
+Under a per-crate split that argument is simply unavailable - a dual MIT/Apache `esp-seal`
+would be adoptable. Leaving the outcome standing on a reason that has evaporated would be
+exactly the kind of stale decision this file exists to prevent.
+
+**Re-argued on the merits, and the answer is the same for two independent reasons, either
+sufficient.**
+
+1. **It is on the GPL side of the line anyway.** The sealing layer is the PIN key ladder,
+   the sealed record format and the wipe policy. It handles user key material and it
+   encodes this project's security policy - both criteria in Q8's principle, at once.
+   Extracting it would produce a GPL crate, which puts us back at the 2026-08-17 argument
+   with extra steps. Licensing it permissively to make it adoptable would mean publishing
+   a permissive implementation of the thing that protects users' seeds, which is the one
+   place the owner's GPL stance is unambiguous.
+2. **Extraction is scope this release cannot afford**, and R4's original sequencing
+   argument survives untouched: publishing an unproven security crate to satisfy an
+   ordering diagram is a disservice to the ecosystem it is meant to serve. The layer is
+   proven on hardware at m4a, which is after the point where a crate boundary would have
+   had to exist.
+
+**Revisit condition, recorded so this is a decision and not an omission:** extraction may
+be reconsidered at 0.3.x, after the format has survived a release on real hardware. It
+would still be GPL-3.0-or-later, and the honest expectation is therefore modest adoption -
+which is why ESP-SEAL.md, published and readable by anyone, remains the contribution that
+actually travels.
+
+**The clean platform boundary stays, for the reason it has had since Q44 was first
+settled: testability.** The host simulator and the fuzz harness substitute the Storage,
+DeviceBinding and KdfScratch traits, and no ESP-IDF type crosses the boundary. That
+discipline is worth keeping on its own and does not depend on any extraction plan.
 
 **This resolves the WALLET-API.md / ESP-SEAL.md overlap in notyas-wallet's favour, and
 it must be recorded rather than left to be discovered.** WALLET-API.md 1.2 and 2.3
@@ -463,38 +1102,104 @@ so before m3 opens.
 WALLET-API.md's module table, m3's crate list and dependency ledger, and m12's
 publication scope (Q46).
 
-### Q8. Licensing for everything this project produces [OWNER-ANSWERED 2026-08-17]
-**DECISION: GPL-3.0-or-later, everywhere.** The firmware, notyas-core, notyas-wallet,
-notyas-ui, notyas-fonts, the tools, and anything that would otherwise have been
-extracted. The owner answered this directly during the ratification pass.
+### Q8. Licensing: a per-crate split, monorepo, with GPL where it matters [OWNER-ANSWERED 2026-08-18, SUPERSEDES the 2026-08-17 blanket answer]
+**DECISION: split licensing.** GPL-3.0-or-later for the product and for everything that
+touches user key material; **MIT OR Apache-2.0** for the generic, reusable, low-level
+pieces that hold no secret and no policy of their own; **CC0-1.0** for pure test data;
+**SIL OFL 1.1** for font data, unchanged and explicitly protected. **Everything stays in
+the notyas repository - one monorepo, no separate repositories.**
+*Owner-answered 2026-08-18: "split licensing is acceptable to meet Rust ecosystem norms,
+GPL-3.0-or-later stays for the parts where it matters, do what is optimal, and everything
+stays in the notyas repo." This supersedes the 2026-08-17 blanket GPL-3.0-or-later
+answer.*
 
-**Reasoning as recorded.** For wallet firmware, GPL-3.0 prevents closed forks of code
-that handles user keys. The owner accepts the adoption cost that copyleft imposes on
-the low-level pieces, which is real: the ecosystems those pieces would have served
-(esp-hal, the esp-idf-* stack, `ur`, `bbqr`, `gt911`) are MIT/Apache and generally will
-not take a GPL dependency.
+**The principle that decides every row, stated once so future crates do not need a new
+decision.**
 
-**Consequences, all of them now settled rather than conditional.**
-- No crate is extracted. `esp-seal` becomes a notyas-wallet module (Q44) and is never
-  published to crates.io (Q46). The `esp-idf-hmac` wrapper, `seedqr` and `bsms` stay
-  in-tree under GPL-3.0-or-later; see the m12 entry for what remains of the
-  contribution shortlist and why it is still worth something.
-- Reconciliation R6 (GPL contagion through `foundation-urtypes`, which is itself
-  GPL-3.0-or-later) is moot. There is no permissive crate for it to contaminate, so UR
-  and transport code has no placement constraint beyond the ordinary one.
-- The clean-room constraint is unchanged and still binds: Trezor's and Jade's code are
-  copyleft, so only their published DESIGNS may inform a clean-room implementation.
-  Being GPL ourselves does not license a port.
-- Fonts are the one carve-out and it survives intact: the IBM Plex TTFs and the
-  generated glyph atlases are SIL OFL 1.1, not GPL, with the Reserved Font Name renaming
-  ("notyas Sans" / "notyas Mono") already handled in LICENSE-fonts. That distinction is
-  load-bearing and must not be flattened into a blanket GPL statement.
-- Outbound contributions to other projects under THEIR licence are not covered by this
-  answer and are now Q51.
+> A crate is **GPL-3.0-or-later** if it is the product, or if it handles user key
+> material, or if it encodes this project's security policy. A crate is **MIT OR
+> Apache-2.0** if it is a generic platform or format building block whose entire value is
+> being adopted by a permissively licensed ecosystem, and which holds no secret and makes
+> no policy decision. Test vectors are data, not implementation, and are **CC0-1.0**. Font
+> data is **SIL OFL 1.1** and is never folded into either scheme.
 
-**Blast radius.** Every SPDX header from the first commit; the m12 publication scope;
-what "platform contribution" means for this project. Relicensing after publication would
-require every contributor's consent, so it is effectively irreversible.
+The dual MIT OR Apache-2.0 pairing rather than MIT alone is deliberate: it is the Rust
+ecosystem's default and it gives downstream users the patent grant in Apache-2.0 without
+forcing its notice requirements. A permissive crate in this tree may be consumed by the
+GPL crates without friction; the reverse is not true, which is why the split runs in the
+direction it does.
+
+#### Per-crate licence table
+
+| Crate / artifact | Licence | Why this side of the line |
+|---|---|---|
+| `firmware` | GPL-3.0-or-later | It is the product. A closed fork of a signer's firmware is the exact outcome copyleft exists to prevent. |
+| `crates/notyas-core` | GPL-3.0-or-later | Derivation, `SecretSigningKey`, sighash, signing. Handles key material directly. |
+| `crates/notyas-wallet` (incl. the `seal` and `store` modules) | GPL-3.0-or-later | The PIN key ladder, the sealed record format, the policy engine. Both criteria at once: it handles keys AND it is the security policy. |
+| `crates/notyas-ui` | GPL-3.0-or-later | Renders secrets, owns the reveal gates and the masking discipline. Product surface. |
+| `crates/notyas-fonts` (code) | GPL-3.0-or-later | Product surface. |
+| `crates/notyas-fonts/src/gen/*` (generated atlases) | **SIL OFL 1.1** | Font DATA, not code. Carve-out preserved verbatim, see below. |
+| `tools/fonts/upstream/*.ttf` | **SIL OFL 1.1** | Unmodified IBM Plex release files. |
+| `esp-idf-hmac` (m3h) | **MIT OR Apache-2.0** | A thin safe binding over ESP-IDF's HMAC peripheral. Holds no key (the key is in an eFuse), makes no policy decision, and its only value is adoption by esp-idf-hal / esp-hal, which are MIT/Apache and will not take a GPL dependency. The clearest case in the tree. |
+| `seedqr` (m11) | **MIT OR Apache-2.0** | An 11-bit packer for a public format. The algorithm is published by SeedSigner; there is no implementation to protect and the only Rust one should be usable by anyone. It touches a mnemonic in memory, which is why it is dual-licensed rather than CC0: attribution and the patent grant still matter for code. |
+| `bsms` (0.3.0, if built) | **MIT OR Apache-2.0** | A BIP-129 protocol codec. BDK asked for one and BDK is permissive; a GPL one would be pointless. Recorded now so the header is right the day it is written. |
+| `tools/uisim`, `tools/fonts/atlasgen`, `tools/*.ps1`, `tools/*.sh` | GPL-3.0-or-later | Development tooling, tied to the product. |
+| Reproducible-build example artifacts (the container definition and the CI workflow REPRODUCIBLE.md tells readers to copy) | **MIT OR Apache-2.0** | Their entire purpose is to be lifted into someone else's repository. A GPL snippet a reader must license-audit before pasting is a recipe nobody follows. |
+| Adversarial PSBT vector FILES (`.psbt` and their expected-verdict fixtures) | **CC0-1.0** | Data. Value comes from adoption; there is no implementation to protect. Own SPDX headers, per file. |
+| The corpus HARNESS and generator | GPL-3.0-or-later | Code, and it encodes our verdict policy. |
+| The `notyas-<ver>-<board>-VERIFY.json` schema and any off-device checker script | **MIT OR Apache-2.0** | A verification format nobody may reimplement is a verification format nobody checks. |
+| Planning and design documents (this directory, ESP-SEAL.md, REPRODUCIBLE.md, VERIFY.md) | GPL-3.0-or-later, as part of the repository | A document does not impose its licence on an independent implementation of the ideas it describes, so this is not a barrier to the contribution they represent. |
+
+**Reasoning for keeping GPL where it is kept.** For wallet firmware, GPL-3.0 prevents
+closed forks of code that handles user keys. That argument is exactly as strong as it was;
+what changed is that it was being applied to pieces it was never about. A safe binding
+over an HMAC peripheral protects no user and forecloses no fork; it just fails to get
+adopted. The split gives up nothing the blanket answer was buying.
+
+**Consequences, worked through rather than assumed.**
+- **Q44 is REOPENED by this answer and re-decided: the outcome stands, the reasoning is
+  replaced.** See its entry. The sealing layer stays a notyas-wallet module - but no
+  longer because "a GPL crate would not be adopted"; now because extraction is scope this
+  release cannot afford and because that layer is on the GPL side of the line anyway.
+- **Q46 is reopened and re-decided.** The sealing layer is still never published. But
+  `esp-idf-hmac` and `seedqr` are now publishable, and their licence headers are set from
+  the first commit so publication later costs nothing. See its entry for what publishes
+  when.
+- **Q51 is answered YES** by the owner in the same instruction. See its entry.
+- **Q39's outbound half closes** with it: the vector files are CC0-1.0 in-repo and may be
+  offered upstream.
+- **Reconciliation R6 comes back to life and must be honoured again.**
+  `foundation-urtypes` is itself GPL-3.0-or-later, so any crate depending on it must be
+  GPL. Under the blanket answer that constraint bound nothing; under a split it binds
+  again. **Requirement: UR and transport encoding stay inside notyas-wallet (GPL), and
+  neither `esp-idf-hmac` nor `seedqr` may take a `foundation-*` dependency.** R6 was marked
+  moot on 2026-08-17; that marking is withdrawn.
+- **The clean-room constraint is unchanged and still binds.** Trezor's and Jade's code are
+  copyleft; only their published DESIGNS may inform a clean-room implementation. Neither
+  being GPL ourselves nor shipping permissive crates licenses a port.
+- **The font carve-out survives intact and is protected explicitly.** The IBM Plex TTFs and
+  the generated glyph atlases are SIL OFL 1.1, with the Reserved Font Name renaming
+  ("notyas Sans" / "notyas Mono") recorded in LICENSE-fonts. It is not GPL and it is not
+  MIT/Apache. **A split licence scheme makes flattening it more likely, not less, so the
+  rule is stated as a prohibition: no crate-level licence statement may be read as
+  covering `crates/notyas-fonts/src/gen/` or `tools/fonts/upstream/`, and every SPDX sweep
+  must exclude those paths explicitly.** LICENSE-fonts remains the authority.
+- **Monorepo confirmed.** Everything lives in the notyas repository. Publishing a crate to
+  crates.io from a path inside this repository is not a repository split and is not
+  precluded by the owner's answer; what is precluded is a second git repository.
+
+**Mechanical enforcement, because a licence policy that is not checked drifts.** m1 adds
+an SPDX header assertion to CI: every `.rs`, `.toml`, `.ps1` and `.sh` file carries an
+`SPDX-License-Identifier` matching the table above for its path, with the font paths on an
+explicit exclusion list, and the job fails on a missing or mismatched header. The same job
+asserts that no crate declared MIT OR Apache-2.0 has a GPL crate in its dependency tree,
+which is what keeps R6 honoured after the person who read this forgets.
+
+**Blast radius.** Every SPDX header from the first commit; `Cargo.toml` `license` fields;
+`COPYING` gains a per-path licence map at the top; the m12 publication scope; R6's
+revival. Relicensing after publication would require every contributor's consent, so the
+permissive rows are effectively irreversible in the permissive direction - which is the
+correct direction for the pieces chosen.
 
 ### Q60. The flash unique-ID row ships only if the bench says it works [VERIFY.md 4.6 / 14]
 **DECISION: measurement-gated. Ship the row if m1's new V3 bench run returns a plausible,
@@ -560,7 +1265,8 @@ will not be stored and they need a backup." This matches Coldcard, and it is wha
 a passphrase wallet hidden: the passphrase is typed per session and exists only in RAM.
 
 Two consequences are requirements, not options, and both are acceptance criteria on the
-milestones that own passphrase wallets (m3 for the field, m4b/m9 for the copy):
+milestones that own passphrase wallets (m3 for the field, m4b for the copy - m9 is
+retired, R26):
 
 1. **Keep `passphrase_check`.** A BIP39 passphrase produces a DIFFERENT wallet, so a
    silent typo on re-entry yields an empty wallet with no error and the user concludes
@@ -818,6 +1524,12 @@ SECURITY.md needs no amendment.
 ## m4b - wallet management UI
 
 ### Q37. Wrong-PIN policy visibility [UX-SCREENS.md; explicitly coupled to Q2]
+**RESOLVED 2026-08-18 by the owner's Q2(a) answer: the slot COUNT is never shown pre-PIN
+or on the Verify screen; those surfaces read `present` / `blank`.** The threshold half was
+already unconditional and is unchanged. S-44 additionally becomes the live wipe-policy
+editor under the ratified Q5, so it now carries the threshold, the power-cut disclosure,
+the wipe-off switch with its arithmetic, and the PIN-removal entry point.
+
 **DECISION, in the form that holds under every Q2 outcome: the wipe threshold is ALWAYS
 shown on S-44. The slot count is not a separate question - its visibility is whatever
 Q2 decides, and needs no further decision.**
@@ -869,6 +1581,10 @@ recorded at the point of use is the acceptable kind.
 which must record the exemption rather than leave it to be discovered.
 
 ### Q56. The `wallets` raw digest is post-PIN unless Q2 ships always-filled slots [VERIFY.md 7.4 / 14]
+**RESOLVED 2026-08-18 by the owner's Q2(a) answer: the digest is PERMITTED PRE-PIN** and
+joins the pre-PIN identity field set, with the CI golden list for that set written
+accordingly. The conditional form below is kept because it is the reasoning.
+
 **DECISION, in the form that holds under every Q2 outcome: post-PIN only under Q2(b) or
 Q2(c); permitted pre-PIN under Q2(a).**
 *Ratified 2026-08-17 in the VERIFY.md sweep. Like Q37, this is a mechanical consequence of
@@ -969,20 +1685,100 @@ so it is decided once, in one place, rather than discovered as a discrepancy at 
 **Blast radius.** m6 session plumbing, the blank-device home screen, S-40's copy, and
 the A9-A13 corpus verdicts.
 
-### Q13. Fee thresholds [was Q12]
-**DECISION: warn above 5% of send value or 500 sat/vB; hard-block only on a negative fee
-and rust-bitcoin's absurd-fee guard; always show absolute sats, sat/vB and percent.**
-*Ratified 2026-08-17 on the project owner's instruction to settle all questions with a
-clear technical optimum.*
+### Q13. Fee thresholds, pinned against what other signers actually do [was Q12] - RESEARCHED AND PINNED 2026-08-18
+**DECISION: three warning axes and two refusals, with the numbers below pinned as
+`FeePolicy` constants in notyas-wallet. All three values are always displayed regardless
+of whether any threshold fires.**
 
-**Reasoning.** Constants live in notyas-wallet and are adjustable in Settings behind the
-expert gate, which is legitimate under Q24 because they are WARNING thresholds.
-Coldcard defaults to a 10% cap; 5% warn plus a hard block only on arithmetic
-impossibilities is stricter where it costs nothing and looser where a hard block would
-be paternalistic. Note the boundary Q24 draws inside the same struct: `warn_percent_of_send`
-and `warn_sat_per_vb` are tunable; `sighash` and `hard_max_percent` are not.
+| Axis | notyas | Kind |
+|---|---|---|
+| Fee as percent of amount sent | **warn at >= 5%** | warning, tunable 1..25 under the Q24 expert gate |
+| Fee rate | **warn at >= 500 sat/vB** | warning, tunable 50..2000 |
+| Absolute fee | **warn at >= 100,000 sat** (0.001 BTC) | warning, tunable 10,000..1,000,000 |
+| Negative fee (outputs exceed inputs) | **refuse** | hard, never overridable |
+| Fee rate >= 25,000 sat/vB | **refuse** | hard, never overridable |
 
-**Blast radius.** m6 policy constants and one review screen.
+*Ratified 2026-08-17 in the abstract; the owner asked on 2026-08-18 for established
+practice to be researched, cited and pinned to concrete numbers. That is done here and the
+numbers changed: an absolute-fee axis was added, and the reasoning behind each is now
+evidence rather than assertion.*
+
+**What the field actually does, verified against source on 2026-08-18.**
+
+- **Coldcard** (`shared/psbt.py`) is the closest comparand and has exactly two lines. It
+  computes `per_fee = the_fee * 100 / self.total_value_out`, appends a `Big Fee` warning
+  when `per_fee >= 5`, and raises `FatalPSBTIssue("Network fee bigger than %d%% of total
+  amount")` when `per_fee >= fee_limit`, where `fee_limit` defaults to
+  `DEFAULT_MAX_FEE_PERCENTAGE = const(10)` and is user-settable, with `-1` disabling the
+  check entirely. So: warn at 5%, refuse at 10%, refusal defeatable.
+- **Trezor** (`core/src/apps/bitcoin/sign_tx/approvers.py` with
+  `trezor-common/defs/bitcoin/bitcoin.json`) works in fee RATE, not percentage. Bitcoin's
+  `maxfee_kb` is 2,000,000 sat/kB, i.e. **2,000 sat/vB**; `fee_threshold = (maxfee_kb /
+  1000) * tx_size_vB` and `fee > fee_threshold` forces an explicit confirmation. Above
+  `10 * fee_threshold` (**20,000 sat/vB**) with strict safety checks it raises
+  `DataError("The fee is unexpectedly large")`. It also confirms above
+  `MAX_SILENT_CHANGE_COUNT = 2` change outputs, which is a different axis worth knowing
+  about.
+- **SeedSigner** has **no fee threshold at all.** `models/psbt_parser.py` does
+  `self.fee_amount = self.psbt.fee()` and `views/psbt_views.py` displays it; there is no
+  comparison, no threshold and no warning anywhere in the flow. This is recorded rather
+  than glossed, because the earlier ratification implied a practice to follow and there is
+  none: SeedSigner shows the number and trusts the user to read it.
+- **rust-bitcoin 0.32** (our own dependency, `psbt/mod.rs`) refuses at extraction:
+  `Psbt::DEFAULT_MAX_FEE_RATE = FeeRate::from_sat_per_vb_unchecked(25_000)`, returning
+  `ExtractTxError::AbsurdFeeRate`.
+
+**How each number was chosen from that.**
+
+- **5% of amount sent** is Coldcard's warn line exactly. A user moving from a Coldcard
+  sees the same trigger at the same place, which is worth more than a marginally better
+  number. Note the denominator difference and implement ours deliberately: Coldcard divides
+  by `total_value_out`, which includes change; notyas divides by the amount actually
+  leaving the wallet, because a 1 BTC self-transfer with a 0.005 BTC fee should warn and
+  under Coldcard's denominator it does not.
+- **500 sat/vB** is 4x tighter than Trezor's 2,000 sat/vB silent-confirm line. Trezor's
+  number is set to almost never fire; ours is set to fire on a genuinely unusual fee while
+  costing only one extra screen when it is wrong. It is a warning, so a false positive is
+  cheap and a false negative is not.
+- **100,000 sat absolute** exists because the other two axes both have a blind spot. A
+  large consolidation has a huge absolute fee, a normal rate and a tiny percentage; a
+  sweep of a small UTXO has a small absolute fee and a large percentage. Only an absolute
+  line catches "you are about to pay 0.004 BTC in fees" when neither ratio looks odd.
+  100,000 sat is the fee a typical 200 vB single-sig spend pays at exactly the 500 sat/vB
+  rate line, so the two warnings agree at the ordinary case and diverge only where they
+  should.
+- **The two refusals are arithmetic, not judgement.** A negative fee is an impossible
+  transaction. The 25,000 sat/vB line is pinned to rust-bitcoin's own constant on purpose:
+  our dependency refuses to extract such a transaction anyway, so a device that signed it
+  would produce something it then could not finalize. Pinning to the library's constant
+  means the two can never disagree.
+- **Coldcard's 10% hard refusal is deliberately NOT adopted.** Two reasons. A 10% fee is
+  legitimate when sweeping a nearly-dust UTXO, and refusing it makes the device wrong in a
+  case the user understands better than the device does. And Coldcard itself makes that
+  refusal settable and disable-able with `-1`, which is an override on a refusal - exactly
+  what the ratified Q24 forbids. Rather than ship a refusal we would then have to let
+  people turn off, notyas keeps every fee refusal to arithmetic impossibilities and lets
+  the warnings carry the judgement.
+
+**Display is unconditional.** The review screen always shows absolute sats, sat/vB and
+percent of amount sent, whether or not any threshold fires. That is the SeedSigner
+instinct - show the number - kept alongside the thresholds rather than instead of them.
+
+**The Q24 boundary inside the same struct, restated because it is easy to violate:**
+`warn_percent_of_send`, `warn_sat_per_vb` and `warn_absolute_sat` are tunable under the
+expert gate; `refuse_negative_fee` and `refuse_sat_per_vb` are not, and no Settings screen
+exposes them.
+
+**Blast radius.** m6 policy constants, one review screen, three corpus cases (one per
+warning axis) plus two refusal cases.
+
+**Sources.** [Coldcard shared/psbt.py](https://raw.githubusercontent.com/Coldcard/firmware/master/shared/psbt.py),
+[Trezor approvers.py](https://raw.githubusercontent.com/trezor/trezor-firmware/main/core/src/apps/bitcoin/sign_tx/approvers.py),
+[trezor-common bitcoin.json](https://raw.githubusercontent.com/trezor/trezor-common/master/defs/bitcoin/bitcoin.json),
+[SeedSigner psbt_parser.py](https://raw.githubusercontent.com/SeedSigner/seedsigner/dev/src/seedsigner/models/psbt_parser.py),
+[SeedSigner psbt_views.py](https://raw.githubusercontent.com/SeedSigner/seedsigner/dev/src/seedsigner/views/psbt_views.py),
+rust-bitcoin 0.32 `bitcoin/src/psbt/mod.rs` line 136 (read from the vendored crate in this
+workspace's Cargo registry).
 
 ### Q23. Change gap bounds, and no persisted index high-water [WALLET-API.md W2]
 **DECISION: anchor on the highest index among this PSBT's own inputs for that
@@ -1107,26 +1903,18 @@ refusal.
 
 ## m7 - multisig
 
-### Q15. No on-device BSMS in 0.2.0; `bsms` built only with spare capacity [was Q6]
-**DECISION: no on-device BSMS (BIP-129) in 0.2.0.** Descriptor import plus the mandatory
-first-address cross-device comparison covers the security need. Build the `bsms` module
-at m12 only if m7 finishes with capacity.
-*Ratified 2026-08-17 on the project owner's instruction to settle all questions with a
-clear technical optimum.*
-
-**Reasoning.** The spec is complete but adoption is thin, and Coldcard implements it on
-its EDGE branch only. Note the Q8 consequence: `bsms` is no longer a candidate published
-crate, so "BDK has an open request for one" no longer supplies a named external consumer.
-It is now purely a question of whether m7 leaves room, and the answer defaults to no.
-
-**Blast radius.** m7 scope.
+### Q15. BSMS - see "Deferred to 0.3.0"
+Deferred whole by the owner on 2026-08-18, and the `bsms` module is not built at all in
+0.2.0 (the earlier "build it at m12 if m7 leaves capacity" conditional is removed).
+Descriptor import plus the mandatory first-address cross-device comparison covers the
+security need. Full entry in the deferred section above. **Blast radius.** m7 scope and
+m12 scope, both reductions.
 
 ### Q16. Taproot multisig timing [was Q7]
 **DECISION: 0.2.0 multisig is P2WSH `sortedmulti` (BIP-48) only.** Taproot single-sig
 (BIP-86) is fully supported for signing; tapscript, multi-leaf and MuSig2 revisit at
 0.3.x.
-*Ratified 2026-08-17 on the project owner's instruction to settle all questions with a
-clear technical optimum.*
+*Ratified 2026-08-17; re-confirmed by the owner 2026-08-18 as the recommended option.*
 
 **Reasoning.** Interop across Sparrow, Specter and Coldcard is not there yet, and
 upstream Coldcard has it on EDGE only. The descriptor model is designed to accept
@@ -1155,7 +1943,15 @@ separate question and is Q51.
 
 ---
 
-## m9 - seed math and seed lifecycle
+## Seed math and seed lifecycle (m9 is RETIRED - see MILESTONES section 4)
+
+**Milestone id m9 was retired in the 2026-08-18 re-scope**, not renumbered, so every
+reference to m10-m13 elsewhere stays valid. Its contents were redistributed: seed import
+by words and the create/restore flows were already m4b's; the stateless-seed session moved
+to m6, where signing lives; the `seedqr` decoder moved to m11, the only thing that needs
+it. BIP-85, Seed XOR, Lock Down Seed and the encrypted backup all left 0.2.0. The
+decisions below keep their numbers and are filed against the milestone that now consumes
+them.
 
 ### Q10. Ratify the class-d reject list [wave 2]
 **DECISION: all nine rejections stand** - PSBT over USB host protocol, USB virtual disk,
@@ -1217,12 +2013,16 @@ cleanly to words-only. No parity row requires a secret QR.
 **Blast radius.** SECURITY.md invariant 2a's corollary; m9 scope; BACKUP-FEATURES rows
 B14, B22-B24; one PARITY row.
 
-### Q33. Seed XOR part generation defaults to dice [BACKUP-FEATURES.md OPEN-B2]
-**DECISION: dice default, deterministic as a clearly labeled second option, both
-shipped - with the deterministic mode behind its own confirmation screen rather than a
-same-screen one-line label.**
-*Ratified 2026-08-17 on the project owner's instruction to settle all questions with a
-clear technical optimum, with one strengthening amendment.*
+### Q33. Seed XOR part generation defaults to dice [BACKUP-FEATURES.md OPEN-B2] - DEFERRED WITH SEED XOR to 0.3.0
+**DECISION STANDS, BUT NOTHING IMPLEMENTS IT IN 0.2.0.** Seed XOR left the release in the
+2026-08-18 re-scope: it is not needed for a working storage, signing and multisig wallet,
+and its dice mode costs up to 297 rolls of UX to build and test. The decision below is
+kept in full so 0.3.0 starts from a settled answer rather than re-deriving one, and
+because the information-theoretic versus computational argument in it is the reason the
+default is not obvious.
+
+*Ratified 2026-08-17 with one strengthening amendment; deferred unimplemented
+2026-08-18.*
 
 **Reasoning.** The two modes are not security-equivalent and the docs say so plainly:
 dice-generated parts give information-theoretic secrecy, while Coldcard's deterministic
@@ -1253,18 +2053,35 @@ and combine in any order; recombination is generation-mode-agnostic.
 
 ## m10 - addresses, messages, exports
 
-### Q11. How loudly must class-c equivalents be shipped? [wave 2]
-**DECISION: on-device text only where a user would otherwise hunt for a missing feature**
-- NFC transfers, camera scan-in when the camera is absent, battery - documentation for
-the rest.
-*Ratified 2026-08-17 on the project owner's instruction to settle all questions with a
-clear technical optimum.*
+### Q11. How loudly must class-c equivalents be shipped? [wave 2] - REFINED BY THE OWNER 2026-08-18
+**DECISION: on-device text earns its place only where a user would otherwise expect the
+feature and go hunting for it. That is exactly two cases: camera scan-in when the camera
+is absent, and battery. NFC is REMOVED from the on-device list and is covered by
+documentation.**
+*Refined by the owner 2026-08-18, tightening the 2026-08-17 ratification.*
+
+**The owner's rule, which is the general form and should be applied to any future row:**
+a line is earned where a user would otherwise expect the feature and hunt for it.
+**Nobody expects NFC on this device.** It is not on the box, it is not in the shape of the
+product, and no screen implies it. A line saying "no NFC" answers a question the user was
+not asking, and every such line dilutes the two that matter.
+
+- **Camera absent** stays on-device: the base artifact and board B both lack it, the sign
+  flow has a load screen where a scan option would obviously belong, and a user who has
+  seen a SeedSigner will look for it. The wording is "no camera on this board/build", per
+  R3, never "no camera exists".
+- **Battery** stays on-device: the device has no power source of its own and a user
+  unplugging it expects it to keep running. That is a surprise worth pre-empting.
+- **NFC moves to documentation**, alongside every other hardware-impossible row: dual
+  secure elements, dual microSD slots, Bless Firmware LEDs, the USB transport rows.
+  PARITY.md and the release notes carry them; no screen does.
 
 **Reasoning.** Every hardware-impossible row has a named equivalent (MILESTONES 7.2). A
 line of on-screen text earns its place when it stops a user searching for something that
-does not exist; otherwise it is clutter that dilutes the text that matters.
+does not exist; otherwise it is clutter, and clutter on a security device is not neutral,
+because it trains people to skim the text that matters.
 
-**Blast radius.** m10 and m13 screen copy.
+**Blast radius.** m10 and m13 screen copy; one fewer line than the 2026-08-17 version.
 
 ### Q38. Address-list truncation [UX-SCREENS.md]
 **DECISION: keep the truncated preview** in S-22's navigation list, with its "never check
@@ -1377,38 +2194,94 @@ Revisit if a contributor owns it.
 
 **Blast radius.** None.
 
-### Q39. Corpus licensing and publication [CORPUS.md corpus-1]
-**DECISION, in part: the harness and the generator stay GPL-3.0-or-later, per Q8.**
-Selected cases are still worth offering upstream to HWI and Coldcard's psbt_faker, and
-the vector files' own licence follows that answer - **both of which are now Q51 and are
-NOT ratified here.**
-*Partially ratified 2026-08-17. The harness half is settled; the outbound half was
-overtaken by the owner's Q8 answer and is escalated rather than silently resolved.*
+### Q39. Corpus licensing and publication [CORPUS.md corpus-1] - COMPLETED 2026-08-18
+**DECISION, now whole: the harness and the generator are GPL-3.0-or-later; the vector
+FILES are CC0-1.0 with their own per-file SPDX headers; selected cases may be offered
+upstream to HWI and Coldcard's psbt_faker under those projects' terms (Q51, answered
+yes).**
+*Partially ratified 2026-08-17, completed 2026-08-18 once the owner's split-licensing
+answer made the original recommendation available again.*
 
-**Reasoning, and why this one could not be ratified whole.** Q39 originally recommended
-licensing the vector FILES permissively (CC0 or MIT) with their own SPDX headers, on the
-argument that test vectors gain their value from adoption and carry no implementation to
-protect. That argument is still sound on its merits. But it was written as a companion to
-Q8's per-crate split, and Q8 has since been answered as a blanket GPL-3.0-or-later
-position. Quietly carving CC0 vectors out of a blanket answer would be substituting my
-judgement for a decision the owner just made deliberately, and upstreaming to HWI and
-psbt_faker (both permissive) is the same shape of question. Both go to Q51.
+**Reasoning.** Q39's original argument was always sound on its merits: test vectors gain
+their value from adoption and carry no implementation to protect. It could not be ratified
+on 2026-08-17 only because a blanket GPL answer was in force and carving CC0 out of it
+would have substituted judgement for a decision the owner had just made. The split answer
+makes it the obvious outcome, and Q8's principle names it directly: data is CC0, code is
+copyleft where it encodes policy. The harness encodes our verdict policy - what a hostile
+PSBT should DO to this device - and stays GPL-3.0-or-later.
 
-Default if Q51 is never answered: the vectors stay GPL-3.0-or-later in-repo, and the
-upstreaming does not happen. That default costs a community contribution at no
-engineering cost, which is the reason to answer Q51 rather than let it lapse.
+**One implementation note so this is not discovered at review time:** the CC0 headers go
+on the vector files and their expected-verdict fixtures, not on the directory, and the
+CI SPDX check (Q8) carries the path rule. A `.psbt` binary cannot hold a header, so each
+one is paired with a `.spdx` sidecar or an entry in a per-directory `REUSE.toml`.
 
-**Blast radius.** Repo licensing headers on the vector files; one contribution that costs
-no engineering because the vectors already exist as m6's gate.
+**Blast radius.** Per-file licensing headers on the vector files; one contribution that
+costs no engineering because the vectors already exist as m6's gate. The upstream offer
+itself is 0.3.0 work (Q46 item 5).
 
-### Q46. The sealing layer stays in-tree and is never published [ESP-SEAL.md 9.1]
-**DECISION: no separate repository, no crates.io publication. The sealing layer lives in
-notyas-wallet for the life of 0.2.0.**
-*Ratified 2026-08-17 as the direct consequence of the owner's Q8 answer.*
+### Q51. Outbound contributions under the receiving project's licence [OWNER-ANSWERED 2026-08-18]
+**DECISION: YES - option (a).** We may contribute code and test data to outside projects
+under THEIR permissive licence.
+*Owner-answered 2026-08-18, as recommended, in the same instruction that split the
+licensing.*
 
-**Reasoning.** The question was where `esp-seal` lives and when it is published. Under
-Q8's answer and Q44's consequence there is no `esp-seal` to place. Publication is not
-deferred; it is withdrawn.
+**Reasoning as recorded.** A test vector carries no implementation to protect and gains
+its value from adoption. A small upstream patch to a crate we depend on is maintenance we
+would otherwise carry forever in a fork. Neither gives away anything that handles user
+keys, which is what the GPL stance protects.
+
+**What this permits, and what it does not.** It permits the no_std BBQr decode as an
+upstream PR to SatoshiPortal's MIT crate, and it permits offering selected adversarial
+PSBT vectors to HWI and psbt_faker. It does not permit relicensing anything in the GPL
+column of Q8's table, and it does not turn an outbound patch into a precedent for the next
+one: each contribution is evaluated against Q8's principle, and anything that would hand
+out a piece of the key-handling path stays in.
+
+**Timing, separate from permission.** Both contributions are 0.3.0 work under the
+2026-08-18 re-scope. The permission is recorded now so the work is not blocked on a second
+conversation later.
+
+**Blast radius.** SPDX headers on the vector files (already handled by Q39); m12's
+contribution scope, which loses the patch and keeps the documents. Nothing in the
+firmware.
+
+### Q46. What publishes, and when [ESP-SEAL.md 9.1] - REOPENED AND RE-DECIDED 2026-08-18
+**DECISION, in three parts.**
+1. **The sealing layer is never published.** No separate repository, no crates.io
+   publication, for the life of 0.2.0 and beyond unless Q44's revisit condition is met.
+2. **`esp-idf-hmac` and `seedqr` carry MIT OR Apache-2.0 headers from their first commit
+   and are publishable**, but **neither is published during 0.2.0**. Publication is
+   0.3.0 work, and it costs nothing to defer because the licence - the only irreversible
+   part - is already in place.
+3. **Everything stays in the notyas monorepo.** A crates.io publication from a path inside
+   this repository is not a repository split.
+*Reopened 2026-08-18 by the split-licensing answer. Part 1 is unchanged; parts 2 and 3 are
+new.*
+
+**Reasoning for part 2, which is the one that changed.** Under the blanket GPL answer
+there was nothing worth publishing. Under the split there are two genuine contributions:
+`esp-idf-hmac` fills a verified gap (esp-idf-sys does not bind `esp_hmac.h`; esp-hal has
+HMAC for S2/S3/C3/C6/H2 but not P4) and can now actually be adopted by the crates that
+needed it, and `seedqr` is still the only Rust implementation of a format SeedSigner
+users depend on. Both are proven by their own gates - m3h's hardware gate for the first,
+published vectors for the second - so neither is an unproven-security-crate publication of
+the kind R4 warned against.
+
+**Why publication still waits for 0.3.0.** Publishing creates a maintenance obligation to
+strangers - issues, semver, MSRV, a release cadence - during the release the owner wants
+shipped. The licence header is the part that is expensive to change later; the
+`cargo publish` is the part that is cheap to do later. Doing the expensive part now and the
+cheap part later is the correct ordering, and it is a deliberate scope decision rather than
+an oversight.
+
+**Reasoning for part 1, unchanged and still the honest description of what 0.2.0
+delivers.** ESP-SEAL.md itself is published in the repository: the byte-exact on-flash
+format, the mount/unlock/seal/wipe state machine, the power-loss analysis, the honest
+attempt-counter trust model, and the attack analysis. Any other project can read all of it
+and reimplement freely, because a document does not impose its licence on an independent
+implementation of the ideas it describes. ESP-SEAL.md 9.1 argued the value was in the
+design rather than in three thousand lines of well-trodden construction; publishing the
+design and not the crate is that position carried through.
 
 **The contribution is not lost, it changes form, and that is worth stating plainly rather
 than dropping the claim.** ESP-SEAL.md itself is published in the repo under
@@ -1422,33 +2295,28 @@ thing worth protecting is the design, which this planning set publishes either w
 Publishing the design and not the crate is a coherent contribution, and it is the honest
 description of what 0.2.0 delivers.
 
-**What remains of PLATFORM.md's contribution shortlist under GPL-3.0-or-later, restated
-honestly rather than dropped.**
-- **esp-seal (item 1):** in-tree module. Contribution = ESP-SEAL.md, published.
-- **esp-idf-hmac / esp-idf-ds / esp-idf-key-mgr wrappers (item 2):** in-tree, GPL-3.0.
-  The verified gap is real (esp-idf-sys does not bind `esp_hmac.h`; esp-hal has no P4
-  HMAC), but the named consumer was esp-idf-hal, which will not take a GPL dependency, so
-  "candidate for upstreaming into esp-idf-hal" is withdrawn. Residual value: the
-  `extra_components` / `bindings_header` recipe is documentable and useful to anyone
-  regardless of licence, and it is the silicon leg under every storage row for us. Keep
-  m3h; drop the upstream-adoption claim.
-- **seedqr (item 3):** in-tree, GPL-3.0. Still the only Rust implementation, still needed
-  by m11's scan-in, and under the ratified Q17 its encode half is test-vector-only. No
-  external adoption claim survives.
-- **bsms (item 4):** in-tree if built at all, per Q15. BDK's open request is no longer a
-  reason to build it, because BDK is permissive.
-- **no_std BBQr decode (item 5):** the only shortlist item that is an upstream PR to
-  someone else's permissive project rather than a crate of ours, which is why it needs
-  the owner's sign-off. **Q51.**
-- **Reproducible Rust-on-ESP-IDF recipe (item 6):** unaffected, and now the strongest
-  remaining contribution. It is a document plus a CI example, licensing is not a barrier
-  to anyone reading it, and no published recipe exists for the Rust + esp-idf-sys +
-  `-Zbuild-std` stack. It stands on its own.
+**PLATFORM.md's contribution shortlist, restated under the split licence and against the
+re-scoped release.**
 
-**Blast radius.** m12's scope loses every "published to crates.io" clause and gains the
-document publications; MILESTONES section 9's "done" definition loses "the published
-crates build from crates.io for someone who has never seen this repository"; measurement
-M9 (crate-name availability on crates.io) is no longer needed.
+| # | Item | Licence | 0.2.0 | Later |
+|---|---|---|---|---|
+| 1 | `esp-seal` | GPL-3.0-or-later, in-tree module | not extracted; the contribution is **ESP-SEAL.md, published in-repo** | extraction revisitable at 0.3.x (Q44) |
+| 2 | `esp-idf-hmac` (+ optional `esp-ds`, `esp-key-mgr` surfaces) | **MIT OR Apache-2.0** | built at m3h, header set, **not published** | published 0.3.0; the "candidate for upstreaming into esp-idf-hal" claim is BACK, because a dual-licensed crate can actually be taken |
+| 3 | `seedqr` | **MIT OR Apache-2.0** | built for m11's scan-in, header set, **not published**; its ENCODE half stays test-vector-only under the ratified Q17 | published 0.3.0 |
+| 4 | `bsms` | **MIT OR Apache-2.0** | **not built at all** (Q15 deferred whole) | 0.3.0; BDK's open request is a reason again, because BDK is permissive and so is this |
+| 5 | no_std BBQr decode | receiving project's MIT | **not done in 0.2.0** - permission is granted (Q51) but the work is deferred | upstream PR at 0.3.0 |
+| 6 | Reproducible Rust-on-ESP-IDF recipe | document GPL-3.0-or-later; **its copyable example artifacts MIT OR Apache-2.0** | **ships at m12**, and is the strongest contribution 0.2.0 makes | - |
+
+Item 6 is worth one sentence of emphasis: no published recipe exists for the Rust +
+esp-idf-sys + `-Zbuild-std` stack, licensing is not a barrier to anyone reading a
+document, and the pieces a reader must copy are permissive precisely so they can copy
+them. It stands entirely on its own and needs nothing from the crate publications.
+
+**Blast radius.** m12's scope carries the document publications and no crate publications;
+MILESTONES section 9's "done" definition loses "the published crates build from crates.io
+for someone who has never seen this repository"; measurement M9 (crate-name availability
+on crates.io) is deferred to 0.3.0 rather than withdrawn, since two names will eventually
+be wanted.
 
 ### Q52. Publish a per-board verification manifest artifact [VERIFY.md 7.3 / 14]
 **DECISION: accept. `notyas-<ver>-<board>-VERIFY.json` joins REPRODUCIBLE.md 3.5's artifact
@@ -1512,6 +2380,38 @@ the shape.
 ---
 
 # Disposition notes
+
+- **Owner answers and re-scope, 2026-08-18.** The owner answered all ten remaining
+  questions. Seven results deferred work to 0.3.0 (Q14, Q15, Q30, Q31, Q32, Q34, Q43),
+  three changed the shape of 0.2.0 (Q5 settable wipe policy, Q7 media reserve, Q8 split
+  licensing), and three confirmed a recommendation as written (Q2, Q16, Q50, plus Q6 with
+  a hardware-gating rule and Q9 and Q51 answered as "do what is optimal" / yes). Two new
+  questions were raised BY those answers and are the only open items: Q62 and Q63.
+- **Questions whose reasoning was replaced rather than whose outcome changed, listed
+  because a stale reason is a future mistake:** Q44 (extraction) and Q46 (publication)
+  both rested on "a GPL crate will not be adopted", which the split licence removes; both
+  were re-argued from scratch and both kept their outcome for different reasons. R6 (GPL
+  contagion through `foundation-urtypes`) was marked moot on 2026-08-17 and is REVIVED:
+  under a split licence it binds again, and neither permissive crate may take a
+  `foundation-*` dependency.
+- **Amendments the owner's answers forced, in one place for auditability:** Q4's floor
+  moved 6 -> 4; Q5's N moved 10 -> 15 and gained a settable policy, which is a format
+  change inside the m3 freeze (policy_log cells, two superblock fields, eight canary
+  bytes, `failures_base` in the ledger head); Q7 gained a 2 MiB `media` partition taken
+  from the app's declared span so no existing offset moved; Q11 lost NFC from the
+  on-device text list; Q13's numbers were re-derived from Coldcard, Trezor, SeedSigner and
+  rust-bitcoin source and gained an absolute-fee axis; Q39 completed to CC0-1.0 vectors;
+  Q56 and Q37 resolved to their Q2(a) branches.
+- **Sub-items that were left as implementation design and are now CLOSED:** whether
+  wipe-after-N is runtime-mutable is answered (it is, and Q5.1-Q5.4 specify how). The
+  scope of the stateless multisig refusal (Q12) remains the one open implementation
+  detail, is settled at m6, and its recommended answer - the broader scope - is recorded.
+- **What the re-scope removed from 0.2.0, as a checklist for the parity audit at m13:**
+  encrypted backups of either profile, device clone, any Key Teleport equivalent, BSMS,
+  taproot multisig, BIP-85, Seed XOR, Lock Down Seed, BIP-322 and proof-of-reserves,
+  message signing, Secure Boot v2 and eFuse anti-rollback, third-party build attestation,
+  the release-key hardware token, and the HIL power-cut rig. Every one of them has a row
+  in MILESTONES section 7.4 with the reason, and none of them is silently dropped.
 
 - **Ratification pass, 2026-08-17.** Thirty-nine questions ratified, Q8 answered by the
   owner during the pass, Q22 already resolved: forty-one settled. Nine of the original

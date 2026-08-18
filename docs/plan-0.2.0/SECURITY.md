@@ -41,21 +41,66 @@ The ESP32-P4 has no secure element. What that means, exactly:
   crowbar glitch (https://courk.cc/esp32-c3-c6-fault-injection). No P4-specific
   result is published; we treat the P4 as NOT proven resistant.
 
-The stored-wallet guarantee is therefore tiered, and the tiers are the claim:
+**Before the tiers, one thing 0.2.0 does not have, because every tier reads differently
+without it.** Secure Boot v2 is NOT burned on 0.2.0 release units (OPEN-QUESTIONS Q32,
+deferred to 0.3.0), and eFuse anti-rollback goes with it. Three consequences, all
+factual:
 
-1. Bench attacker (theft, desolder, flash dump): gets XTS-AES-encrypted flash
-   (release units) containing an AEAD-sealed record. Each PIN guess requires the
-   physical device, because the sealing key ladder passes through the P4 HMAC
-   peripheral whose key lives in a read-protected eFuse block software cannot read
+- **An attacker who has held the device can replace the firmware.** There is no signature
+  check in the boot path to stop them, and no anti-rollback to stop them installing an
+  older image.
+- **The Verify screen therefore cannot vouch for itself.** VERIFY.md section 9 is explicit
+  that secure boot is the only check on that screen which does not depend on the firmware
+  being honest: every other row - the running-app digest, the eFuse readout, the storage
+  state, the boot counter - is a value the firmware reports about itself. On a 0.2.0 unit,
+  the Verify screen tells you what the running firmware says about itself. **If you did
+  not build and flash that firmware yourself from a reproduced image, the screen cannot
+  prove it is the firmware you think it is.**
+- **The reproducible-build chain is the answer and it is unchanged**, but it has to be
+  exercised by the owner, on their own machine, rather than certified by the device. That
+  is a real difference in who does the work, not a rewording.
+
+This is a stated limitation of the release, not an oversight, and the release notes carry
+it in these terms.
+
+**The tiers below describe a device that has stored something. Two of the three supported
+device states have no stored secret at all, and that is worth stating before the tiers
+rather than leaving as an omission** (PIN-MODES.md is authoritative for the states):
+
+- **State 1, stateless (the default, and a first-class mode).** No PIN, nothing written to
+  flash, seed in RAM for the session and gone at power-off. This is the 0.1.0 model and it
+  remains a legitimate way to own this device. **There is no stored-secret threat surface
+  to describe: nothing to brute-force and nothing to extract.** Every tier below is empty
+  in this state.
+- **State 2, PIN set with wipe on (the default once anything is saved).** The tiers below
+  apply, with N = 15.
+- **State 3, PIN set with wipe off.** The tiers below apply with the attempt limit removed;
+  see the wipe stance for what that costs and why it is nevertheless the user's to choose.
+
+The stored-wallet guarantee is tiered, and the tiers are the claim:
+
+1. Bench attacker (theft, desolder, flash dump): gets an AEAD-sealed record. Each PIN
+   guess requires the physical device, because the sealing key ladder passes through the
+   P4 HMAC peripheral whose key lives in a read-protected eFuse block software cannot read
    (P4-specific, IDF v5.5, verified 2026-08-17:
    https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32p4/api-reference/peripherals/hmac.html).
-   On-device guessing meets the attempt counter: 10 consecutive failures (default)
-   destroy the sealed record.
+   On-device guessing meets the attempt counter: **15 consecutive failures (default)
+   destroy the sealed record.**
+   **Two honest qualifications, both new in the 2026-08-18 re-scope.** First, **0.2.0
+   burns no flash-encryption key** (SECUREBOOT.md; Q63), so the flash is NOT XTS-AES
+   encrypted and the sealed record is protected by the PIN ladder alone. The `wallets`
+   partition's `encrypted` flag is inert without the burn, and the Verify screen reports
+   exactly that rather than implying protection that is not there. Second, the attempt
+   counter can be turned OFF by the user (invariant 5's wipe policy) - see the wipe stance
+   below, because that is the difference between 15 guesses and unlimited ones.
 2. Fault-injection lab: assume the eFuse HMAC key and a flash image are eventually
    extracted. The attack then collapses to offline Argon2id-stretched guessing of
-   the PIN/passphrase. A 6-digit PIN falls in days-to-weeks of memory-hard grinding;
-   an alphanumeric passphrase does not. The wall is the user's PIN/passphrase
-   entropy, and the UI says so at PIN creation.
+   the PIN/passphrase, and the wall is entirely the user's entropy. **The PIN floor is 4
+   characters (Q4), and 4 digits does not survive this tier**: 10,000 candidates at the
+   pinned Argon2id cost is hours, not years. 6 digits is days to weeks; an alphanumeric
+   passphrase does not fall. This is stated without hedging here and is shown as an
+   entropy meter at PIN creation, with the wording "a digits-only PIN protects against
+   theft, not against a funded lab".
 3. The attempt counter is advisory against tier 2, and the honest statement of what
    it buys is: **it converts unlimited offline guesses into N guesses per full-flash
    restore cycle.** The counter lives in flash the CPU can address, in a **plaintext**
@@ -72,12 +117,16 @@ The stored-wallet guarantee is therefore tiered, and the tiers are the claim:
    CPU cannot reach. "Tamper-proof storage" is not claimed and never will be on this
    hardware.
 
-Deterministic-wipe posture: because every notyas wallet is re-derivable from the
-user's own dice rolls or mnemonic backup, the stored wallet is a convenience cache,
-not the only copy. A stolen device races the user, who can move funds from backup
-the moment the device goes missing; a wiped device is an inconvenience, not a loss.
-This posture is why the wipe counter defaults aggressive and why the passphrase-first
-UX is the real security control.
+Deterministic-wipe posture, **corrected 2026-08-18 because the original sentence was
+false and the thing that would have made it true is no longer in 0.2.0**: the SEED is
+re-derivable from the user's own dice rolls or mnemonic backup, so a wiped seed is an
+inconvenience rather than a loss, and a stolen device races a user who can move funds from
+backup the moment it goes missing. **The rest of the device's state is not re-derivable
+from anything.** Multisig registrations, labels and settings exist only on the device, and
+with encrypted backup deferred to 0.3.0 (Q14) there is no recovery path for them at all in
+0.2.0. A wipe destroys them permanently. Every wipe surface names them individually rather
+than implying the mnemonic covers everything. This posture is why the wipe counter defaults
+aggressive and why the passphrase-first UX is the real security control.
 
 ## Invariants (0.2.0)
 
@@ -109,13 +158,13 @@ UX is the real security control.
 2b. **What the device writes is enumerated and public.** Flash: the wallets
    partition (sealed records, sealed multisig registrations - ciphertext only) and
    the plaintext counters partition (attempt/guard bit logs, seal_seq high-water,
-   wipe_epoch - no secret content; plaintext by necessity, because bit-clear
-   counters are incompatible with XTS write granularity - ARCHITECTURE 2.5). SD:
-   `*-signed.psbt`, `*-final.txn`, exported xpubs/descriptors [, encrypted backups
-   if OPEN-QUESTIONS Q14 accepts them - explicitly labeled ciphertext. The reference
-   was written as "Q8" in the wave-1 numbering; the question is Q14, not the licensing
-   question]. No key material, no PIN
-   material, no logs reach SD. Privacy note, stated honestly: exported xpubs and
+   wipe_epoch, the wipe-policy log - no secret content; plaintext by necessity, because
+   bit-clear counters are incompatible with XTS write granularity - ARCHITECTURE 2.5), and
+   the `media` partition, which is DECLARED and never written in 0.2.0 (Q7). SD:
+   `*-signed.psbt`, `*-final.txn`, exported xpubs and descriptors. **Nothing else.
+   Encrypted backups were the one conditional item in this list and Q14 deferred them
+   whole to 0.3.0, so this enumeration is now unconditional and 2b needs no amendment.**
+   No key material, no PIN material, no logs reach SD. Privacy note, stated honestly: exported xpubs and
    descriptors are not secrets but reveal the wallet's entire address history to
    whoever reads the card - the export screens say so. Every write to flash or SD
    is announced on-screen before it happens.
@@ -149,21 +198,48 @@ UX is the real security control.
    impossible under any implementation choice; the claim there is the pinned BIP-340
    vectors plus Core verifies and accepts.** (See ARCHITECTURE 5.1.)
 
-5. **Verifiable firmware.** Unchanged mechanism (reproducible build, signed
-   SHA256SUMS, Verify screen). Verify screen additionally reports: storage state,
-   eFuse HMAC-key and anti-rollback state as actually read, and the wallet
-   partition's presence - never constants. Storage-state granularity is pending Q2:
-   "blank / N sealed slots" is the honest default, but reporting N is incompatible
-   with duress-wallet deniability (a coercer reads the true count off the Verify
-   screen). If Q2 ships duress, the readout degrades to "storage: present/blank"
-   and this invariant's text records why.
+5. **Verifiable firmware, and a storage readout that is deliberately coarse.**
+   Mechanism unchanged (reproducible build, signed SHA256SUMS, Verify screen). The Verify
+   screen reports eFuse HMAC-key state, the secure-boot digest slots, the running-app and
+   partition digests and the storage state as actually read - never constants.
+   **Storage-state granularity is settled by Q2(a) and it is a permanent honesty cost paid
+   by every user:** the readout is `present` or `blank`, never a count of sealed wallets,
+   permanently and whether or not that user ever enables a duress PIN. Reporting the true
+   count would let a coercer read off the Verify screen how many wallets exist, which is
+   the leak a duress feature cannot survive. The full wallet list is shown after a
+   successful unlock, where it is post-PIN and leaks nothing. **What makes the coarse
+   readout meaningful rather than merely vague** is that unused slots always hold
+   device-derived filler ciphertext (`Occupancy::AlwaysFilled`), so "present" is the true
+   state of every formatted device and an attacker without the eFuse key cannot tell
+   filler from a real record. The claim stops exactly there: it is not a claim about an
+   attacker who has extracted the key, and not a claim that behaviour under a duress PIN
+   is indistinguishable at every UI surface.
 
-6. **Secure boot, honestly.** Unchanged (Secure Boot v2 RSA-3072 only - ECDSA mode
-   ROM-broken per AR2026-006 - XTS-AES flash encryption, eFuse anti-rollback, all ON
-   for release units, true state on the Verify screen). Amended rank: with a stored
-   secret, flash encryption is now a PRIMARY control, not belt-and-braces. Dev
-   boards run with it off; a dev board's stored wallet is protected by the PIN
-   ladder only, and the Verify screen shows exactly that.
+   **Wipe policy is user-settable, and the settings screen states the cost at the moment
+   of the change.** The default is 15 attempts; the user may change N within 3..=25 or
+   disable the wipe entirely, from an unlocked session only. The mechanism that makes
+   "from an unlocked session only" a real constraint rather than a UI convention is
+   specified in OPEN-QUESTIONS Q5.1-Q5.3 and summarised in the wipe stance below.
+
+6. **Secure boot, honestly - and in 0.2.0 the honest answer is that it is not there.**
+   Secure Boot v2 is **not burned** on 0.2.0 release units, eFuse anti-rollback is not
+   set, and **no flash-encryption key is burned either** (Q32 deferred to 0.3.0;
+   SECUREBOOT.md, which is authoritative and targets 0.3.0). The device stays reflashable,
+   which is what keeps the reproducible-build claim usable by the person it is for.
+   **The one eFuse 0.2.0 uses is the HMAC_UP key the sealed storage binds to** (Q45), and
+   whether SECUREBOOT.md's "no eFuse burned at any point" was meant to include it is the
+   single open question in the set (Q63).
+   **A 0.2.0 unit's stored wallet is therefore protected by the PIN ladder, and the Verify
+   screen shows exactly that** - the same posture dev boards have always had, now stated
+   as the release posture rather than as a development caveat. The three secure-boot digest
+   slots render `not burned`, which is the true and important answer rather than a hidden
+   section.
+
+   When it returns in 0.3.0 the parameters are already fixed and are not re-litigated:
+   Secure Boot v2 RSA-3072 only, never ECDSA (ROM-broken per AR2026-006), with the
+   key-ownership question (ours, the user's, or both channels) settled by Q32 first,
+   because it decides whether an owner of this device can build and run their own
+   firmware.
 
 7. **The signing policy engine is the trust boundary (new).** No PSBT input is
    signed unless: claimed key origins re-derive to the input's actual script; every
@@ -178,25 +254,62 @@ UX is the real security control.
 
 ## Duress and wipe stance
 
-- Wipe-on-N (default 10, range 3..=25 - OPEN-QUESTIONS Q5, ratified) destroys the
-  sealed records and bumps a one-way epoch marker. The user is told at setup that the
-  mnemonic/dice backup is the recovery path - the device never claims to be the only
-  copy. **Two honesty requirements on that copy, both from Q5's ratification.** First,
-  the mnemonic recovers the SEED and nothing else: multisig registrations, labels and
-  device settings are not re-derivable and a wipe destroys them permanently, so the
-  wipe screens must name what is lost rather than implying the seed covers it (the
-  deliberate-erase screen already does; the accidental one did not). Second, a power cut
-  taken between the attempt-cell program and the success-cell write CONSUMES an attempt
-  even when the PIN was correct - that is deliberate and fail-closed, because otherwise
-  power-cutting is a free oracle - so on a portable device the counter can advance with
-  no wrong PIN entered, and the wrong-PIN policy screen must say so.
-- Duress PIN (if Q2 accepted): opens a decoy wallet set; no stored marker says
-  which PIN is which. Red-team correction: this alone is NOT "indistinguishable by
-  construction" - slot occupancy is visible pre-PIN and the Verify screen's slot
-  count would expose how many wallets exist. Full deniability requires
-  always-filled slot ciphertext padding and a degraded Verify storage readout;
-  the decision and its honesty cost live in Q2, and no indistinguishability claim
-  is made unless Q2 accepts that package.
+- **Wipe-on-N (default 15, range 3..=25, user-settable, and disableable** -
+  OPEN-QUESTIONS Q5, owner-answered 2026-08-18) destroys the sealed records and bumps a
+  one-way epoch marker. The user is told at setup that the mnemonic/dice backup is the
+  recovery path for the SEED, and equally plainly that it is not a recovery path for
+  anything else. **Three honesty requirements on that copy.** First, the mnemonic recovers
+  the seed and nothing else: multisig registrations, labels and device settings are not
+  re-derivable, 0.2.0 ships no backup at all (Q14), and a wipe destroys them permanently -
+  so every wipe screen names them, and the accidental path must not disclose less than the
+  deliberate one. Second, a power cut taken between the attempt-cell program and the
+  success-cell write CONSUMES an attempt even when the PIN was correct - deliberate and
+  fail-closed, because otherwise power-cutting is a free oracle - so on a portable device
+  the counter can advance with no wrong PIN entered, and the wrong-PIN policy screen says
+  so. Third, every number in that copy is a format string, because N is runtime state now.
+- **Turning the wipe off is a real weakening, and the device says so where it happens.**
+  With wipe enabled, an attacker holding the device gets N guesses. With it disabled they
+  get all of them, at roughly one per second: a 4-digit PIN is exhausted in under three
+  hours, and in half that by an attacker running their own firmware on both P4 cores -
+  which in 0.2.0 needs no key, because Secure Boot is not burned. The settings screen
+  states the keyspace, the measured per-guess cost and the resulting time **for the PIN
+  actually set**, at the moment of the change, and offers the longer-PIN path as an action
+  rather than only accept or cancel. **A longer PIN is NOT required** - the owner decided
+  that the device states the trade and does not withhold the setting (PIN-MODES.md, Q62) -
+  which puts the entire burden on that copy being accurate and specific.
+- **What stops an attacker turning the wipe off before guessing.** A policy change needs
+  the PIN: both writes that constitute it - a guarded ledger cell and a re-sealed canary -
+  require an unlocked session plus a fresh PIN confirmation, and every attempt to obtain
+  one spends an attempt against the counter being attacked. Offline editing cannot do it
+  either, because the ledger cell's guard and the superblock mirror's MAC both descend
+  from the read-protected eFuse key, so forged bytes are malformed and malformed resolves
+  to the strict default of wipe ON. Erasing the policy log does not help: an empty log
+  falls back to the format-time policy, which has wipe enabled. **What is NOT defended,
+  stated rather than implied: a consistent full-flash snapshot and restore restores the
+  policy along with everything else. If the snapshot was taken while wipe was disabled,
+  restoring it buys unlimited guesses permanently, and turning wipe back on afterwards
+  does not repair it.** A device on which wipe has ever been disabled must be treated as
+  having no attempt limit from the earliest snapshot an attacker might hold.
+- **Removing the PIN means reverting to 0.1.0 stateless operation and destroying every
+  stored wallet.** There is no "stored wallets with no PIN" state, and the reason is
+  structural rather than a policy choice: the sealing key is derived from the PIN, so with
+  no PIN there is no key and no sealed storage. The confirmation names what is destroyed -
+  every wallet, every multisig registration, all labels and settings, the anti-phishing
+  words - with counts read from the store rather than a generic phrase, behind the
+  strongest confirmation the device has. **It must not be described as a security
+  downgrade** (PIN-MODES.md): it is a data-loss event, and the device it produces stores
+  nothing, which is the safest state this hardware has. Two "off" switches, opposite
+  risks; describing them the same way would teach the wrong instinct about both.
+- **Duress PIN (Q2(a), owner-answered 2026-08-18):** opens a decoy wallet set; no stored
+  marker says which PIN is which. The feature is OFF by default. **The deniability package
+  it depends on is not optional and is not off by default** - unused slots always hold
+  device-derived filler ciphertext for every user, and the Verify storage readout is
+  permanently coarse for every user - because a package only some devices have is itself
+  the tell. That is a cost every user pays to protect a minority under coercion; it was
+  chosen deliberately and it is stated rather than buried. The red-team correction that
+  produced it stands: a duress PIN alone would NOT be "indistinguishable by construction",
+  because slot occupancy is visible pre-PIN. The claim actually made is the narrower one in
+  invariant 5, and nothing beyond it is claimed.
 - Anti-phishing words at half-PIN entry authenticate the device to the user
   (https://coldcard.com/anti-phishing-words). Known limit (Coldcard shares it): an
   evil maid who held the device can enumerate and replay the words on a look-alike;
@@ -218,5 +331,21 @@ UX is the real security control.
 - The HMAC-eFuse binding means a dead P4 with an intact flash chip is NOT
   recoverable by moving the flash to another board - by design. The user's backup
   is the recovery path; setup says so.
-- Argon2id parameters are a measured compromise on rev v1.3 silicon (m1 benchmark);
-  they bound, not eliminate, offline guessing after a successful key extraction.
+- Argon2id parameters are a measured compromise on rev v1.x silicon (m1 benchmark;
+  Q9 ships v1.x deliberately, with the Key-Manager-backed ladder scheduled for 0.3.x on
+  the same record format); they bound, not eliminate, offline guessing after a successful
+  key extraction.
+- **No Secure Boot v2 and no anti-rollback on 0.2.0 release units** (Q32, deferred). An
+  attacker who has held the device can flash a modified image, and the Verify screen
+  cannot contradict them because it is produced by the firmware under suspicion. The
+  reproducible-build chain is the mitigation and it requires the owner to build and flash.
+  Accepted for this release and stated in the release notes rather than left to inference.
+- **The release signing key is held on a general-purpose machine**, not a hardware token
+  (Q30, deferred). A verifier's trust in SHA256SUMS.txt is exactly as good as that key's
+  custody, so the custody regime is documented rather than assumed.
+- **The reproducibility claim has no third-party corroboration in 0.2.0** (Q31, deferred).
+  The recipe is published so anyone can check it, and a matching independent build is
+  invited rather than presented as already existing.
+- **No backup of any kind ships in 0.2.0** (Q14, deferred). Multisig registrations, labels
+  and settings are unrecoverable after a wipe. This is the largest single gap in the
+  release and every wipe surface names it.
