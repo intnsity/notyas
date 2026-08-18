@@ -25,6 +25,13 @@
 //!                 -> [`bip39::seed`]               (SPEC step 8)
 //!                 -> [`derive::derive`]            (SPEC step 9)
 //!
+//! Signing hangs off step 9 rather than extending the line, because it starts from a
+//! transaction the pipeline knows nothing about:
+//!
+//!   seed + path   -> [`sign::derive_path`]         -> a key
+//!   tx  + input   -> [`sign::SpendKind::sign_hash`] -> a digest (no key in scope)
+//!   key + digest  -> [`sign::SecretSigningKey::sign`]
+//!
 //! [`report::Report::build`] is the one caller of the first sequence and
 //! [`report::Report::from_phrase`] of the second; the firmware UI renders what either
 //! produces and `qr` draws one value out of it.
@@ -63,6 +70,10 @@ pub mod entropy;
 #[cfg(feature = "qr")]
 pub mod qr;
 pub mod report;
+// Signing (0.2.0-m2). The module's own docs are the summary; an outer doc comment here
+// would make rustdoc resolve the module's intra-doc links in THIS file's scope, which is
+// why `qr` and `selftest` have unresolved links today.
+pub mod sign;
 /// Boot self-test (SECURITY.md invariant 5): a curated vector subset the firmware runs
 /// at every boot and renders on the Verify screen. Off the derivation pipeline above -
 /// it only exercises it.

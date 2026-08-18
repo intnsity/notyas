@@ -15,7 +15,7 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use bitcoin::bip32::{ChainCode, ChildNumber, DerivationPath, Xpriv, Xpub};
+use bitcoin::bip32::{ChainCode, ChildNumber, DerivationPath, Fingerprint, Xpriv, Xpub};
 use bitcoin::key::{CompressedPublicKey, UntweakedKeypair};
 use bitcoin::secp256k1::{All, Secp256k1};
 use bitcoin::{Address, Network, PrivateKey};
@@ -260,13 +260,21 @@ pub fn root_xprv(seed: &[u8; 64], network: bitcoin::Network) -> String {
 /// The master fingerprint: first 4 bytes of HASH160 of the master public key.
 ///
 /// This is a public identifier (not a secret). Hardware wallets display it so a user
-/// can confirm two devices hold the same wallet without exposing any key. Returns an
-/// 8-character lowercase hex string, e.g. `73c5da0a`.
-pub fn root_fingerprint(seed: &[u8; 64], network: bitcoin::Network) -> String {
+/// can confirm two devices hold the same wallet without exposing any key.
+///
+/// The typed form is the one the signing path and PSBT key sources want (a PSBT's
+/// `bip32_derivation` is a `(Fingerprint, DerivationPath)` pair);
+/// [`root_fingerprint`] is the same value rendered for a screen.
+pub fn master_fingerprint(seed: &[u8; 64], network: bitcoin::Network) -> Fingerprint {
     let secp = secp();
     let root = master(seed, network);
-    let xpub = Xpub::from_priv(secp, root.key());
-    xpub.fingerprint().to_string()
+    Xpub::from_priv(secp, root.key()).fingerprint()
+}
+
+/// [`master_fingerprint`] as the 8-character lowercase hex string the report and the
+/// Verify screen print, e.g. `73c5da0a`.
+pub fn root_fingerprint(seed: &[u8; 64], network: bitcoin::Network) -> String {
+    master_fingerprint(seed, network).to_string()
 }
 
 /// Derive one scheme's account keys and `count` address rows (SPEC step 9).
@@ -422,6 +430,11 @@ fn address(
 
 /// The one secp256k1 context of the process.
 ///
+/// Public because it is a crate-wide resource, not a detail of this module: [`crate::sign`]
+/// and every front end that has to call rust-bitcoin directly must reach THIS context
+/// rather than build a second one, which on the device would cost a second copy of the
+/// precomputed tables for no benefit.
+///
 /// Building a context is pure computation over the curve constants, so sharing it changes
 /// nothing but the cost - `--scheme all` would otherwise build four. It is deliberately
 /// never randomized: randomization would need an OS RNG, which this program must not use.
@@ -435,7 +448,7 @@ fn address(
 /// sees that one, and the context is identical whoever builds it (curve constants, no
 /// randomization), so the race is unobservable. The single published context is
 /// deliberately never freed - it lives for the process, exactly as the OnceLock did.
-fn secp() -> &'static Secp256k1<All> {
+pub fn secp() -> &'static Secp256k1<All> {
     static CONTEXT: AtomicPtr<Secp256k1<All>> = AtomicPtr::new(core::ptr::null_mut());
     let mut published = CONTEXT.load(Ordering::Acquire);
     if published.is_null() {
@@ -470,10 +483,14 @@ fn secp() -> &'static Secp256k1<All> {
 ///
 /// The wipe is best effort in the same sense as `SecretKey::non_secure_erase`: it overwrites
 /// the copy this value owns, and cannot follow copies the compiler made in registers.
-struct SecretXpriv(Xpriv);
+pub(crate) struct SecretXpriv(Xpriv);
 
 impl SecretXpriv {
-    fn key(&self) -> &Xpriv {
+    pub(crate) fn new(xpriv: Xpriv) -> Self {
+        SecretXpriv(xpriv)
+    }
+
+    pub(crate) fn key(&self) -> &Xpriv {
         &self.0
     }
 }
@@ -487,7 +504,7 @@ impl Drop for SecretXpriv {
     }
 }
 
-fn master(seed: &[u8; 64], network: Network) -> SecretXpriv {
+pub(crate) fn master(seed: &[u8; 64], network: Network) -> SecretXpriv {
     // A 64-byte seed is always within BIP32's accepted length and the chance of the master
     // scalar landing outside the curve order is negligible, so failure here is not a user
     // error but a broken build.
