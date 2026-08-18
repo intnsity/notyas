@@ -164,6 +164,10 @@ pub struct Region {
 #[derive(Debug, Clone)]
 pub struct VerifyInfo {
     pub firmware_version: String,
+    /// Board name this image was built for (the build IS the board - BOARDS.md).
+    pub board: String,
+    /// Runtime platform as read at boot: IDF version and silicon revision.
+    pub platform: String,
     /// SHA256 of the running app partition, lowercase hex.
     pub app_sha256: String,
     /// Source-id hash of the tree the firmware was built from.
@@ -183,6 +187,8 @@ impl Default for VerifyInfo {
     fn default() -> Self {
         VerifyInfo {
             firmware_version: String::from("not read"),
+            board: String::from("not read"),
+            platform: String::from("not read"),
             app_sha256: String::from("not read"),
             source_id: String::from("not read"),
             self_test: String::from("not run"),
