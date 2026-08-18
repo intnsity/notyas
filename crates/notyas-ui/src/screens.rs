@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 
 use embedded_graphics::draw_target::{DrawTarget, DrawTargetExt};
 use embedded_graphics::pixelcolor::Rgb565;
+use zeroize::Zeroize;
 
 use crate::canvas::{
     self, button, fill, frame, mono_wrapped, panel, strength_meter, tabs, text, text_centered,
@@ -670,8 +671,11 @@ fn draw_phrase<D: DrawTarget<Color = Rgb565>>(
     let inner = l.well.inset(8);
     let adv = MONO_SMALL.glyph('m').advance as i32;
     let per_line = (inner.w / adv).max(1) as usize;
-    let chars: Vec<char> = s.text.chars().collect();
-    let lines: Vec<String> = chars.chunks(per_line).map(|c| c.iter().collect()).collect();
+    // These per-frame copies of the typed phrase are wiped before they are freed: the
+    // phrase is shown unmasked by design, but its heap copies still obey the hygiene
+    // rule (no stale secret bytes stranded in freed allocations).
+    let mut chars: Vec<char> = s.text.chars().collect();
+    let mut lines: Vec<String> = chars.chunks(per_line).map(|c| c.iter().collect()).collect();
     let visible = lines.len().min(3);
     for (i, line) in lines[lines.len() - visible..].iter().enumerate() {
         text(
@@ -684,6 +688,8 @@ fn draw_phrase<D: DrawTarget<Color = Rgb565>>(
             PAPER_3,
         )?;
     }
+    lines.zeroize();
+    chars.zeroize();
 
     // Advisory only, never a veto: the desktop derives from any phrase and warns beside
     // it, and this screen reports the same three findings.
@@ -808,24 +814,24 @@ fn draw_passphrase<D: DrawTarget<Color = Rgb565>>(
         }
     }
 
+    // `differ` is the exact predicate the Done handler blocks on; the drawn state must
+    // never disagree with it. The status row carries ONE line (two would overlap on the
+    // 720-wide panel): the mismatch warning once a confirm attempt exists, otherwise the
+    // char counter - extended with the reason Done is still disabled while the confirm
+    // field is untouched (a disabled control always says why).
     let chars = s.entry.chars().count();
-    text(
-        t,
-        &format!("{chars} chars"),
-        body.x,
-        l.status_y,
-        MONO_SMALL,
-        INK_MUTED,
-        PAPER_1,
-    )?;
-    let mismatch = !s.entry.is_empty() && *s.entry != *s.confirm;
-    if mismatch {
+    let differ = *s.entry != *s.confirm;
+    if differ && !s.confirm.is_empty() {
         let msg = "The two passphrases are different.";
-        let w = MONO_SMALL.text_width(msg) as i32;
-        text(t, msg, body.right() - w, l.status_y, MONO_SMALL, DANGER, PAPER_1)?;
+        text(t, msg, body.x, l.status_y, MONO_SMALL, DANGER, PAPER_1)?;
+    } else if differ {
+        let msg = format!("{chars} chars - repeat to continue");
+        text(t, &msg, body.x, l.status_y, MONO_SMALL, INK_MUTED, PAPER_1)?;
+    } else {
+        text(t, &format!("{chars} chars"), body.x, l.status_y, MONO_SMALL, INK_MUTED, PAPER_1)?;
     }
 
-    draw_keyboard(t, l.kb, s.page, !mismatch)?;
+    draw_keyboard(t, l.kb, s.page, !differ)?;
     Ok(())
 }
 

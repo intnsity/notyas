@@ -71,6 +71,19 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// each desktop front end picks its own count.
 pub const ADDRESS_ROWS: u32 = 5;
 
+/// Byte caps on the typed-phrase and passphrase buffers. Each buffer is created with
+/// its full capacity pre-reserved (`secret_buf`), so a `push` can never reallocate and
+/// strand an unwiped copy of a partial secret outside the `Zeroizing` wrapper's reach -
+/// the same discipline desktop BigDice applies to its passphrase buffers.
+const PHRASE_MAX: usize = 1024;
+const PASS_MAX: usize = 256;
+
+/// A self-wiping string that will never reallocate below `cap` bytes (+3 slack for the
+/// widest UTF-8 char a guard of `len() < cap` can still admit).
+fn secret_buf(cap: usize) -> Zeroizing<String> {
+    Zeroizing::new(String::with_capacity(cap + 3))
+}
+
 /// A touch panel event in display coordinates. The GT911 (or the simulator) reports
 /// down/move/up; the UI turns down+up-on-the-same-region into a tap and vertical moves
 /// into scrolling on the scrollable screens.
@@ -211,7 +224,9 @@ pub(crate) struct DiceState {
 impl DiceState {
     fn new() -> Self {
         DiceState {
-            rolls: Zeroizing::new(String::new()),
+            // Worst case one ASCII digit per entropy bit (rolls of 4/5 yield 1 bit), so
+            // this capacity holds every string the MAX_ENTROPY_BITS guard can admit.
+            rolls: secret_buf(bip39::MAX_ENTROPY_BITS),
             entropy: parse_dice(""),
             mode: MnemonicMode::Raw,
         }
@@ -423,7 +438,7 @@ impl Ui {
             (State::Home, RegionId::HomeNewSeed) => self.state = State::Dice(DiceState::new()),
             (State::Home, RegionId::HomeVerifySeed) => {
                 self.state = State::Phrase(PhraseState {
-                    text: Zeroizing::new(String::new()),
+                    text: secret_buf(PHRASE_MAX),
                     page: Page::Lower,
                 })
             }
@@ -480,8 +495,8 @@ impl Ui {
                 self.state = State::Passphrase(PassState {
                     source: SeedSource::Dice { dice, mode },
                     enabled: false,
-                    entry: Zeroizing::new(String::new()),
-                    confirm: Zeroizing::new(String::new()),
+                    entry: secret_buf(PASS_MAX),
+                    confirm: secret_buf(PASS_MAX),
                     focus: PassFocus::Entry,
                     page: Page::Lower,
                 });
@@ -489,12 +504,12 @@ impl Ui {
 
             // --- phrase entry (verify existing seed) ------------------------------------
             (State::Phrase(s), RegionId::Key(c)) => {
-                if s.text.len() < 1024 {
+                if s.text.len() < PHRASE_MAX {
                     s.text.push(c);
                 }
             }
             (State::Phrase(s), RegionId::Space) => {
-                if s.text.len() < 1024 {
+                if s.text.len() < PHRASE_MAX {
                     s.text.push(' ');
                 }
             }
@@ -515,8 +530,8 @@ impl Ui {
                 self.state = State::Passphrase(PassState {
                     source: SeedSource::Phrase(normalized),
                     enabled: false,
-                    entry: Zeroizing::new(String::new()),
-                    confirm: Zeroizing::new(String::new()),
+                    entry: secret_buf(PASS_MAX),
+                    confirm: secret_buf(PASS_MAX),
                     focus: PassFocus::Entry,
                     page: Page::Lower,
                 });
@@ -602,7 +617,7 @@ fn pass_edit(s: &mut PassState, c: Option<char>) {
         PassFocus::Confirm => &mut s.confirm,
     };
     match c {
-        Some(c) if buf.len() < 256 => buf.push(c),
+        Some(c) if buf.len() < PASS_MAX => buf.push(c),
         Some(_) => {}
         None => {
             buf.pop();

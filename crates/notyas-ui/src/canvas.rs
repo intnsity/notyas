@@ -9,7 +9,7 @@
 //! terminal-plain (ARCHITECTURE.md), and hairline rectangles are exactly reviewable.
 
 use alloc::string::String;
-use embedded_graphics::draw_target::DrawTarget;
+use embedded_graphics::draw_target::{DrawTarget, DrawTargetExt};
 use embedded_graphics::geometry::Point;
 use embedded_graphics::pixelcolor::Rgb565;
 use notyas_fonts::{draw_text, Atlas, TextStyle};
@@ -198,7 +198,11 @@ pub fn field<D: DrawTarget<Color = Rgb565>>(
         let n = value.chars().count();
         value.chars().skip(n.saturating_sub(cap)).collect()
     };
-    text(t, &shown, inner.x + pad, y, MONO, INK_PRIMARY, PAPER_3)?;
+    // Pixel-clip to the field: the mask is a FIXED run (house law), so on a narrow field
+    // (e.g. the 800x480 landscape pair) it is wider than the rect and must crop, not
+    // bleed into the neighboring field.
+    let mut clip = t.clipped(&inner.to_eg());
+    text(&mut clip, &shown, inner.x + pad, y, MONO, INK_PRIMARY, PAPER_3)?;
     Ok(())
 }
 

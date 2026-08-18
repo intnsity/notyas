@@ -370,6 +370,30 @@ fn no_reveal_region_after_reveal() {
 }
 
 #[test]
+fn masked_field_paints_inside_its_rect() {
+    // The mask is a FIXED 24-bullet run; on the narrow side-by-side fields of the
+    // 800x480 landscape layout it is wider than the field and must be clipped, not
+    // bleed across the gap into the confirm field. The gap column between the two
+    // fields must stay free of glyph ink.
+    let mut ui = ui_at_mnemonic(800, 480, SIXES);
+    tap(&mut ui, RegionId::Next);
+    tap(&mut ui, RegionId::PassToggle);
+    type_keys(&mut ui, "a");
+    let entry = region(&ui, RegionId::PassEntry).rect;
+    let fb = Fb::render(&ui, 800, 480);
+    for y in entry.y..entry.y + entry.h {
+        for x in entry.right() + 1..entry.right() + 12 {
+            let px = fb.px[(y as u32 * fb.w + x as u32) as usize];
+            assert_ne!(
+                px,
+                theme::INK_PRIMARY,
+                "mask ink escaped the entry field at ({x},{y})"
+            );
+        }
+    }
+}
+
+#[test]
 fn debug_impl_names_no_secrets() {
     let ui = ui_at_mnemonic(720, 720, SIXES);
     let dbg = format!("{ui:?}");
