@@ -27,11 +27,18 @@
 
 mod board;
 mod display;
+/// 0.2.0-m3h development instrument: the esp-idf-hmac exercise against VIRTUAL
+/// eFuses. Not part of the product image - `--features hmac-virtual-check` is
+/// the only thing that compiles it in, and that feature refuses to build
+/// against real fuses (esp-idf-hmac/build.rs).
+#[cfg(feature = "hmac-virtual-check")]
+mod hmac_check;
 /// Temporary 0.2.0-m1 hardware-measurement harness. Not part of the product
 /// image: `--features measure` is the only thing that compiles it in, and a
 /// build that does never reaches the UI (see the call site below).
 #[cfg(feature = "measure")]
 mod measure;
+mod readout;
 mod theme;
 mod touch;
 mod verify;
@@ -126,7 +133,11 @@ fn main() {
 
     // The product UI, laid out for this board's panel, fed with measured facts.
     let mut ui = Ui::new(board::DISPLAY_WIDTH, board::DISPLAY_HEIGHT);
-    let info = verify::build(&st);
+    // One pass over the chip and flash, then everything downstream is a
+    // rendering of it: the nine-row screen, the boot-log readout and (at m4b)
+    // the QR export all read the same struct, so they cannot disagree.
+    let ro = readout::read();
+    let info = verify::build(&st, &ro);
     log::info!("verify: fw {} | {} | {}", info.firmware_version, info.board, info.platform);
     log::info!("verify: radio: {}", info.radio);
     log::info!(
@@ -134,6 +145,14 @@ fn main() {
         info.secure_boot,
         info.flash_encryption
     );
+    verify::log_readout(&ro);
+
+    // Development instrument, compiled out of every product build. Runs after
+    // the readout so the log shows the true (unburned) eFuse state first and
+    // the virtual-mode changes second, in that order and clearly separated.
+    #[cfg(feature = "hmac-virtual-check")]
+    hmac_check::run();
+
     ui.set_verify_info(info);
 
     // First frame, timed: every repaint is a full-screen draw into the back

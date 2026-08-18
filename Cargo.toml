@@ -27,6 +27,7 @@ members = [
     "crates/notyas-core",
     "crates/notyas-ui",
     "crates/notyas-fonts",
+    "crates/esp-idf-hmac",
     "firmware",
     "tools/uisim",
     "tools/fonts/atlasgen",
@@ -34,10 +35,17 @@ members = [
 # A bare `cargo build` / `cargo test` from the root builds only the host-safe
 # crates. The firmware needs the ESP toolchain + nightly; build it through
 # tools/build.ps1, or `cargo build -p notyas-firmware` from firmware/.
+# esp-idf-hmac IS a default member even though it wraps ESP-IDF peripherals:
+# its data types, enumerator tables and renderings are pure `core`, its
+# esp-idf-sys dependency is target-gated to cfg(target_os = "espidf"), and a
+# host `cargo test` therefore builds and exercises exactly the half where a
+# transposed block number or a mis-spelled key-purpose enumerator would
+# otherwise go unnoticed until a device readout was silently wrong.
 default-members = [
     "crates/notyas-core",
     "crates/notyas-ui",
     "crates/notyas-fonts",
+    "crates/esp-idf-hmac",
     "tools/uisim",
     "tools/fonts/atlasgen",
 ]

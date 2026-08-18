@@ -21,10 +21,21 @@
 # otherwise), and keep it per-board yourself.
 
 param(
+    # Position 0 is declared explicitly, which makes every OTHER parameter
+    # name-only. Without it PowerShell hands the first unnamed argument to the
+    # next declared parameter instead of to $CargoArgs, so `build.ps1 -Board x
+    # --features y` would silently bind "--features" to -Overlay.
+    [Parameter(Position = 0)]
     [ValidateSet("waveshare-4b", "waveshare-5", "waveshare-7b", "waveshare-7x",
                  "waveshare-8x", "waveshare-101x",
                  "elecrow-5", "elecrow-7", "elecrow-9", "elecrow-101")]
     [string]$Board = "waveshare-4b",
+    # Extra sdkconfig defaults files, appended after the board overlay so they
+    # win. For development instruments only (firmware/sdkconfig.efuse-virtual.defaults);
+    # a product image is the base + board pair and nothing else. Always pair
+    # this with NOTYAS_TARGET_DIR, because the IDF build directory bakes in the
+    # merged sdkconfig - see the warning the script prints.
+    [string[]]$Overlay,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$CargoArgs
 )
@@ -76,9 +87,26 @@ Write-Host "CARGO_TARGET_DIR = $env:CARGO_TARGET_DIR"
 # Passed as absolute paths so there is no ambiguity about what the IDF build
 # consumed (pitfall: with a wrong/missing defaults path esp-idf-sys silently
 # builds stock defaults and the image boot-loops on rev v1.3 silicon).
-$env:ESP_IDF_SDKCONFIG_DEFAULTS =
-    (Join-Path $firmwareDir "sdkconfig.base.defaults") + ";" +
+$sdkconfigs = @(
+    (Join-Path $firmwareDir "sdkconfig.base.defaults"),
     (Join-Path $firmwareDir "boards\$Board\sdkconfig.defaults")
+)
+foreach ($o in $Overlay) {
+    $abs = if ([System.IO.Path]::IsPathRooted($o)) { $o } else { Join-Path (Get-Location) $o }
+    if (-not (Test-Path $abs)) { Write-Error "Overlay not found: $abs"; exit 1 }
+    # .ProviderPath, not .Path: on a UNC share Resolve-Path returns a PSPath
+    # prefixed with "Microsoft.PowerShell.Core\FileSystem::", which the IDF
+    # build treats as a filename and silently fails to find.
+    $sdkconfigs += (Resolve-Path $abs).ProviderPath
+}
+if ($Overlay -and -not $env:NOTYAS_TARGET_DIR) {
+    Write-Warning ("An -Overlay was given but NOTYAS_TARGET_DIR is not set, so this build " +
+        "shares board '$Board's target directory. The IDF build directory bakes in the " +
+        "merged sdkconfig, so the next product build of this board may link or flash " +
+        "artifacts made under the overlay (firmware/README.md pitfalls 2 and 10). Set " +
+        "NOTYAS_TARGET_DIR to a short, dedicated path.")
+}
+$env:ESP_IDF_SDKCONFIG_DEFAULTS = $sdkconfigs -join ";"
 Write-Host "ESP_IDF_SDKCONFIG_DEFAULTS = $env:ESP_IDF_SDKCONFIG_DEFAULTS"
 
 # bindgen (esp-idf-sys) needs a native libclang.dll. The esp-clang tool that

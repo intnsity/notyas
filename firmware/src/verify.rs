@@ -3,15 +3,28 @@
 //! chip is executing, the eFuse states from the eFuse controller, the radio
 //! state from the kill pin's actual pad level. A value this build cannot read
 //! reports "unavailable"; a fake value would defeat the screen's purpose.
+//!
+//! Two surfaces live here and the split is deliberate.
+//!
+//! - [`build`] produces the nine-row `notyas_ui::VerifyInfo` the 0.1.0 screen
+//!   renders. Unchanged in shape; it now takes its values from the readout
+//!   rather than reading them a second time, so the screen and the log cannot
+//!   disagree about the same fact.
+//! - [`payload`] and [`log_readout`] produce the full `notyas-verify/1`
+//!   key=value readout (VERIFY.md 7.2) from [`crate::readout`]. That is the
+//!   export format, the boot-log format and the input to S-46's row set, and
+//!   there is exactly one implementation of it.
+//!
+//! The two compile-time values on the readout - the firmware semver and the
+//! board name - are added here rather than in `readout.rs`, because that module
+//! is measurement only and mixing a build's claims about itself into it would
+//! blur the line the whole screen rests on.
 
-use std::ffi::CStr;
-use std::time::Instant;
-
-use esp_idf_svc::sys;
 use notyas_core::selftest::SelfTest;
 use notyas_ui::VerifyInfo;
 
 use crate::board;
+use crate::readout::Readout;
 
 /// One-line self-test summary for the Verify screen and the boot log.
 pub fn selftest_summary(st: &SelfTest) -> String {
@@ -26,25 +39,22 @@ pub fn selftest_summary(st: &SelfTest) -> String {
     }
 }
 
-/// Build the VerifyInfo the UI will show, reading every value now.
-pub fn build(st: &SelfTest) -> VerifyInfo {
+/// Build the VerifyInfo the UI will show, from values already read.
+pub fn build(st: &SelfTest, ro: &Readout) -> VerifyInfo {
     let board = if board::UNTESTED {
         format!("{} (UNTESTED CONFIG)", board::BOARD_NAME)
     } else {
         String::from(board::BOARD_NAME)
     };
 
-    let idf = unsafe { CStr::from_ptr(sys::esp_get_idf_version()) }
-        .to_str()
-        .unwrap_or("unavailable");
-    // major*100 + minor, composed from the pre-v3 split eFuse fields by the HAL
-    // (firmware/README.md pitfall 4; bindings/verify.h).
-    let rev = unsafe { sys::efuse_hal_chip_revision() };
-    let platform = format!("ESP-IDF {idf} | ESP32-P4 rev v{}.{}", rev / 100, rev % 100);
+    let platform = format!(
+        "ESP-IDF {} | ESP32-P4 rev {}",
+        ro.app_idf_version, ro.chip_revision
+    );
 
     // Radio: the compile-time kill mechanism plus the pad level as it reads RIGHT NOW
     // (claim_output keeps the input buffer enabled for exactly this readback).
-    let level = unsafe { sys::gpio_get_level(board::RADIO_KILL_GPIO) };
+    let level = unsafe { esp_idf_svc::sys::gpio_get_level(board::RADIO_KILL_GPIO) };
     let radio_ok = level == 0;
     let radio = format!(
         "kill GPIO{} reads {} | {}",
@@ -55,13 +65,13 @@ pub fn build(st: &SelfTest) -> VerifyInfo {
 
     // Dev boards run with secure boot / flash encryption off; the screen reports the
     // true eFuse state either way (SECURITY.md invariant 6 - honesty over reassurance).
-    let secure_boot = if efuse_secure_boot_enabled() {
+    let secure_boot = if ro.secure_boot.enabled {
         String::from("enabled (eFuse SECURE_BOOT_EN burned)")
     } else {
         String::from("disabled (dev unit; release units burn Secure Boot v2 RSA-3072)")
     };
-    let flash_encryption = if unsafe { sys::esp_flash_encryption_enabled() } {
-        String::from("enabled")
+    let flash_encryption = if ro.flash_encryption.enabled {
+        format!("enabled ({})", ro.flash_encryption.mode.idf_name())
     } else {
         String::from("disabled (dev unit; release units enable XTS-AES)")
     };
@@ -70,7 +80,10 @@ pub fn build(st: &SelfTest) -> VerifyInfo {
         firmware_version: String::from(env!("CARGO_PKG_VERSION")),
         board,
         platform,
-        app_sha256: running_app_sha256().unwrap_or_else(|| String::from("unavailable")),
+        app_sha256: ro
+            .app
+            .map(|r| hex(&r.sha256))
+            .unwrap_or_else(|| String::from("unavailable")),
         // Reproducible-build source id ships with the release tooling (0.1.0 final);
         // until then the screen says so instead of inventing one.
         source_id: String::from("unavailable"),
@@ -83,45 +96,45 @@ pub fn build(st: &SelfTest) -> VerifyInfo {
     }
 }
 
-/// SHA256 of the app image in the RUNNING partition, lowercase hex - hashed from
-/// flash through the partition API, so it covers what the chip is executing, not
-/// what this binary was compiled to claim. None (-> "unavailable") on any error.
-fn running_app_sha256() -> Option<String> {
-    let t0 = Instant::now();
-    let mut digest = [0u8; 32];
-    unsafe {
-        let part = sys::esp_ota_get_running_partition();
-        if part.is_null() {
-            log::warn!("esp_ota_get_running_partition returned null");
-            return None;
-        }
-        let err = sys::esp_partition_get_sha256(part, digest.as_mut_ptr());
-        if err != sys::ESP_OK {
-            log::warn!("esp_partition_get_sha256 failed: 0x{err:x}");
-            return None;
-        }
-    }
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    log::info!(
-        "app sha256 (running partition, hashed in {} ms): {hex}",
-        t0.elapsed().as_millis()
-    );
-    Some(hex)
+/// The complete `notyas-verify/1` payload, in VERIFY.md section 10's frozen
+/// field order: the format line, this build's two compile-time claims, then
+/// every measured field.
+///
+/// Sections 10.5 (`state`, the ledger counters) and 10.6 (`operation`, the
+/// radio pad level and the self-test) are appended by their owners; the field
+/// order places them after these, so appending is all that is required.
+pub fn payload(ro: &Readout) -> Vec<String> {
+    let mut lines = Vec::with_capacity(72);
+    lines.push(String::from("notyas-verify/1"));
+    lines.push(format!("version={}", env!("CARGO_PKG_VERSION")));
+    lines.push(format!("board={}", board::BOARD_SLUG));
+    lines.extend(ro.to_lines());
+    lines
 }
 
-/// The eFuse bit behind esp_secure_boot_enabled(). That function is static inline in
-/// esp_secure_boot.h (not bindgen-able); on ESP32-P4 its non-virtual-eFuse arm reads
-/// this same SECURE_BOOT_EN bit through efuse_ll, so the public field-read API below
-/// is the equivalent - and it is a real symbol.
-fn efuse_secure_boot_enabled() -> bool {
-    // addr_of_mut!: bindgen exposes the descriptor table as a `static mut` array, and
-    // taking a plain reference to one is the static_mut_refs footgun; the raw-pointer
-    // cast never creates a reference. The *mut is only because the C prototype is not
-    // const-qualified - the read never writes through it.
-    unsafe {
-        sys::esp_efuse_read_field_bit(
-            core::ptr::addr_of_mut!(sys::ESP_EFUSE_SECURE_BOOT_EN)
-                as *mut *const sys::esp_efuse_desc_t,
-        )
+/// Print the whole readout to the boot log, one field per line.
+///
+/// Verbose on purpose. This is the artifact that proves each field was read on
+/// each board: a serial capture can be diffed field by field against
+/// `espefuse.py summary`, `esptool flash_id` and the release manifest, which is
+/// a check nobody can perform against a claim that the values were correct.
+pub fn log_readout(ro: &Readout) {
+    log::info!("readout: notyas-verify/1 ({} fields, read in {} ms)", ro.to_lines().len(), ro.elapsed_ms);
+    if ro.efuse_virtual {
+        log::warn!(
+            "readout: CONFIG_EFUSE_VIRTUAL is ON - every eFuse value below comes from a RAM \
+             copy and any write went nowhere. NOT a release configuration."
+        );
     }
+    for line in payload(ro) {
+        log::info!("readout: {line}");
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
 }

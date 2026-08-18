@@ -834,6 +834,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "esp-idf-hmac"
+version = "0.1.0"
+dependencies = [
+ "esp-idf-sys",
+]
+
+[[package]]
 name = "esp-idf-svc"
 version = "0.52.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1393,6 +1400,7 @@ dependencies = [
  "argon2",
  "embedded-graphics",
  "embuild",
+ "esp-idf-hmac",
  "esp-idf-svc",
  "log",
  "notyas-core",

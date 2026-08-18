@@ -36,6 +36,15 @@ board-elecrow-101 = []
 # A measurement build never returns from the harness - it is not a product image.
 measure = ["dep:argon2"]
 
+# The esp-idf-hmac exercise against VIRTUAL eFuses (src/hmac_check.rs). OFF by
+# default and never enabled by a release build. It is the only configuration in
+# this tree that compiles a call to an eFuse write API, and it is safe only in
+# combination with firmware/sdkconfig.efuse-virtual.defaults - which
+# esp-idf-hmac's build script enforces: with `provisioning` on and
+# CONFIG_EFUSE_VIRTUAL off, the build fails rather than producing an image that
+# could program a fuse.
+hmac-virtual-check = ["esp-idf-hmac/provisioning"]
+
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.52", features = ["binstart"] }
@@ -52,6 +61,13 @@ notyas-ui = { path = "../crates/notyas-ui" }
 # Used directly for the selftest-failure screen (main.rs), which is deliberately NOT a
 # notyas-ui screen: it must render even when the crate under test is the one that failed.
 notyas-fonts = { path = "../crates/notyas-fonts" }
+# The eFuse and HMAC-peripheral surface behind src/readout.rs. A DIRECT
+# dependency on purpose: esp-idf-sys collects `extra_components` from the root
+# crate and from its direct dependencies only, so this is what brings that
+# crate's bindings header (esp_hmac.h and the eFuse surface) into the build.
+# MIT OR Apache-2.0 and holds no notyas policy - see its README for why the
+# licence split matters and why nothing product-specific may enter it.
+esp-idf-hmac = { path = "../crates/esp-idf-hmac" }
 # Measurement harness only (feature `measure`). default-features = false keeps the
 # `rand` / `password-hash` surface out of the graph - the harness calls the raw
 # hash_password_into_with_memory API with a scratch buffer it allocates itself, so

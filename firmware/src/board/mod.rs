@@ -5,7 +5,7 @@
 //! (a missing item is a compile error for every build of that board).
 //!
 //! Surface (names normative, see BOARDS.md):
-//!   BOARD_NAME, DISPLAY_WIDTH, DISPLAY_HEIGHT, FLASH_SIZE_MB,
+//!   BOARD_NAME, BOARD_SLUG, DISPLAY_WIDTH, DISPLAY_HEIGHT, FLASH_SIZE_MB,
 //!   RADIO_KILL_GPIO, RADIO_KILL_DOC, UNTESTED,
 //!   radio_lockdown(), display_init(), backlight_set(), touch_init()
 
@@ -45,6 +45,40 @@ const _: () = assert!(
     ENABLED_BOARD_FEATURES <= 1,
     "board features are mutually exclusive; enable exactly one"
 );
+
+/// The board's machine-readable slug: the same string `tools/build.ps1 -Board`
+/// takes, the same one `REPRODUCIBLE.md` names artifacts with, and the value of
+/// the `board=` field in the `notyas-verify/1` readout.
+///
+/// Distinct from `BOARD_NAME`, which is the human-facing marketing name and
+/// would be a poor identifier in a diffable payload. Derived here rather than
+/// per board module so the slug set cannot drift from the feature set above:
+/// `cfg!` expands to a bool literal, so this resolves at compile time and the
+/// unreachable arms are not built.
+pub const BOARD_SLUG: &str = if cfg!(feature = "board-waveshare-4b") {
+    "waveshare-4b"
+} else if cfg!(feature = "board-waveshare-5") {
+    "waveshare-5"
+} else if cfg!(feature = "board-waveshare-7b") {
+    "waveshare-7b"
+} else if cfg!(feature = "board-waveshare-7x") {
+    "waveshare-7x"
+} else if cfg!(feature = "board-waveshare-8x") {
+    "waveshare-8x"
+} else if cfg!(feature = "board-waveshare-101x") {
+    "waveshare-101x"
+} else if cfg!(feature = "board-elecrow-5") {
+    "elecrow-5"
+} else if cfg!(feature = "board-elecrow-7") {
+    "elecrow-7"
+} else if cfg!(feature = "board-elecrow-9") {
+    "elecrow-9"
+} else if cfg!(feature = "board-elecrow-101") {
+    "elecrow-101"
+} else {
+    // Unreachable: the compile_error! above fires when no board is selected.
+    "unknown"
+};
 
 /// Claim a GPIO as push-pull output driven to `level`. Panics on failure -
 /// every caller is boot-critical (radio kill line, backlight power) where

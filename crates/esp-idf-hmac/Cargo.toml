@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 intnsity
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Deliberately permissive, and deliberately dependency-free. This crate is a
+# platform building block whose value is adoption: it wraps a peripheral and
+# an eFuse controller that every ESP32 project has, it holds no key material,
+# and it makes no policy decision. A copyleft licence or a product-specific
+# dependency would make it unusable by the projects it exists to serve, so
+# neither is permitted here (notyas MILESTONES.md m3h, OPEN-QUESTIONS Q8).
+
+[package]
+name = "esp-idf-hmac"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "Safe Rust over the ESP32 HMAC peripheral and the eFuse key-block and security-posture surface it depends on"
+categories = ["embedded", "hardware-support", "no-std"]
+keywords = ["esp32", "esp-idf", "hmac", "efuse", "secure-boot"]
+publish = false # in-tree during 0.2.0 (notyas OPEN-QUESTIONS Q46); publication is a later decision
+
+[features]
+default = []
+# Compiles the eFuse BURN helpers. Off by default and never enabled by a
+# release build. See src/provisioning.rs and build.rs: with this feature on,
+# the build FAILS unless the ESP-IDF configuration virtualises eFuses or the
+# operator sets ESP_IDF_HMAC_ALLOW_REAL_EFUSE_BURN=1 by hand. eFuse writes are
+# irreversible and consume a finite resource; a build that can perform one
+# must be an explicit act, never a default and never a transitive accident.
+provisioning = []
+
+# esp-idf-sys is the ONLY dependency, and only on the target that has an
+# ESP-IDF to bind. On any other target the crate still compiles: the data
+# types, the enumerator tables and their renderings are pure `core` and are
+# unit-tested on the host, which is where a mis-mapped key purpose or a
+# mis-spelled enumerator name is cheapest to catch.
+[target.'cfg(target_os = "espidf")'.dependencies]
+esp-idf-sys = "0.37"
+
+# The C declarations this crate binds. esp-idf-sys collects
+# `extra_components` from the root crate AND from its DIRECT dependencies
+# (esp-idf-sys build/native/cargo_driver/config.rs, `with_cargo_metadata`), so
+# an application that depends on this crate directly gets these bindings with
+# no configuration of its own. `bindings_header` with no `component_dirs` and
+# no `remote_component` builds nothing - it only widens the bindgen surface,
+# which is the only mechanism ESP-IDF's static-inline-heavy headers leave.
+[[package.metadata.esp-idf-sys.extra_components]]
+bindings_header = "include/esp-idf-hmac.h"

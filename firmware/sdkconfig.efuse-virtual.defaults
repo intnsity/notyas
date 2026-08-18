@@ -1,0 +1,28 @@
+# sdkconfig overlay: virtual eFuses. DEVELOPMENT INSTRUMENT, NEVER A RELEASE BUILD.
+#
+# Applied on top of the base and board overlays with
+#   tools\build.ps1 -Board <board> -Overlay firmware\sdkconfig.efuse-virtual.defaults
+# and always into its OWN CARGO_TARGET_DIR (NOTYAS_TARGET_DIR), because the IDF
+# build directory bakes in the merged sdkconfig and reusing the product board's
+# directory would leave a stale, wrongly-configured bootloader behind it
+# (firmware/README.md pitfalls 2 and 10).
+#
+# What it does: redirects every eFuse read and write to a RAM mirror.
+# ESP-IDF's esp_efuse_utility_burn_chip_opt() has no real-burn arm at all under
+# this option - it ORs the write registers into virt_blocks[] and logs
+# "Virtual efuses enabled: Not really burning eFuses". The eFuse programming
+# path is not merely skipped at run time, it is not compiled. This is what makes
+# it safe to exercise the provisioning ladder on a board whose fuses must stay
+# virgin (SECUREBOOT.md section 9, trap T3).
+#
+# What it does NOT do, and the reason a virtual run is never a substitute for a
+# real one: the HMAC peripheral's key-purpose check is performed by hardware
+# against the REAL eFuse block. A virtual block with purpose HMAC_UP produces a
+# peripheral configuration error, not a MAC. The exercise proves the code path;
+# only a burned block can prove the silicon path.
+#
+# CONFIG_EFUSE_VIRTUAL_KEEP_IN_FLASH is deliberately absent: it persists the
+# mirror into an `emul_efuse` partition that the shipped partition table does
+# not and must not contain (SECUREBOOT.md trap T4). Every virtual change dies
+# with the power cycle, which is the property that makes this reversible.
+CONFIG_EFUSE_VIRTUAL=y
