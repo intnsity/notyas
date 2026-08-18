@@ -26,7 +26,18 @@ struct Fb {
 
 impl Fb {
     fn new(w: u32, h: u32) -> Self {
-        Fb { w, h, px: vec![Rgb565::new(0, 0, 0); (w * h) as usize] }
+        // The pixel count is checked rather than cast. Every caller passes
+        // literals today, so this cannot fire - but `(w * h) as usize` is a
+        // silent u32 wrap, and a wrapped length reaches vec![] as a request for
+        // an astronomical allocation that takes the host down rather than the
+        // test. The bound is one panel's worth of pixels with room to spare; a
+        // geometry above it is a bug in the test, not a panel worth supporting.
+        const MAX_PX: usize = 4 << 20;
+        let n = (w as usize)
+            .checked_mul(h as usize)
+            .filter(|&n| n <= MAX_PX)
+            .expect("test framebuffer larger than any supported panel");
+        Fb { w, h, px: vec![Rgb565::new(0, 0, 0); n] }
     }
 
     fn render(ui: &Ui, w: u32, h: u32) -> Fb {

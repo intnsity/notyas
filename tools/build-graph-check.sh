@@ -43,7 +43,10 @@ BUILD_DEP_EXEMPT="embuild tempfile getrandom"
 STRICT_PACKAGES="notyas-core notyas-ui notyas-fonts notyas-wallet"
 
 # Find all Cargo.lock files (workspace + any stragglers).
-LOCKS=$(find . -name Cargo.lock -not -path './.git/*' -not -path '*/target/*')
+# -prune, not -not -path: the filter form still DESCENDS into every pruned
+# directory and discards the results afterwards, which means walking the whole
+# build tree - thousands of files, over SMB - on every run of this gate.
+LOCKS=$(find . \( -name .git -o -name target \) -prune -o -name Cargo.lock -print)
 
 if [ -z "$LOCKS" ]; then
     echo "build-graph-check: no Cargo.lock found - run 'cargo generate-lockfile' first"

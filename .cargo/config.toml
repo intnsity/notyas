@@ -1,0 +1,20 @@
+# Host build settings for the whole workspace.
+#
+# target-dir is pinned to local disk on purpose. The working tree is canonical
+# on the NAS share, but build artifacts must never land there: an SMB path costs
+# the kernel a file object per open in the redirector, and a build's open/close
+# churn is by far the heaviest such workload this project produces. A stray
+# `cargo test` from the repository root once left a 391 MB, 3257-entry target/
+# tree on the share; tools/ci/check-target-dir.sh exists to catch that class of
+# mistake after the fact, and this setting is what prevents it in the first place.
+#
+# This does NOT affect the firmware. tools/build.ps1 sets CARGO_TARGET_DIR as an
+# environment variable, and an env var outranks [build] target-dir in cargo's
+# precedence order, so the per-board firmware target directories still win.
+#
+# Deliberately not set here: `jobs`. Cargo's default is the CPU count, which is
+# the right answer on any machine this repo is built on. A memory ceiling is a
+# job-object concern, not a parallelism one - capping jobs would trade build
+# throughput for a bound it does not actually enforce.
+[build]
+target-dir = "C:/nyt-host"
