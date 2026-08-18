@@ -68,11 +68,18 @@ licensing section):
 
 Verdict: gap worth filling, and the highest-value contribution available.
 Nothing in Rust today gives an ESP32 project "seal a secret under PIN plus a
-silicon-bound key with attempt limiting." Honest constraint to document: with
-no secure element and (on most P4 boards) external flash, attempt-counter
-rollback resistance ultimately rests on secure boot + XTS-AES flash encryption
-+ the eFuse-bound HMAC key - the same trust model as other
-non-secure-element-class devices. State it; do not oversell it.
+silicon-bound key with attempt limiting." Honest constraint to document
+(corrected 2026-08-17 from ESP-SEAL.md 7.2 - the earlier wording here credited
+flash encryption with rollback resistance it does not provide): with no secure
+element and (on most P4 boards) external flash, the counter has to live in a
+PLAINTEXT partition, because bit-clear counters are incompatible with XTS write
+granularity. XTS-AES flash encryption therefore does not raise the cost of a
+counter rollback at all. What is actually detected is a ledger-only rollback,
+by a mount-time witness check against the records and by device-keyed guard
+patterns; a consistent full-flash snapshot and restore is undetectable and needs
+no key. The claim to make is "the attempt counter converts unlimited offline
+guesses into N guesses per full-flash restore cycle" - the same trust model as
+other non-secure-element-class devices. State it; do not oversell it.
 
 ## 2. Survey: display / input
 

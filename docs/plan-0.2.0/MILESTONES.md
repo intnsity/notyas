@@ -146,9 +146,12 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   (benchmark, camera spike is board A).
 - **Scope:**
   - Ratify OPEN-QUESTIONS Q1-Q7 with the user and write the decisions into SPEC and
-    the plan texts: randomness policy (ARCH 2.4), duress package (Q2 - it changes
-    the m3 record format, see R11), signing equivalence and low-R grinding (Q3),
-    PIN floor (Q4), wipe-after-N (Q5), camera in-or-out (Q6), partition offsets (Q7).
+    the plan texts: randomness policy (ARCH 2.4), duress package (Q2 - behaviour
+    only; it does NOT change the m3 record format, see the revised R11), signing
+    equivalence and low-R grinding (Q3), PIN floor (Q4), wipe-after-N (Q5), camera
+    in-or-out (Q6), partition offsets (Q7). Take Q8 here too, even though it is not a
+    code dependency until m3h: it decides the SPDX header of the first extracted
+    crate and, with it, Q44 and Q46.
   - Workspace and CI: the root workspace and the unified Cargo.lock already landed
     in 0.1.0 (commit b0f9452), as did tools/build-graph-check.sh (commit d151b2e).
     m1 does NOT rebuild them; it EXTENDS the ban list and the graph walk to every
@@ -182,6 +185,43 @@ Hard serialization on hardware resources, stated so two agents do not collide:
     encryption is on and release units pay that cost (ARCH 2.3). All boards are
     P4NRW32 with 32 MB PSRAM, so 64 MiB working memory is not the constraint;
     latency is. Commit the numbers; pin the parameters.
+  - **Measurement M6 - NOR partial-page program limit on the actual flash parts
+    (ESP-SEAL.md 8.3). This is an m1 exit gate, not a nice-to-have, because it can
+    invalidate the on-flash format.** The ledger's bit-clear attempt counter programs
+    **up to 32 cells into a single 256-byte page** between erases. SPI NOR parts
+    specify a maximum number of partial-page programs to the same page between erase
+    cycles, and if the real limit is below 32 the cell size or the page layout has to
+    change - which is a format change, so it must be known BEFORE the format is
+    frozen. Two steps, both required:
+    1. **Read the datasheets for the parts actually fitted.** Board A (Waveshare) is
+       a 32 MB GD25Q256-class part - `docs/research/hardware.md` records "QSPI to
+       external 32 MB NOR flash" (capacity only, no part number), and
+       `docs/research/waveshare-family.md` identifies the family part as
+       GD25Q256EYIGR. Board B (Elecrow) is 16 MB, and
+       `docs/research/elecrow-board.md` records a vendor swap that matters here: the
+       schematic specifies Winbond W25Q128JVSIQ while the probed unit reports
+       GigaDevice `c8/4018` = GD25Q128. **Read the JEDEC ID off each unit on the
+       bench first and read the datasheet for what is actually there**, not for what
+       the schematic says - both vendors' parts are in circulation for board B, and
+       their partial-program specs are not guaranteed to agree.
+    2. **Run an empirical soak test.** Program cells one at a time into a single page
+       of the `counters` partition, reading back after every program, until read-back
+       diverges or the design's 32 is comfortably exceeded; repeat across several
+       pages and both boards. Datasheet numbers here are conservative and sometimes
+       silent, so the soak is what the format is frozen against.
+    **Consequence if the limit is exceeded:** the ledger cell layout is re-designed
+    (larger cells, fewer per page, or one cell per page) before m3 writes a line of
+    the format, and the m1 geometry freeze is re-taken with the new layout. Commit
+    the datasheet citations and the soak results next to the Argon2 numbers.
+  - The remaining ESP-SEAL.md 8.3 measurements ride the same harness and are
+    committed with it: M3 (`esp_hmac_calculate` latency - mount does up to ~40 MAC
+    operations), M4 (4 KiB erase and 256-byte page program times - sizes the
+    power-loss window), M5 (64 MiB PSRAM zeroization time), M7 (the P4's
+    Development-mode flash-encryption re-flash count eFuse field - how many times the
+    sacrificial board can be re-flashed), M8 (full cold-boot-to-session unlock wall
+    time) and M9 (`esp-seal` crate-name availability on crates.io). M1 and M2 are the
+    Argon2id and PSRAM-bandwidth runs above. Only M6 is an exit gate; the rest are
+    "committed numbers, no invented values".
   - Camera decision spike (board A, half a day, CAMERA.md section 5): plug the
     user's SeedSigner OV5647 module into J1, run the esp-video `capture_stream`
     example, record pass/fail. This is the cheapest possible answer to Q6 and it
@@ -196,8 +236,12 @@ Hard serialization on hardware resources, stated so two agents do not collide:
 - **Exit gate (hardware):** both boards boot the new partition table and report the
   new geometry on the Verify screen; the QR modal is reachable and renders on both
   boards (photo evidence in the milestone note); benchmark numbers committed
-  including the encryption-on run; the camera spike result committed as pass or
-  fail with the module part number; CI red on a planted `rand` dependency.
+  including the encryption-on run; **M6 answered on both boards - JEDEC ID read off
+  each fitted part, the matching datasheet's partial-page-program limit cited, and a
+  soak test showing 32 cell programs into one 256-byte page read back intact; if the
+  limit is below 32, the ledger cell layout is re-designed and the geometry freeze
+  re-taken before m1 closes**; the camera spike result committed as pass or fail with
+  the module part number; CI red on a planted `rand` dependency.
 - **Parity rows closed:** none directly (foundation). Unblocks every storage row.
 - **Implements:** audit repo hygiene; storage research 3.2 ("never ship a guessed
   KDF cost"); red-team counter-partition finding (ARCH 2.5/2.7); CAMERA.md decision
@@ -257,8 +301,10 @@ Hard serialization on hardware resources, stated so two agents do not collide:
 
 ### 0.2.0-m3 - notyas-wallet sealing and storage engine (host-proven)
 
-- **Depends on:** m1 (KDF parameters, partition geometry, Q2 duress package, Q5
-  wipe-N). Not on m3h: the HMAC step is trait-injected and stubbed on host.
+- **Depends on:** m1 (KDF parameters, partition geometry, the M6 partial-page result,
+  Q5 wipe-N). **Not on Q2** - the filler mechanism is built either way and Q2 only
+  picks the mode at runtime (revised R11). Not on m3h either: the HMAC step is
+  trait-injected and stubbed on host.
 - **Settled input (Q22, RESOLVED 2026-08-17):** the record NEVER stores the BIP39
   passphrase. It DOES carry `passphrase_check`, a KDF-separated fingerprint of the
   passphrase-applied root derived under its own HKDF info label - never the seed and
@@ -289,10 +335,16 @@ Hard serialization on hardware resources, stated so two agents do not collide:
     now-stale inactive slot of each pair after the new record is committed and
     verified. Erase-after-commit keeps power-loss safety and the fuzzer covers the
     window.
-  - If Q2 chooses the deniability package: unused slots hold device-bound
-    pseudorandom filler (HMAC-eFuse-derived stream, no RNG), and delete/wipe rewrite
-    filler rather than leaving erased-flash signatures. This is a RECORD-FORMAT
-    decision, which is why Q2 blocks m3 and not m13 (R11).
+  - Build the filler mechanism unconditionally, and make its USE a runtime mode.
+    An unoccupied slot under `Occupancy::AlwaysFilled` holds a genuine AEAD record
+    sealed under a device-derived key (`HKDF(filler_root, kdf_salt, RecordInfo)`,
+    no RNG), with the same header shape, `pin_gen` identity 0, and a consumed
+    `seal_seq` so sequence gaps do not betray occupancy either; under
+    `Occupancy::Sparse` an unoccupied slot is simply erased on both sides. **The
+    on-flash format is byte-identical between the two modes** (ESP-SEAL.md 3.6), so
+    Q2 selects a mode and does not change the format - which is why Q2 no longer
+    blocks m3 (revised R11). Delete and wipe rewrite filler rather than leaving
+    erased-flash signatures whenever the mode is on.
   - Host power-loss fuzzer: truncate and corrupt the write stream at every byte
     offset and after every erase. Property: mount yields the previous record or the
     new one, never garbage, never a panic - including the PIN-change
@@ -581,8 +633,13 @@ Hard serialization on hardware resources, stated so two agents do not collide:
 
 ### 0.2.0-m11 - Camera scan-in (OPTIONAL, board A only)
 
-- **Depends on:** m1's spike result and the Q6 answer; m6 (a PSBT source
-  abstraction to plug into); m9 (`seedqr`).
+- **Depends on:** m1's spike result and the Q6 answer (which, under CAMERA-HW.md 6.2's
+  refinement, also decides whether this milestone is delivered as one unit or as the
+  individually droppable steps m-camera-2..5, with m-camera-0 being m1's spike and
+  m-camera-1 - the `board::shared_i2c_bus()` refactor - pulled forward into the early
+  infrastructure work); Q47 (per-board policy and the artifact split); Q48, Q49 and
+  Q50 at their points inside this milestone; m6 (a PSBT source abstraction to plug
+  into); m9 (`seedqr`).
 - **Runs on:** board A only. Board B physically cannot take a Pi-class module; its
   camera is Elecrow's 24-pin SC2336, deferred to 0.3.0 (CAMERA.md 2.3).
 - **Scope:** CSI capture bring-up with `esp_cam_sensor` + `esp_video` on the
@@ -590,8 +647,10 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   grayscale straight into `rqrr`; static scan-in of SeedQR/CompactSeedQR, plain word
   lists, descriptors and addresses; animated scan-in of UR `crypto-psbt` (and BBQr
   if the crate clears the ledger); a viewfinder screen with an honest per-board
-  support statement. Compile-time feature, OFF by default; a build without it must
-  be byte-identical to the no-camera build.
+  support statement. Compile-time feature, OFF by default, and under Q47 a separately
+  named and separately hashed build VARIANT rather than a runtime capability; the base
+  artifact is proven camera-free by the link-map gate, not by a hash comparison
+  against itself.
   USB-UVC is rejected in all builds: it turns the signer's only data port into a
   parser of untrusted device descriptors (USBFuzz, USENIX Security 2020), and
   neither board can even power a webcam without an external hub.
@@ -602,8 +661,17 @@ Hard serialization on hardware resources, stated so two agents do not collide:
 - **Exit gate (hardware):** on board A with the user's SeedSigner module, scan a
   CompactSeedQR and restore the expected fingerprint; scan an animated UR
   `crypto-psbt` emitted by Sparrow at Sparrow's default density and sign it; the
-  camera-off build's image SHA256 is unchanged by the feature's presence in the
-  tree; the per-board support statement lands in BOARDS.md and on the Verify screen.
+  camera-off image is provably free of camera code; the per-board support statement
+  lands in BOARDS.md and on the Verify screen.
+  **Gate correction, pending Q47:** this clause previously read "the camera-off
+  build's image SHA256 is unchanged by the feature's presence in the tree".
+  CAMERA-HW.md 6.2 shows that is not achievable - esp-idf-sys metadata cannot be
+  feature-gated, so the esp_video C sources sit in every build's component tree and
+  only the per-board sdkconfig overlay turns them off. The replacement gate is a
+  LINK-MAP assertion that no camera symbol reaches the image, plus a pinned hash for
+  each separately named artifact. That is verification of absence rather than absence,
+  and the release notes must say which is being claimed. Q47 ratifies the artifact
+  split this depends on.
 - **Parity rows closed (only if this milestone ships):** scan seed via QR (c -> b),
   PSBT via QR scan-in (c -> b), QR scanner module (c -> b), verify-address input
   ergonomics (b), Key Teleport receive (still deferred - it needs protocol work
@@ -762,7 +830,7 @@ operationally; PARITY.md's tally is an erratum, not a scope change.
 | Lock Down Seed | m9 | Destructive re-seal of the slot with the passphrase-derived secret |
 | Two-part main PIN | m4a | Prefix/suffix UX; enforcement is the KDF ladder plus the counter, not hardware |
 | Anti-phishing words | m4a | HMAC-eFuse derived; exists only post-provisioning (R20); replay limit stated |
-| Trick PINs (duress wallet leg) | m3 format + m13 UX | Q2 package decides deniability; brick/wipe variants and Delta Mode rejected (7.3) |
+| Trick PINs (duress wallet leg) | m3 mechanism + m13 UX | Q2 selects the occupancy mode and the readout, not the format (revised R11); brick/wipe variants and Delta Mode rejected (7.3) |
 | Login Countdown | m4a (escalating delay) | Long configurable countdown deferred: self-lockout risk, weak without an SE |
 | Kill Key | m13 | Real when implemented as storage-key zeroization |
 | MicroSD 2FA | deferred to 0.2.x | Card-serial binding adds a bricking failure mode for modest gain |
@@ -885,8 +953,11 @@ notyas equivalent is "PIN-as-key-material, offline-hard but not attempt-limited"
 The wave-1 design DOES attempt-limit, because the ladder passes through the
 eFuse-keyed HMAC peripheral, so each guess needs the physical device, and wipe-on-N
 destroys the record. Resolution: plan-0.2.0/SECURITY.md's tiered statement governs;
-PARITY's preamble is superseded on this point. The honest limit is unchanged: the
-counter is advisory against a fault-injection lab.
+PARITY's preamble is superseded on this point. The honest limit is unchanged in
+substance and sharpened in wording (ESP-SEAL.md 7.2): the counter is advisory against
+a fault-injection lab, and the claim to make is "N guesses per full-flash restore
+cycle", never a bare "attempt limited". The `counters` partition is plaintext, so
+flash encryption adds nothing to rollback resistance.
 
 **R9 - master-seed-keyed encryption.** PARITY maps class-b storage rows onto
 Coldcard's "AES keyed by the master seed" pattern. notyas has no single master seed
@@ -901,11 +972,41 @@ Resolution: both are deferred beyond 0.2.0, and PARITY's stated equivalent for K
 Teleport ("encrypted state file over microSD") does not exist in 0.2.0 and must not
 be claimed.
 
-**R11 - duress is a record-format decision, not a late feature.** Wave 1 schedules
-duress in the final milestone while its deniability package requires all slots to be
-ciphertext-filled at all times. Adding filler slots after m4a ships would change the
-on-flash format under existing users. Resolution: Q2 must be answered at m1; the
-filler-slot format lands in m3; only the PIN-classification and UX half lands at m13.
+**R11 - duress is a BEHAVIOUR decision, and the format carries it either way.**
+REVISED 2026-08-17 against ESP-SEAL.md 3.6; the original text is kept below because
+the correction is the interesting part.
+
+*Original finding:* wave 1 schedules duress in the final milestone while its
+deniability package requires all slots to be ciphertext-filled at all times, so adding
+filler slots after m4a ships would change the on-flash format under existing users -
+therefore Q2 blocks m3.
+
+*Correction, and it wins:* filler needs no format change. ESP-SEAL.md 3.6 makes an
+unoccupied slot a genuine AEAD record sealed under a **device-derived** key rather
+than a PIN-derived one - `HKDF(filler_root, kdf_salt, RecordInfo)` over a zero
+plaintext - carrying the same 80-byte header shape, the same `pin_gen` identity 0, and
+consuming a `seal_seq` like any other record. Two consequences do the work: the device
+distinguishes filler from a real record without a PIN, at one HKDF and one AEAD open
+per slot, so "empty" is never confused with "wrong PIN"; and an attacker without the
+eFuse key cannot make that distinction at all. The format under
+`Occupancy::AlwaysFilled` and under `Occupancy::Sparse` is byte-identical - only the
+CONTENT of an unoccupied slot differs.
+
+*Which analysis wins, and why:* the ESP-SEAL analysis. The reconciliation reasoned
+from ARCHITECTURE 2.5's prose, which described duress before any filler construction
+existed and could only infer that "all slots ciphertext-filled" must be a format
+property. ESP-SEAL.md is the concrete format, and it exhibits the mechanism at zero
+marginal format cost. A demonstrated mechanism beats an inference that no such
+mechanism exists.
+
+*Resolution:* m3 implements the filler mechanism unconditionally and exposes the
+occupancy mode as runtime state, so nothing about Q2's answer reaches the on-flash
+bytes. Q2 decides behaviour - whether the mode is on, whether the Verify storage
+readout degrades permanently for all users, and the PIN-classification and UX half at
+m13 - and its real deadline is **m4b**, the milestone that ships the capacity line and
+the readout. It stays in the blocking set only because it is cheap to settle at m1 and
+three screens (S-01, S-03, S-46) and Q37 depend on it; answering it after the format
+freeze costs no migration. R11's original scheduling claim is withdrawn.
 
 **R12 - low-R grinding reaches further than SPEC text.** Wave 1 treats Q13 as an
 invariant-4 wording question. Adopting `sign_ecdsa_low_r` means not using

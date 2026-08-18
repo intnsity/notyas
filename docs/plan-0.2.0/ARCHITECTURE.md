@@ -268,11 +268,29 @@ test to the new crate; getrandom/rand* stay banned from the whole graph).
   bump a wipe-epoch marker. Because notyas is deterministic (dice/mnemonic re-derive),
   a wipe is a recoverable inconvenience, not a brick - which is why N can be
   aggressive (OPEN-QUESTIONS Q3 for the default).
-- Honest limits, stated in SECURITY.md: the counter lives in flash the CPU can
-  address. A full-flash snapshot/restore replays it; release-unit XTS-AES flash
-  encryption raises the cost but the P4 has no CPU-unreachable monotonic counter on
-  rev v1.3 silicon. This is precisely the gap a secure element would fill
-  (https://bitbox.swiss/bitbox02/threat-model/); we do not paper over it.
+- Honest limits, stated in SECURITY.md, and stated precisely because the loose
+  version overstates the protection (corrected 2026-08-17 from ESP-SEAL.md 7.2): the
+  counter lives in flash the CPU can address, and the `counters` partition is
+  **PLAINTEXT**. Flash encryption therefore does **not** raise the cost of a counter
+  rollback - there is no key to break in that partition, only bytes to copy back. Two
+  sub-cases, and only one of them is detected:
+  - **Ledger-only rollback** (restore an old counter image, keep the current records)
+    IS detected. Mount runs a witness check: a record whose `seal_seq` outranks the
+    ledger's high-water, or a blank ledger beside a non-blank records region, is
+    tamper and the device must refuse rather than silently re-initialise - which is
+    what would otherwise make a counter reset free. The device-keyed guard patterns
+    prevent forging a fresh cell without the eFuse key.
+  - **Full-flash snapshot and restore** (both partitions, consistently) is **not
+    detectable and not preventable, and needs no key at all**: the attacker writes
+    the same ciphertext bytes back.
+
+  The honest claim, which replaces the bare phrase "attempt limited" everywhere it
+  appears: **the attempt counter converts unlimited offline guesses into N guesses
+  per full-flash restore cycle.** Against a thief with a hot-air station and a
+  programmer that is a real slowdown of several orders of magnitude. It is not a
+  wall, and nothing on rev v1.3 P4 silicon can make it one, because the chip has no
+  monotonic counter the CPU cannot reach. This is precisely the gap a secure element
+  would fill (https://bitbox.swiss/bitbox02/threat-model/); we do not paper over it.
 - Duress PIN (OPEN-QUESTIONS Q2, now with a red-team caveat): a second PIN whose
   ladder unseals a decoy slot set; no stored marker says which PIN is which
   (Coldcard trick-PIN precedent,

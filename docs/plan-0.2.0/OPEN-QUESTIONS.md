@@ -7,16 +7,19 @@ is noted on each item so earlier references stay traceable.
 
 **Q1-Q8 block milestone 1.** Nothing downstream can start until they are answered,
 because each one pins either a document that must precede the code or a byte-level
-format that cannot change once a user has sealed a wallet. Q9-Q43 can be answered at
+format that cannot change once a user has sealed a wallet. Q9-Q50 can be answered at
 their milestone. **Q22 is already RESOLVED by the user** (the BIP39 passphrase is
 never stored) and is kept in place with its resolution, because its two consequences
-are implementation requirements.
+are implementation requirements. **One exception inside the blocking set: Q2 is no
+longer a format decision** - ESP-SEAL.md 3.6 showed the duress filler needs no format
+change, so Q2 decides behaviour only and its real deadline is m4b. It stays numbered
+where it is; see its blast radius.
 
-Wave-3 design documents (WALLET-API.md, and ESP-SEAL.md / CORPUS.md / REPRODUCIBLE.md
-/ UX-SCREENS.md / CAMERA-HW.md / BACKUP-FEATURES.md as they land) raise their own
-`OPEN:` items. Those are folded in here as Q22 and up, attributed to the source
-document. Decisions those documents took internally are theirs to keep and are not
-re-litigated here.
+Wave-3 design documents (WALLET-API.md, ESP-SEAL.md, CORPUS.md, REPRODUCIBLE.md,
+UX-SCREENS.md, BACKUP-FEATURES.md, CAMERA-HW.md) raise their own `OPEN:` items. Those
+are folded in here as Q22 and up, attributed to the source document. Decisions those
+documents took internally are theirs to keep and are not re-litigated here. **All of
+them have now been swept; the list is complete as of 2026-08-17.**
 
 How to answer: reply with the question number and a letter, or "as recommended".
 Anything not overruled is taken as the recommendation and written into SPEC at m1.
@@ -60,10 +63,26 @@ cheap, and a duress feature that leaks the wallet count is worse than none - it
 invites the coercion it cannot survive. A wipe-PIN variant stays deferred either way
 (it invites accidental self-harm).
 
-**Blast radius:** BLOCKS m3, not just m13 (reconciliation R11). Filler slots are a
-record-format property; adding them after m4a ships changes the on-flash format under
-existing users. Also sets SECURITY.md invariant 5's wording and the m4b capacity line
-("3 of 8 slots" only survives under (b)/(c)).
+**Blast radius (REVISED 2026-08-17 by ESP-SEAL.md 3.6 - this supersedes R11 as
+originally written; see MILESTONES R11):** Q2 decides BEHAVIOUR only, and can be
+answered AFTER the storage format is frozen. The reconciliation's earlier finding
+that duress blocks m3 assumed filler slots were a format change. ESP-SEAL.md 3.6
+shows they are not: a filler slot is a genuine AEAD record sealed under a
+*device-derived* key (`HKDF(filler_root, kdf_salt, RecordInfo)`), carrying the same
+header shape, the same `pin_gen` identity 0, and consuming `seal_seq` values like any
+other record. The device therefore tells empty from occupied with one HKDF and one
+AEAD open per slot and no PIN, while an attacker without the eFuse key cannot. The
+format is byte-identical under `Occupancy::AlwaysFilled` and `Occupancy::Sparse`;
+only the CONTENT of an unoccupied slot differs. **The ESP-SEAL analysis wins because
+it is the concrete format, not a summary of one** - the reconciliation reasoned from
+ARCHITECTURE 2.5's prose, which had no filler construction in it yet, and a mechanism
+that exists at zero marginal format cost beats an inference that it could not.
+What remains: Q2 still sets SECURITY.md invariant 5's wording, the permanent
+degradation of the Verify storage readout for ALL users, the m4b capacity line ("3 of
+8 slots" only survives under (b)/(c)), and Q37. **Deadline: m4b, not m3.** It stays
+in the blocking set because it is cheap to settle at m1 and three screens depend on
+it, but it no longer gates the format freeze and answering it late costs no
+migration.
 
 ## Q3. ECDSA low-R grinding and the scope of the equivalence claim [was Q13]
 
@@ -122,10 +141,26 @@ module into J1, run the esp-video `capture_stream` example), then **(a) if the s
 passes.** A working camera closes the single biggest gap versus the Coldcard Q, and
 the parity bar is the product bar.
 
+**CAMERA-HW.md 6.2 raises the same question and its answer is merged here rather than
+duplicated. It refines (a) into "(a) but droppable":** land camera in 0.2.0, sequence
+it LAST, and let it slip without blocking the release. Every camera parity row has a
+working SD equivalent, so nothing in 0.2.0 is blocked on it; meanwhile the riskiest
+part is the cheapest part (the bench replug experiment), so buying the answer early
+costs a couple of hours. Its proposed ordering splits m11 into six steps - m-camera-0
+(the replug experiment, which is m1's spike), m-camera-1 (the `board::shared_i2c_bus()`
+refactor, cheap, independent, and worth landing with the early infrastructure work),
+and m-camera-2..5 (esp_video integration, PPA plus rqrr decode, the ingress validator
+and fuzz harness, then the scan session in the UI) at the end of the list, each
+individually droppable. **Adopting this changes nothing about the yes/no; it changes
+where m11 sits and makes partial delivery legitimate.** If the answer is (a), also
+answer Q47, and place m-camera-1 in the early infrastructure work rather than in m11.
+
 **Blast radius:** BLOCKS m1 because `esp_video` + `esp_cam_sensor` change the
 app-size budget the partition freeze depends on (Q7), and because the m6 sign-flow
 UX should not be frozen as "no camera exists" if one is coming. Independent of the
-answer, m6's PSBT load path takes a source abstraction so m11 is additive.
+answer, m6's PSBT load path takes a source abstraction so m11 is additive. Under the
+CAMERA-HW refinement it also reshapes m11 into staged, individually droppable steps
+and pulls the I2C-bus refactor earlier.
 
 ## Q7. Freeze the storage geometry [new, from reconciliation R2]
 
@@ -153,10 +188,12 @@ a format migration.
 life of the product. Interacts with Q6 (a camera build is a bigger app) and Q2
 (filler slots consume the same budget).
 
-## Q8. Licensing for the extracted crates [wave 2, PLATFORM.md section 6]
+## Q8. Licensing for the extracted crates [wave 2, PLATFORM.md section 6;
+ESP-SEAL.md 9.1 merged in, not duplicated]
 
-**Decision:** the firmware is GPL-3.0-or-later. The crates we extract
-(`esp-idf-hmac`, `esp-seal`, `seedqr`, maybe `bsms`) can be:
+**Decision:** the firmware is GPL-3.0-or-later. Pick ONE licence line for the crates
+we extract (`esp-idf-hmac`, the `esp-seal` family - `esp-seal`, `esp-seal-idf`,
+`esp-seal-sim`, the future `esp-seal-hal` - `seedqr`, maybe `bsms`):
 
 - (a) GPL-3.0-or-later: preserves reciprocity, but the ecosystems these crates serve
   (esp-hal, esp-idf-*, `ur`, `bbqr`, `gt911`) are MIT/Apache and generally will not
@@ -167,15 +204,36 @@ life of the product. Interacts with Q6 (a camera build is a bigger app) and Q2
 - (c) Per-crate split.
 
 **Recommendation: (c) with a simple rule - permissive (MIT OR Apache-2.0) for
-everything meant for the wider ecosystem (`esp-idf-hmac`, `esp-seal`, `seedqr`,
-`bsms`), GPL-3.0-or-later for notyas-core, notyas-wallet, notyas-ui and the
-firmware.** The reciprocity that matters is on the wallet itself, not on a KDF
-wrapper. Two hard constraints, either way: Trezor's and Jade's code are copyleft, so
-only their published designs may inform a clean-room implementation; and
-`foundation-urtypes` is GPL-3.0-or-later, so all UR/transport code must stay inside
-notyas-wallet and never inside a permissive crate (R6).
+everything meant for the wider ecosystem (`esp-idf-hmac`, the `esp-seal` family,
+`seedqr`, `bsms`), with the published esp-seal test vectors under CC0-1.0 so any
+implementation may validate against them, and GPL-3.0-or-later for notyas-core,
+notyas-wallet, notyas-ui and the firmware.** The reciprocity that matters is on the
+wallet itself, not on a KDF wrapper. Two hard constraints, either way: Trezor's and
+Jade's code are copyleft, so only their published designs may inform a clean-room
+implementation; and `foundation-urtypes` is GPL-3.0-or-later, so all UR/transport
+code must stay inside notyas-wallet and never inside a permissive crate (R6). The
+CC0 vector rule is the same argument Q39 makes for the PSBT corpus.
 
-**Blast radius:** blocks the first publication (m3h, which starts alongside m2), and
+**ESP-SEAL.md 9.1 sharpens this for the largest crate on the list, and its argument
+is adopted here rather than raised as a separate question.** PLATFORM.md floats a
+split of "permissive for the interop formats, GPL3 for esp-seal". ESP-SEAL.md argues
+that is exactly backwards: esp-seal is the shortlist item with the largest audience
+OUTSIDE Bitcoin - every ESP32 product that holds a secret is a potential user, not
+just wallets - and the thing worth protecting is the design, which this planning set
+publishes either way. The implementation is on the order of three thousand lines of
+well-trodden construction over vetted primitives; copyleft on those lines protects
+little and costs the crate its reason to exist.
+
+**Consequence that makes this decision-shaped, and that the answer must cover:** if
+GPL-3.0-or-later wins for esp-seal, the crate should NOT be extracted at all. It
+should stay a module inside notyas-wallet, because a GPL3 "platform contribution" no
+platform can adopt is worse than an honest internal module. So answering Q8 also
+answers whether `crates/esp-seal*` ever exists, and it therefore governs Q44 (the
+crate boundary) and Q46 (publish location and timing). Answer Q8 first.
+
+**Blast radius:** blocks the first publication (m3h, which starts alongside m2) AND
+the first commit of any extracted crate, because the SPDX header has to be right from
+that commit; determines whether esp-seal is a crate or a module (Q44, Q46); and
 determines whether notyas-wallet can ever be published as a reusable Bitcoin wallet
 library. Relicensing after publication requires every contributor's consent, so this
 is effectively irreversible.
@@ -277,7 +335,9 @@ revisit at 0.3.x. Interop across Sparrow/Specter/Coldcard is not there yet, and
 upstream Coldcard has it on EDGE only. **Blast radius:** m6/m7 scope; the descriptor
 model is designed to accept taproot descriptors later without a format change.
 
-## Q17. SeedQR display-out [reconciliation R19; BACKUP-FEATURES.md OPEN-B3] - by m9
+## Q17. SeedQR display-out [reconciliation R19; BACKUP-FEATURES.md OPEN-B3, which
+that document's section 6.1 and its B22/B23 rows also call OPEN-B5 - one item, two
+labels, no missing question] - by m9
 
 A SeedQR encodes a mnemonic. 0.1.0's invariant 2 corollary is that QR display covers
 public values only - never a mnemonic, xprv, seed or WIF. SeedSigner ships SeedQR
@@ -588,6 +648,167 @@ m4a's "power cut taken mid-decrement" gate cannot be faked - and treat the SD-mu
 optional, since the SD steps are few and already batched into the release run.
 **Blast radius:** a small purchase with lead time; it gates m4a's exit.
 
+## Q44. esp-seal vs notyas-wallet: where does the sealing layer live?
+[ESP-SEAL.md 2.4] - answer at m1, lands at m3
+
+ARCHITECTURE.md section 1's crate table assigns "seal/unseal (PIN KDF ladder + AEAD),
+two-slot storage record format" to notyas-wallet. ESP-SEAL.md proposes those move into
+`esp-seal` and that notyas-wallet depend on it, keeping only the payload schema:
+esp-seal stores opaque bytes and knows nothing about BIP39, descriptors or wallets.
+
+**Recommendation: adopt the split - notyas-wallet delegates sealing to esp-seal.** It
+is the whole point of extracting the crate (a sealing layer that cannot be used
+without a Bitcoin wallet crate is not a platform contribution) and it shrinks
+notyas-wallet's audit surface to the payload schema, the registry semantics, the
+session type and policy. Cost: one more crate boundary and a version-pin discipline
+between the two. If rejected, everything in ESP-SEAL.md still applies verbatim as a
+module layout inside notyas-wallet - the design does not change, only its address.
+
+**Overlap to resolve before anyone writes code, so it is not built twice:**
+WALLET-API.md 1.2 and 2.3 define a notyas-wallet `seal` module that currently claims
+the key ladder outright ("the ladder of ARCHITECTURE.md 2.2 as three functions -
+`device_id`, `stretch`, `seal`/`open` - over two platform traits", owning the Argon2id
+parameters, the HKDF info construction, the AAD framing and the ChaCha20-Poly1305
+call), and a `store` module that claims the two-slot A/B commit, the counters area
+and `seal_seq`/`wipe_epoch` reconciliation. ESP-SEAL.md claims exactly the same
+ground. Under the recommendation, WALLET-API.md's `seal` module becomes a thin
+re-export/adapter over `esp-seal` and its `store` module keeps only the record schema
+and the wallet-level vault API; the ladder constants (`SEAL_LABEL`, `SALT_LABEL`,
+`DEVICE_ID_MESSAGE`, `KdfParams`) move to esp-seal and notyas-wallet pins them. Under
+the rejection, ESP-SEAL.md's sections 2-5 are read as the implementation of
+WALLET-API.md's `seal` + `store`. Either way, **one implementation, and whichever
+document loses says so explicitly before m3 opens.**
+
+**Blast radius:** ARCHITECTURE.md section 1's crate table, WALLET-API.md's module
+table and its `seal`/`store` sections, m3's crate list and the m3 dependency ledger.
+Gated by Q8: under a GPL-3.0-or-later answer there is no separate crate to delegate
+to and this question resolves to "module inside notyas-wallet" by default.
+
+## Q45. In-app eFuse provisioning, or factory-only? [ESP-SEAL.md 4.3] - by m3h,
+gates m4a, runbook at m13
+
+ARCHITECTURE 2.2 says the device HMAC key is "burned at first save". ESP-SEAL.md
+proposes a host-side factory step with `espefuse.py` instead, and **no eFuse-burn
+code in release firmware at all**.
+
+**Recommendation: factory provisioning, no burn code in the release image.** Two
+load-bearing reasons. First, invariant 3: notyas has no RNG, and a device-unique key
+must be unpredictable, so it has to come from outside - the host CSPRNG is a trust
+dependency we can name and audit, while the P4 TRNG is already declared distrusted
+(esp-hal#5982). Second, firmware that cannot burn eFuses cannot brick a board through
+a bug and offers no burn path for a glitch to steer. It also matches how the release
+runbook already treats secure boot and flash encryption. Cost: a user who builds their
+own firmware from source must run one extra documented command to provision - which is
+acceptable for a device whose whole story is "verify your firmware".
+
+Mechanics that follow from a yes: `esp-seal-idf` still ships a `Provisioner` behind a
+non-default `provisioning` feature (a general-purpose crate must serve products that
+provision in the field), notyas release builds do not enable it, and the build-graph
+check asserts that. Power-loss handling is specified in ESP-SEAL.md 4.3.
+
+**Blast radius:** amends ARCHITECTURE 2.2's "burned at first save"; adds one
+build-graph assertion at m3h; changes m4a's first-save path (a blank unprovisioned
+device refuses to format rather than burning); adds a provisioning step to m13's
+release runbook and to the build-from-source instructions. No record-format impact.
+
+## Q46. Where esp-seal lives and when it is published [ESP-SEAL.md 9.1] - m12
+
+In-tree under `crates/esp-seal*` during 0.2.0, or a separate repository from day one.
+
+**Recommendation: develop in-tree through m3 and m4a while the API is still moving,
+then extract to its own repository and publish at the 0.2.0 release (m12), with notyas
+pinning an exact version.** Extracting early costs a two-repo edit cycle during the
+phase with the most churn; extracting late costs nothing, because the licence headers
+and the crate boundary are correct from the first commit either way. This is the same
+shape as reconciliation R4 (the sealing layer is written first and in-tree,
+extraction-ready, and published after hardware proves it).
+
+**Hard sequencing constraint: the Q8 licence answer must land BEFORE the first commit
+of this code, regardless of when publication happens**, because relicensing once
+external contributions arrive requires every contributor's consent. Also note Q8's
+consequence: under a GPL-3.0-or-later answer there is no extraction at all and this
+question is moot.
+
+**Blast radius:** repo layout at m12, one version pin in notyas-wallet, and the m12
+publication gate. Also depends on measurement M9 (crate-name availability on
+crates.io), which is cheap and embarrassing to discover late.
+
+## Q47. Per-board policy for camera support: separate artifact, or one build?
+[CAMERA-HW.md 6.2] - answer with Q6 at m1, lands at m11
+
+The camera works on one of the two hardware-verified boards. Board A (Waveshare 4B)
+takes a 15-pin Pi-class OV5647 on J1; board B (Elecrow 5inch) has a MIPI-CSI path that
+is not the same path - 24-pin FPC, sensor I2C on a separate 1.8 V-shifted bus, reset
+driven by the STC8 co-MCU, and a factory target of SC2336 - and nobody on this bench
+owns that module. BOARDS.md's governing rule is "the build IS the board", and it has
+no precedent for a feature only one board can have.
+
+**Recommendation: camera is a BUILD VARIANT, not a runtime capability**, in three
+parts. (1) A cargo feature `camera`, valid only with a board feature whose module
+declares camera hardware, enforced by `compile_error!` in `board/mod.rs` exactly like
+the existing exactly-one-board check, producing a separately hashed artifact
+(`notyas-0.2.0-waveshare-4b-camera.bin` beside `notyas-0.2.0-waveshare-4b.bin`). Two
+artifacts for one board is the honest representation of two hardware configurations.
+(2) The support statement is per board AND per variant in the BOARDS.md table, with
+the UNTESTED-scaffold discipline: hardware-verified or not shipped; the Elecrow row
+says "camera: not supported (24-pin SC2336 path, no hardware on bench)". (3) Parity
+language follows the artifact - camera-dependent rows are class b **on the camera
+variant** and stay class c on the base unit, and no row claims a capability the base
+artifact does not have.
+
+**Consequence to accept, and it contradicts an existing m11 exit gate - resolve it
+with this answer:** esp-idf-sys metadata cannot be feature-gated, so the esp_video C
+sources sit in every build's component tree; the per-board sdkconfig overlay turns
+them off and a link-map gate proves nothing camera-related reaches the image. That is
+verification of absence, not absence. **MILESTONES m11 currently gates on "the
+camera-off build's image SHA256 is unchanged by the feature's presence in the tree",
+which this says is not achievable as stated.** Under the recommendation that gate
+becomes the link-map assertion plus a pinned hash for each named artifact, and the
+release notes say which property is being claimed.
+
+**Blast radius:** the release artifact set and its naming, BOARDS.md's support table,
+PARITY.md's class assignment for four rows, m11's exit gate as written, and m12's
+reproducible-build matrix (one more artifact to rebuild bit-identically).
+
+## Q48. Does the camera variant accept SeedQR scan-in, and behind what friction?
+[CAMERA-HW.md 6.4] - by m11
+
+**Recommendation: yes, gated behind the same friction as manual mnemonic entry, and
+never a default-visible action on the scan screen.** Scanning a seed is genuinely
+useful - it is what SeedSigner users already have - and the risk is the risk of typing
+one in, plus the fact that a camera pointed at a paper backup is a camera pointed at a
+paper backup. The 0.1.0 structural rule that no private value ever leaves the device
+is about OUTPUT and an input path does not touch it.
+
+**This does not reopen Q17.** Q17 is display-OUT and already records scan-IN as
+uncontroversial and shipping with the camera. What is actually being decided here is
+the friction and the placement: whether seed scanning is reachable only from the seed
+import flow, or appears as an option on the general scan screen. Answer it with Q17 so
+the two halves of SeedQR are settled together.
+
+**Blast radius:** the m11 scan-screen action list and the m9 `seedqr` crate's caller;
+one UX-SCREENS entry. No format or invariant impact.
+
+## Q49. Camera viewfinder preview on or off by default? [CAMERA-HW.md 6.4] - by m11
+
+**Recommendation: on.** It costs one PPA pass, it is the only camera-activity
+indicator this hardware has (there is no hardware activity LED on the CSI path), and a
+scan without a viewfinder is unattributable when it fails - the user cannot tell aim
+from focus from decode. **Blast radius:** one screen and a small per-frame cost
+already measured in CAMERA-HW 3.6.
+
+## Q50. Buy a Waveshare OV5647 reference module? [CAMERA-HW.md 1.7 / 6.4] - now
+
+**Recommendation: yes, about 10 USD, ordered before the m1 camera spike if lead time
+allows.** The bench's existing SeedSigner-class module is plausibly a 25 MHz clone
+against drivers that assume 24 MHz, which makes every derived rate 4.17% high and
+garbled frames an expected outcome of the spike rather than a defeat. A known-good
+Espressif-driver-clean module turns every future "is it the camera or the firmware"
+question into a two-minute swap, and it is the module the documentation should
+recommend to users who do not already own a SeedSigner. Same shape as Q43: a small
+purchase whose only real cost is lead time.
+**Blast radius:** a small purchase; it de-risks the m1 spike that Q6 depends on.
+
 ---
 
 ## Disposition notes
@@ -610,11 +831,32 @@ optional, since the SD steps are few and already batched into the release run.
   Q36, wrong-PIN visibility -> Q37, address truncation -> Q38, expert overrides ->
   folded into Q24 (with the warning-versus-refusal line drawn there); corpus-1 -> Q39,
   corpus-2 -> Q40, corpus-3 -> Q41, corpus-4 -> Q42, corpus-5 -> Q43.
-- Sweep status (2026-08-17): every open item present in docs/plan-0.2.0/ at
-  reconciliation time is folded in, including the ones that do not use the literal
-  `OPEN:` prefix (BACKUP-FEATURES.md uses `OPEN-Bn`, CORPUS.md uses `OPEN: (corpus-n)`).
-  Still absent and therefore still owed a sweep: ESP-SEAL.md and CAMERA-HW.md.
-  INDEX.md tracks which are outstanding.
+- ESP-SEAL.md map (swept 2026-08-17, after the reconciliation): 2.4 crate boundary ->
+  Q44; 4.3 in-app provisioning -> Q45; 9.1 licence -> **folded into Q8** (not
+  duplicated: Q8 already owned extracted-crate licensing, and ESP-SEAL's argument and
+  its "if GPL3, do not extract at all" consequence are merged into it); 9.1 publish
+  location and timing -> Q46. ESP-SEAL.md's three escalations were applied to the plan
+  texts rather than raised as questions, because they are correctness fixes: the
+  attempt-counter honesty fix (ARCHITECTURE 2.5, SECURITY.md tier 3), measurement M6
+  as an m1 exit gate (MILESTONES m1), and the R11 sequencing relief recorded in Q2's
+  blast radius above.
+- CAMERA-HW.md map (swept 2026-08-17, same pass; the document landed as commit
+  f5aa401 while the ESP-SEAL sweep was in progress): 6.2 per-board camera policy ->
+  Q47; 6.2 "does 0.2.0 ship camera at all" -> **folded into Q6** (not duplicated: Q6
+  already owned the ship-or-slip decision, and CAMERA-HW's refinement - land it, but
+  sequence it last and make it droppable, with m11 split into m-camera-0..5 - is
+  merged into Q6's recommendation); 6.4 SeedQR scan-in friction -> Q48, cross-linked
+  to Q17 and explicitly not reopening it; 6.4 default preview -> Q49; 1.7 and 6.4 both
+  ask to buy a reference OV5647 module, which is one item -> Q50. CAMERA-HW.md's
+  DECISION items (the shared-I2C-bus refactor, the 25 MHz clock-mismatch triage rule,
+  the abort criteria, USB-UVC rejection) are its own and are not re-litigated. One
+  conflict is recorded inside Q47 rather than settled silently: m11's "the camera-off
+  build's image SHA256 is unchanged by the feature's presence in the tree" is not
+  achievable, because esp-idf-sys metadata cannot be feature-gated.
+- Sweep status (2026-08-17): **complete.** Every open item present in docs/plan-0.2.0/
+  is folded in, including the ones that do not use the literal `OPEN:` prefix
+  (BACKUP-FEATURES.md uses `OPEN-Bn`, CORPUS.md uses `OPEN: (corpus-n)`). No document
+  in this directory is now owed a sweep. INDEX.md tracks the status.
 - Where a wave-3 document recommends the opposite of this reconciliation, both
   positions are stated in the question rather than one being silently dropped:
   Q14 (BACKUP-FEATURES wants seed-bearing backup in 0.2.0) and Q17 (BACKUP-FEATURES

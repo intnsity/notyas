@@ -56,10 +56,21 @@ The stored-wallet guarantee is therefore tiered, and the tiers are the claim:
    the PIN/passphrase. A 6-digit PIN falls in days-to-weeks of memory-hard grinding;
    an alphanumeric passphrase does not. The wall is the user's PIN/passphrase
    entropy, and the UI says so at PIN creation.
-3. The attempt counter is advisory against tier 2: it lives in flash the CPU can
-   address, and a full-flash snapshot/restore replays it. Flash encryption raises
-   the cost; nothing on rev v1.3 silicon eliminates it. "Tamper-proof storage" is
-   not claimed and never will be on this hardware.
+3. The attempt counter is advisory against tier 2, and the honest statement of what
+   it buys is: **it converts unlimited offline guesses into N guesses per full-flash
+   restore cycle.** The counter lives in flash the CPU can address, in a **plaintext**
+   partition - bit-clear counters are incompatible with XTS write granularity, so
+   they cannot be encrypted - which means flash encryption does **not** raise the cost
+   of a counter rollback. There is no key to break there; the attacker copies bytes
+   back. Ledger-only rollback (old counter image, current records) IS detected and
+   refused at mount, because a record outranking the ledger's high-water, or a blank
+   ledger beside a non-blank records region, is tamper rather than a fresh device.
+   A consistent full-flash snapshot and restore is neither detectable nor preventable
+   and needs no key. Against a thief with a hot-air station and a programmer, N per
+   restore cycle is a real slowdown of several orders of magnitude, not a wall, and
+   nothing on rev v1.3 silicon can make it one: the chip has no monotonic counter the
+   CPU cannot reach. "Tamper-proof storage" is not claimed and never will be on this
+   hardware.
 
 Deterministic-wipe posture: because every notyas wallet is re-derivable from the
 user's own dice rolls or mnemonic backup, the stored wallet is a convenience cache,
