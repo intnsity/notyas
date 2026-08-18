@@ -14,6 +14,15 @@ seed generation, restore/verification, and xpub/address export. PSBT signing via
 is the planned 0.2.x milestone (research and format decisions are recorded in
 docs/research/ so nothing in 0.1.0 forecloses it).
 
+QR export scope, 0.1.0 (deliberate divergence from desktop BigDice): the device
+renders QR codes for PUBLIC values only - receive addresses and the account
+xpub/SLIP-132 form. Desktop BigDice can also show private values behind its reveal
+gate; the device has NO private-key export path at all - no mnemonic, xprv, seed or
+WIF ever renders as a QR (or leaves the device any other way), which is stronger than
+masking. SeedQR-style mnemonic export is a considered 0.2.x feature (see Milestones),
+not an 0.1.0 omission. Enforced structurally in notyas-ui (QR buttons exist only on
+the schemes screen, only on public values) and asserted by its test suite.
+
 ## Stack decision
 
 **ESP-IDF v5.5.x + std Rust** (`riscv32imafc-esp-espidf`, Tier 3, nightly +

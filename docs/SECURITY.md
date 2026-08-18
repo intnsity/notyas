@@ -29,7 +29,11 @@ storage" claims are impossible and are not made.
    kill GPIO level.
 2. **Stateless.** No seed, roll, passphrase, or derived key is ever written to flash,
    NVS, or SD. NVS is never mounted. RAM copies are zeroized on drop (zeroize crate,
-   same discipline and types as desktop BigDice). Power-off is the wipe.
+   same discipline and types as desktop BigDice). Power-off is the wipe. Corollary,
+   0.1.0: there is no private-key export path at all - QR display covers public
+   values only (receive addresses, account xpub/SLIP-132), never a mnemonic, xprv,
+   seed or WIF; unlike desktop BigDice there is no reveal gate for private values to
+   sit behind. Enforced structurally in notyas-ui and test-asserted.
 3. **Deterministic.** Key material derives exclusively from user-supplied dice rolls or
    a typed mnemonic, plus optional passphrase, per the desktop BigDice SPEC. No TRNG,
    no clock, no OS entropy on any derivation path - the property is inherited from
