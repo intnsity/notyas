@@ -28,6 +28,7 @@ members = [
     "crates/notyas-ui",
     "crates/notyas-fonts",
     "crates/esp-idf-hmac",
+    "crates/notyas-wallet",
     "firmware",
     "tools/uisim",
     "tools/fonts/atlasgen",
@@ -46,6 +47,7 @@ default-members = [
     "crates/notyas-ui",
     "crates/notyas-fonts",
     "crates/esp-idf-hmac",
+    "crates/notyas-wallet",
     "tools/uisim",
     "tools/fonts/atlasgen",
 ]

@@ -1,0 +1,39 @@
+[package]
+name = "notyas-wallet"
+version = "0.2.0"
+edition = "2021"
+# Matches notyas-core: the RustCrypto 2026 generation (sha2 0.11 / hmac 0.13) sets the floor.
+rust-version = "1.85"
+description = "notyas sealed storage: the PIN key ladder, the A/B record format, the guarded counter ledger and the settable wipe policy"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/intnsity/notyas"
+publish = false
+
+[features]
+default = []
+# Host-side simulation backends (SimFlash, SoftMac, VecScratch) plus the power-loss
+# harness they drive. A feature rather than a `cfg(test)` module because the fuzzer and
+# tools/ live outside this crate's unit tests, and a feature is greppable in the
+# build-graph check where a `cfg` is not. It adds no dependency and it must never be
+# enabled in a firmware build.
+testkit = []
+
+[dependencies]
+# Every one of these is default-features = false, and that is a security control rather
+# than hygiene: chacha20poly1305 enables `getrandom` by default and argon2 enables
+# `rand`, either of which would put an RNG in the device image and break SECURITY.md
+# invariant 3. tools/build-graph-check.sh asserts the result.
+argon2 = { version = "0.5.3", default-features = false }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["zeroize"] }
+hkdf = { version = "0.13.0", default-features = false }
+hmac = { version = "0.13.0", default-features = false }
+sha2 = { version = "0.11.0", default-features = false }
+subtle = { version = "2.6.1", default-features = false }
+zeroize = { version = "1.9.0", default-features = false, features = ["alloc", "derive"] }
+
+[dev-dependencies]
+# The crate's own tests drive the public API through the simulation backends, and the
+# simulation backends are a feature of this crate. A dev-dependency on self is the only
+# way cargo lets a test enable a feature of the package under test without that feature
+# leaking into a firmware build through unification.
+notyas-wallet = { path = ".", features = ["testkit"] }
