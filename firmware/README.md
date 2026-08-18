@@ -1,9 +1,19 @@
 # notyas-firmware
 
-std Rust on ESP-IDF for the Waveshare ESP32-P4-WiFi6-Touch-LCD-4B. Milestone
-0.1.0-m2 (part 1): 720x720 MIPI-DSI display and GT911 touch up from Rust -
-the Butter Paper demo shell renders, touches are drawn live and logged.
-(m1 proved the toolchain: build, flash, boot, radio lockdown, heartbeat.)
+std Rust on ESP-IDF for ESP32-P4 touch-display boards. Milestone 0.1.0-m2:
+display and GT911 touch up from Rust - the Butter Paper demo shell renders,
+touches are drawn live and logged. Multi-board per docs/BOARDS.md: exactly one
+`board-*` cargo feature selects the hardware at compile time (the build IS the
+board - no default feature, no runtime detection).
+
+| Board feature | Hardware | Status |
+|---|---|---|
+| `board-waveshare-4b` | Waveshare ESP32-P4-WiFi6-Touch-LCD-4B, 720x720 DSI | verified on hardware |
+| `board-elecrow-5` | Elecrow CrowPanel Advanced 5inch, 800x480 RGB | verified on hardware |
+| `board-elecrow-7` / `-9` / `-101` | Elecrow CrowPanel Advanced 1024x600 DSI | UNTESTED scaffolds |
+
+Board modules live in `src/board/<name>.rs` behind one flat surface
+(BOARDS.md, normative); everything else is board-agnostic.
 
 ## Toolchain (exact versions, proven 2026-08-17)
 
@@ -32,11 +42,11 @@ target until that is fixed upstream.
 
 ## Chip revision config (make-or-break)
 
-The dev board's silicon is **rev v1.3** - the pre-v3.0 engineering-sample
+Both dev boards' silicon is **rev v1.3** - the pre-v3.0 engineering-sample
 family. IDF v5.5 defaults to `CONFIG_ESP32P4_REV_MIN_301` (rev >= v3.1), and
 the two families are not binary compatible: an image built for v3.x flashes
 fine on v1.3 silicon and then prints nothing (ROM banner
-`ESP-ROM:esp32p4-eco2-20240710` repeating = boot loop). sdkconfig.defaults
+`ESP-ROM:esp32p4-eco2-20240710` repeating = boot loop). sdkconfig.base.defaults
 therefore pins:
 
 ```
@@ -48,6 +58,18 @@ CONFIG_ESP32P4_REV_MIN_100=y           # minimum rev v1.0 (numbering: REV_MIN_FU
 **Release builds for production hardware (rev >= v3.1) must revisit this** -
 drop `SELECTS_REV_LESS_V3` and pin `ESP32P4_REV_MIN_301`. One image cannot
 serve both families.
+
+## sdkconfig layout
+
+```
+firmware/sdkconfig.base.defaults        # shared; nothing board-specific
+firmware/boards/<board>/sdkconfig.defaults  # per-board overlay (flash size)
+```
+
+build.ps1 passes both (absolute, semicolon-separated) via
+`ESP_IDF_SDKCONFIG_DEFAULTS`; later file wins. `.cargo/config.toml` carries a
+waveshare-4b default pair so a bare `cargo build` stays safe on the reference
+board - build any other board through build.ps1 (see pitfall 8).
 
 ## Build / flash / monitor
 
@@ -66,16 +88,29 @@ into C:\Users\<user>\.espressif because ESP_IDF_TOOLS_INSTALL_DIR=global).
 Then, from anywhere:
 
 ```powershell
-\\172.16.0.9\bear\code\btc\notyas\tools\build.ps1            # debug build
-\\172.16.0.9\bear\code\btc\notyas\tools\flash.ps1 -Monitor   # flash COM3 + monitor
+# Waveshare 4B (COM3):
+\\172.16.0.9\bear\code\btc\notyas\tools\build.ps1 -Board waveshare-4b
+\\172.16.0.9\bear\code\btc\notyas\tools\flash.ps1 -Board waveshare-4b -Monitor
+
+# Elecrow CrowPanel Advanced 5inch (COM6):
+\\172.16.0.9\bear\code\btc\notyas\tools\build.ps1 -Board elecrow-5
+\\172.16.0.9\bear\code\btc\notyas\tools\flash.ps1 -Board elecrow-5 -Monitor
 ```
+
+`-Board` drives the cargo feature, the sdkconfig pair, the per-board
+CARGO_TARGET_DIR (C:\nyt-ws, C:\nyt-e5, C:\nyt-e7, C:\nyt-e9, C:\nyt-e101),
+espflash `--flash-size` (32mb/16mb) and the default port (COM3/COM6; port
+letters drift - override with `-Port COMx`). Per-board target dirs mean
+switching boards never needs a clean, and flash.ps1's
+newest-bootloader-under-esp-idf-sys search can no longer pick up another
+board's bootloader.
 
 Notes the scripts encode:
 
 - Sources build fine directly from the UNC share, but CARGO_TARGET_DIR must be
-  a **short local path** (default `C:\nyt`). esp-idf-sys hard-fails with
-  "Too long output directory" otherwise - Windows path-length limits in the
-  IDF CMake/ninja build.
+  a **short local path**. esp-idf-sys hard-fails with "Too long output
+  directory" otherwise - Windows path-length limits in the IDF CMake/ninja
+  build. Override with NOTYAS_TARGET_DIR (keep it short AND per-board).
 - `LIBCLANG_PATH` must point at a dir containing libclang.dll. The esp-clang
   tool embuild installs does not ship one on Windows; the `libclang` pip wheel
   does (`%APPDATA%\Python\Python312\site-packages\clang\native`).
@@ -86,88 +121,99 @@ Notes the scripts encode:
 
 ## What 0.1.0-m2 does
 
-Boot sequence in `src/main.rs`, in load-bearing order:
+Boot sequence in `src/main.rs` (board-agnostic; hardware in `src/board/`),
+in load-bearing order:
 
 1. `esp_idf_svc::sys::link_patches()` + EspLogger init.
-2. **Airgap lockdown first**: GPIO54 (the ESP32-C6 radio module's CHIP_PU
-   enable) is driven LOW and held for the whole power cycle - the radio chip
-   sits in reset. Logs `C6 radio held in reset (GPIO54 low)`.
-3. Backlight enable (GPIO33) claimed and held LOW - the panel stays dark
-   until the first real frame is in the framebuffer.
-4. Display bring-up (`src/display.rs`):
-   - internal LDO channel 3 acquired at 2500 mV (MIPI DPHY power - skipping
-     this hangs DSI init) and channel 4 at 3300 mV (GPIO39-48 IO bank);
-   - DSI bus, 2 lanes at 480 Mbps/lane; DBI IO channel for panel commands;
-   - ST7703 panel via the `waveshare/esp_lcd_st7703` component (v2.0.0),
-     720x720 RGB565, DPI clock 38 MHz, LCD reset GPIO27 handled by the
-     panel config, `use_dma2d`. The function-like C config macros
-     (`ST7703_*_CONFIG`) cannot be bound by bindgen; their values are
-     replicated as consts in display.rs.
-   - Framebuffer: the DPI driver allocates one 720x720 RGB565 buffer (~1 MB)
-     in PSRAM. We draw into it directly (`esp_lcd_dpi_panel_get_frame_buffer`)
-     and publish by passing the same pointer back through
-     `esp_lcd_panel_draw_bitmap` - the driver recognizes its own framebuffer,
-     skips the copy, and only does the required cache writeback. One buffer,
-     no memcpy, no hand-rolled cache maintenance. `display::Display`
-     implements `embedded_graphics::DrawTarget` (Rgb565) over that buffer.
-5. Butter Paper shell painted (tokens in `src/theme.rs`, from
-   `\\172.16.0.9\bear\code\YellowBGs.md`): paper-1 page, centered paper-2
-   card with 1px hairline border, title/version/status text in the built-in
-   mono fonts. Text styles are passed as generic `TextRenderer` parameters so
-   the pre-rasterized notyas font atlases (parallel workstream) drop in
-   without touching the drawing code. Then backlight on: GPIO33 high + LEDC
-   PWM on GPIO26 at 80% (5 kHz, 10-bit, inverted output - same proven config
-   as the Waveshare BSP, whose backlight PWM input is active-low).
-6. Touch bring-up (`src/touch.rs`): i2c_master bus on SDA GPIO7 / SCL GPIO8
-   at 400 kHz; manual GT911 reset on GPIO23 then a 120 ms wake-up wait; probe
-   0x5D then 0x14; `espressif/esp_lcd_touch_gt911` component with reset AND
-   int set to NC (see pitfall 7); product id read from register 0x8140 and
-   logged.
-7. Main loop: poll GT911 every 25 ms (INT is unrouted - poll is the only
-   option); on a new touch point, log `touch x=.. y=..` and repaint the
-   status line; heartbeat banner once per second.
+2. **Airgap lockdown first**: `board::radio_lockdown()` drives the board's
+   C6 kill line low and holds it for the whole power cycle - the radio chip
+   sits in reset. Waveshare: GPIO54. Elecrow 5inch: GPIO20 (the C6 EN pullup
+   means the C6 ran from power-on until this line; logged, not hidden - see
+   BOARDS.md). The board name, flash size, and RADIO_KILL_DOC are logged
+   verbatim; scaffold boards additionally log `UNTESTED BOARD CONFIG`.
+3. `board::display_init()` - all panel bring-up quirks live per board:
+   - waveshare_4b: LDO ch3 2500 mV (DPHY) + ch4 3300 mV; 2-lane DSI at
+     480 Mbps; ST7703 via `waveshare/esp_lcd_st7703` (720x720 RGB565, DPI
+     38 MHz); backlight enable (GPIO33) held low until first frame.
+   - elecrow_5: STC8 backlight blanked over I2C (proves STC8 comms); LDO ch4
+     3300 mV (GPIO45-54 bank; ch3 is camera-only - skipped); core-IDF
+     `esp_lcd_new_rgb_panel` (800x480 RGB565 DE mode, pclk 25 MHz, pins and
+     timings verbatim from Elecrow factory `bsp_display.h`).
+   Either way the driver allocates the framebuffer in PSRAM; we draw into it
+   directly and publish via `esp_lcd_panel_draw_bitmap`'s no-copy cache-sync
+   path (verified for both the DPI and RGB drivers in IDF v5.5.4).
+   `display::Display` implements `embedded_graphics::DrawTarget` at the
+   board's resolution; the shell lays out from fractions of it.
+4. Butter Paper shell painted (tokens in `src/theme.rs`), then
+   `board::backlight_set(80)`: LEDC PWM GPIO26 inverted (waveshare) / one
+   I2C register write to the STC8 co-MCU at 0x2F reg 0x20 (elecrow-5).
+5. `board::touch_init()`:
+   - waveshare_4b: manual GT911 reset (GPIO23) + 120 ms wake, probe
+     0x5D/0x14, driver gets rst=int=NC (INT unrouted; see pitfall 7).
+   - elecrow_5: factory sequence - driver owns RST (GPIO36) and INT
+     (GPIO42) and straps the address deterministically to 0x5D.
+6. Main loop: poll GT911 every 25 ms; on a new touch point, log
+   `touch x=.. y=..` and repaint the status line; heartbeat once per second.
 
-## Captured boot log (COM3, 2026-08-17, display+touch bring-up)
+## Captured boot log - Waveshare 4B (COM3, 2026-08-17, multi-board refactor)
 
-Three consecutive power cycles produced byte-identical init logs (boot on
-this path is deterministic to the millisecond). GT911 address was 0x14 on
-these cycles; it can legitimately be 0x5D on others (pitfall 7).
+Behavior identical to the pre-refactor m2 log (module paths in log tags
+changed to `board::waveshare_4b`). GT911 address was 0x14 on this cycle; it
+can legitimately be 0x5D on others (pitfall 7).
 
 ```
-ESP-ROM:esp32p4-eco2-20240710
-rst:0x1 (POWERON),boot:0x30f (SPI_FAST_FLASH_BOOT)
-...
 I (30) boot: chip revision: v1.3
 I (42) boot.esp32p4: SPI Flash Size : 32MB
-...
-I (296) MSPI Timing: Enter psram timing tuning
 I esp_psram: Found 32MB PSRAM device
 I esp_psram: Speed: 200MHz
-I (501) mmu_psram: .rodata xip on psram
-I (558) mmu_psram: .text xip on psram
-I (1038) esp_psram: SPI SRAM memory test OK
-...
-I (1120) esp_psram: Adding pool of 32064K of PSRAM memory to heap allocator
-...
-I (1206) notyas_firmware: C6 radio held in reset (GPIO54 low)
-I (1211) notyas_firmware::display: LDO channel 3 acquired at 2500 mV (MIPI DPHY)
-I (1218) notyas_firmware::display: LDO channel 4 acquired at 3300 mV (GPIO39-48 bank)
-I (1227) notyas_firmware::display: DSI bus up: 2 lanes, 480 Mbps/lane
-I (1232) st7703: version: 2.0.0
-I (1676) notyas_firmware::display: ST7703 panel initialized (720x720 RGB565, DPI 38 MHz)
-I (1676) notyas_firmware::display: DPI framebuffer at 0x480b0a80 (PSRAM)
-I (1695) notyas_firmware::display: backlight PWM duty set to 80%
-I (1838) notyas_firmware::touch: GT911 responds at i2c address 0x14
-I (1841) GT911: TouchPad_ID:0x39,0x31,0x31
-I (1844) GT911: TouchPad_Config_Version:70
-I (1849) notyas_firmware::touch: GT911 initialized: product id "911" ([39, 31, 31, 00]), polled mode, reset GPIO23
-I (1858) notyas_firmware: notyas 0.1.0-m2 shell up
-I (2877) notyas_firmware: notyas 0.1.0-m2 | IDF v5.5.4 | free heap 32264516 bytes
+I (1187) notyas_firmware::board::waveshare_4b: C6 radio held in reset (GPIO54 low)
+I (1194) notyas_firmware: board: Waveshare ESP32-P4-WiFi6-Touch-LCD-4B | flash 32 MB | radio kill GPIO54
+I (1226) notyas_firmware::board::waveshare_4b: LDO channel 3 acquired at 2500 mV (MIPI DPHY)
+I (1234) notyas_firmware::board::waveshare_4b: LDO channel 4 acquired at 3300 mV (GPIO39-48 bank)
+I (1244) notyas_firmware::board::waveshare_4b: DSI bus up: 2 lanes, 480 Mbps/lane
+I (1250) st7703: version: 2.0.0
+I (1694) notyas_firmware::board::waveshare_4b: ST7703 panel initialized (720x720 RGB565, DPI 38 MHz)
+I (1694) notyas_firmware::board::waveshare_4b: DPI framebuffer at 0x480b0a80 (PSRAM)
+I (1716) notyas_firmware::board::waveshare_4b: backlight PWM duty set to 80%
+I (1859) notyas_firmware::board::waveshare_4b: GT911 responds at i2c address 0x14
+I (1871) notyas_firmware::touch: GT911 initialized: product id "911" ([39, 31, 31, 00]), polled mode, reset GPIO23
+I (1880) notyas_firmware: notyas 0.1.0-m2 shell up on Waveshare ESP32-P4-WiFi6-Touch-LCD-4B
+I (2903) notyas_firmware: notyas 0.1.0-m2 | IDF v5.5.4 | free heap 32264868 bytes
 ```
 
-45 s monitored with no crash, no watchdog, steady heap. The rev v1.3
-silicon accepted the full Waveshare SPIRAM combination (200 MHz + XIP +
-L2 256 KB/128 B) on the first try - no bisecting needed.
+34 s monitored, no watchdog, steady heap, zero errors.
+
+## Captured boot log - Elecrow CrowPanel Advanced 5inch (COM6, 2026-08-17)
+
+Two consecutive boots byte-identical apart from millisecond jitter. Note the
+lockdown warning: on this board the C6 EN pullup means the radio co-processor
+ran from power-on until app_main's first line (BOARDS.md documents this and
+the hardware mitigation for production units).
+
+```
+I (30) boot: chip revision: v1.3
+I (42) boot.esp32p4: SPI Flash Size : 16MB
+I esp_psram: Found 32MB PSRAM device
+I esp_psram: Speed: 200MHz
+I (1195) notyas_firmware::board::elecrow_5: C6 radio held in reset (GPIO20 low)
+W (1201) notyas_firmware::board::elecrow_5: C6 power-on window: C6 EN is pulled up (R77) - the C6 ran from power-on until this line; hardware-held in reset from here on
+I (1216) notyas_firmware: board: Elecrow CrowPanel Advanced 5inch ESP32-P4 | flash 16 MB | radio kill GPIO20
+I (1257) notyas_firmware::board::elecrow_5: backlight set to 0% (STC8 0x2F reg 0x20)
+I (1265) notyas_firmware::board::elecrow_5: LDO channel 4 acquired at 3300 mV (GPIO45-54 bank)
+I (1278) notyas_firmware::board::elecrow_5: RGB panel initialized (800x480 RGB565 DE mode, pclk 25 MHz)
+I (1282) notyas_firmware::board::elecrow_5: RGB framebuffer at 0x480b0a80 (PSRAM)
+I (1302) notyas_firmware::board::elecrow_5: backlight set to 80% (STC8 0x2F reg 0x20)
+I (1373) GT911: TouchPad_ID:0x39,0x31,0x31
+I (1373) GT911: TouchPad_Config_Version:99
+I (1373) notyas_firmware::board::elecrow_5: GT911 at i2c address 0x5D (driver-strapped via INT GPIO42)
+I (1379) notyas_firmware::touch: GT911 initialized: product id "911" ([39, 31, 31, 00]), polled mode, reset GPIO36 (driver-managed), int GPIO42
+I (1391) notyas_firmware: notyas 0.1.0-m2 shell up on Elecrow CrowPanel Advanced 5inch ESP32-P4
+I (2414) notyas_firmware: notyas 0.1.0-m2 | IDF v5.5.4 | free heap 32562936 bytes
+```
+
+34 s monitored per boot, no watchdog, steady heap, zero errors. The GT911
+address is deterministic here (0x5D, INT-strapped by the driver) - unlike the
+Waveshare board's floating-INT coin flip.
 
 ## Pitfalls hit while proving this (all encoded in config/scripts now)
 
@@ -175,26 +221,27 @@ L2 256 KB/128 B) on the first try - no bisecting needed.
    runs `cargo metadata` where it cannot find Cargo.toml, so the build used
    stock IDF defaults (rev v3.1+, 2MB flash) and the image crashed with an
    illegal instruction AT the bootloader entry address. Fixed by pinning
-   `ESP_IDF_SDKCONFIG_DEFAULTS` (relative) in .cargo/config.toml. If the
-   monitor ever shows a Guru Meditation with PC == the `entry` address from
-   the ROM lines, check the generated sdkconfig's `ESP32P4_REV_MIN_FULL`
-   first.
+   `ESP_IDF_SDKCONFIG_DEFAULTS` in .cargo/config.toml (and per-board in
+   build.ps1). If the monitor ever shows a Guru Meditation with PC == the
+   `entry` address from the ROM lines, check the generated sdkconfig's
+   `ESP32P4_REV_MIN_FULL` first.
 2. Stale bootloader copy: `<target>\<profile>\build\bootloader.bin` is not
    always refreshed; flash.ps1 uses the newest one from the esp-idf-sys out
-   dir instead.
+   dir instead - and since the refactor, per-board target dirs make a
+   wrong-board bootloader impossible by construction.
 3. Long target paths: esp-idf-sys refuses CARGO_TARGET_DIR paths that are too
-   long ("Too long output directory") - hence C:\nyt.
+   long ("Too long output directory") - hence C:\nyt-ws / C:\nyt-e5 / ...
 4. Pre-v3 eFuse table differences: `esp_chip_info` is not in the default
    esp-idf-sys binding allowlist, and on the pre-v3 table the wafer major
-   version is split into LO(2b)/HI(1b) fields - main.rs composes
-   `(HI << 2) | LO` exactly like IDF's efuse_ll.h.
+   version is split into LO(2b)/HI(1b) fields - compose `(HI << 2) | LO`
+   exactly like IDF's efuse_ll.h.
 5. `[[package.metadata.esp-idf-sys.extra_components]]` silently ignored
    (remote components never downloaded, bindings never generated): embuild
    guesses the workspace dir by walking UP FROM OUT_DIR, which lives under
-   CARGO_TARGET_DIR (C:\nyt), not next to the sources - so its
-   `cargo metadata` probe finds no Cargo.toml and ALL package metadata is
-   dropped. Same root cause as pitfall 1, different symptom. Fixed by
-   pinning `CARGO_WORKSPACE_DIR = { value = "", relative = true }` in
+   CARGO_TARGET_DIR, not next to the sources - so its `cargo metadata` probe
+   finds no Cargo.toml and ALL package metadata is dropped. Same root cause
+   as pitfall 1, different symptom. Fixed by pinning
+   `CARGO_WORKSPACE_DIR = { value = "", relative = true }` in
    .cargo/config.toml. Note: esp-idf-sys does not rerun its build script
    when that env changes - `cargo clean -p esp-idf-sys` once after adding it.
 6. Boot-loop abort before app_main after adding the GT911 component:
@@ -206,13 +253,26 @@ L2 256 KB/128 B) on the first try - no bisecting needed.
    `CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y` (IDF's escape hatch for
    exactly this).
 7. GT911 init failing intermittently with `touch_gt911_read_cfg: GT911 read
-   error!`, address flipping between 0x5D and 0x14 across boots: the GT911
-   re-latches its I2C address from the INT level at every reset release, and
-   INT is unrouted on this board (floats). The esp_lcd_touch_gt911 driver
-   pulses reset itself and reads config immediately, racing the chip's
-   ~50 ms post-reset wake-up. Fix in touch.rs: reset the chip manually
-   (GPIO23, 10 ms low, then 120 ms wake-up), probe for whichever address got
-   latched, and hand the driver `rst_gpio_num = NC` so it cannot re-reset
-   and re-randomize the address. Also: the first coordinate read after reset
-   reports a phantom point (observed 481,481) - init does one throwaway
-   read.
+   error!`, address flipping between 0x5D and 0x14 across boots (Waveshare
+   only): the GT911 re-latches its I2C address from the INT level at every
+   reset release, and INT is unrouted on that board (floats). The
+   esp_lcd_touch_gt911 driver pulses reset itself and reads config
+   immediately, racing the chip's ~50 ms post-reset wake-up. Fix in
+   board/waveshare_4b.rs: reset the chip manually (GPIO23, 10 ms low, then
+   120 ms wake-up), probe for whichever address got latched, and hand the
+   driver `rst_gpio_num = NC` so it cannot re-reset and re-randomize the
+   address. Also: the first coordinate read after reset reports a phantom
+   point (observed 481,481) - init does one throwaway read (shared code,
+   touch.rs). On the Elecrow boards INT is routed, so the driver-managed
+   sequence is deterministic (0x5D) and used as-is.
+8. Bare `cargo build --features board-<x>` builds the WAVESHARE sdkconfig
+   pair (the safe in-repo default): for any other board the image gets the
+   wrong flash-size header. Always build through `tools/build.ps1 -Board` -
+   it pins the right pair with absolute paths.
+9. esp-idf-sys package metadata cannot be feature-gated: every board build
+   compiles all extra components (st7703, gt911, ek79007) and carries the
+   full binding surface. Only the selected board's Rust module ever calls
+   its own surface; keep this in mind when auditing the C side of an image.
+10. One CARGO_TARGET_DIR per board, always. The IDF build dir bakes in the
+    merged sdkconfig; reusing a dir across boards resurrects the stale-
+    bootloader hazard the per-board dirs were introduced to kill.

@@ -17,13 +17,16 @@ storage" claims are impossible and are not made.
 
 ## Invariants
 
-1. **No radio.** The WiFi companion chip (ESP32-C6) is held in reset by GPIO54 from the
-   first lines of app_main, permanently. No esp_hosted, esp_wifi_remote, or any
-   network/WiFi/BT component is present in the firmware image; there is no code path
-   that could initialize the SDIO link to the C6. Enforced by: build-graph check (a CI
-   grep over the linked component list and the Cargo lock, mirroring desktop BigDice's
+1. **No radio.** The WiFi companion chip (ESP32-C6) is held in reset by a P4 GPIO from
+   the first line of app_main, permanently. The kill GPIO is a per-board compile-time
+   constant (docs/BOARDS.md, "The airgap invariant, per board", is the source of truth:
+   GPIO54 on the Waveshare 4B, GPIO20 on the Elecrow 5inch, GPIO32 on the untested
+   Elecrow DSI scaffolds). No esp_hosted, esp_wifi_remote, or any network/WiFi/BT
+   component is present in the firmware image; there is no code path that could
+   initialize the SDIO link to the C6. Enforced by: build-graph check (a CI grep over
+   the linked component list and the Cargo lock, mirroring desktop BigDice's
    dependency-graph tests) + boot-time GPIO state + the Verify screen reporting the
-   GPIO54 level.
+   kill GPIO level.
 2. **Stateless.** No seed, roll, passphrase, or derived key is ever written to flash,
    NVS, or SD. NVS is never mounted. RAM copies are zeroized on drop (zeroize crate,
    same discipline and types as desktop BigDice). Power-off is the wipe.
@@ -57,3 +60,22 @@ storage" claims are impossible and are not made.
   no USB data functionality is compiled in.
 - The GT911 touch controller and ST7703 panel run vendor init sequences (documented
   register writes, no firmware blobs uploaded to them by us).
+- Elecrow 5inch board only (board-elecrow-5, verified 2026-08-17):
+  - **C6 power-on window.** The C6's EN pin carries a 10K pullup to an always-on rail,
+    so the radio co-processor boots its factory esp-hosted slave firmware at every
+    power-up and runs until app_main drives the kill GPIO low (order: hundreds of ms).
+    The slave idles waiting for an SDIO host and joins no network on its own; the P4
+    image contains no driver to talk to it. Logged as a warning at every boot.
+    Firmware cannot close this window (ROM + bootloader run first); hardware
+    mitigation for production units is removing the pullup/0R (R77/R95) or the C6
+    module (BOARDS.md).
+  - **STC8 co-MCU.** Backlight control requires one I2C register write (0x2F reg 0x20,
+    duty) to an STC8H1K17 running unpublished Elecrow firmware. It has no radio and no
+    bus-master role, but it sits on the touch I2C bus and its firmware is
+    unverifiable. We send it exactly that one write and read nothing
+    security-relevant from it.
+  - **Wireless module socket.** The board has a socket for LoRa/nRF24/Zigbee modules.
+    The airgap on this board additionally requires the socket to be physically EMPTY;
+    firmware never initializes the socket pins and (per the no-probing rule) does not
+    try to detect a module. Documented physical precondition, like "keep the device
+    in your possession".

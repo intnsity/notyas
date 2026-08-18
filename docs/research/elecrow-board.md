@@ -9,12 +9,11 @@ inline; everything else traces to those two ground truths.
 (ESP32-P4) *family* exactly - CH340K bridge (VID 1A86 PID 7522, Elecrow wiki names the
 CH340K for UART0), ESP32-P4 rev v1.3 dual core + LP core 400 MHz, 40 MHz crystal, 16 MB
 flash. Waveshare P4 boards use CH343 (different PID) and Espressif's Function-EV board
-has no CH340K, so those are excluded. **UNVERIFIED: the size variant.** All four sizes
-(5 / 7 / 9 / 10.1 inch) share identical electronics (P4NRW32, 16 MB flash, 32 MB PSRAM,
-ESP32-C6-MINI-1, GT911, CH340K) and are electrically indistinguishable over serial.
-This report covers the **5inch (800x480, parallel RGB)**; the 7/9/10.1 siblings are
-1024x600 MIPI-DSI instead. Confirm the variant from the panel dimensions or the model
-silkscreen on the back before writing display code.
+has no CH340K, so those are excluded. **Size variant RESOLVED (2026-08-17): it is the
+5inch.** User-confirmed panel size, then proven live: notyas `board-elecrow-5` drives
+the panel with the 5inch 800x480 RGB config and the GT911/STC8 respond at the 5inch
+wiring (see "Bring-up results" below). Correction to this report's original claim:
+the 7/9/10.1 siblings do NOT share identical electronics - see section 7.
 
 Probe cross-check on flash: schematic specifies Winbond W25Q128JVSIQ; the probed unit
 reports GigaDevice c8/4018 = GD25Q128 - same 16 MB capacity, a production vendor swap.
@@ -212,6 +211,64 @@ https://github.com/Elecrow-RD/-CrowPanel-Advanced-5inch-ESP32-P4-HMI-AI-Display-
    without the double-FB/bounce-buffer options already in the factory Kconfig.
 10. UART1 vs wireless-module SPI are hardware-muxed (SGM3005 + switch S1); firmware
     can read the switch position via STC8 GPIO_IN 0 but cannot override it.
+
+## 6b. Bring-up results (2026-08-17, notyas board-elecrow-5 on the physical board)
+
+Everything below was observed live on the COM6 unit (rev v1.3), resolving this
+report's open items; BOARDS.md's TODO list carries the same resolutions:
+
+- `esp_lcd_new_rgb_panel` with the factory config (pclk 25 MHz, HPW4/HBP8/HFP8,
+  VPW4/VBP16/VFP16, DE mode, pclk_active_neg + pclk_idle_high, 16-bit,
+  dma_burst 64, fb in PSRAM) initializes cleanly and streams; single-FB
+  no-copy draw_bitmap path works exactly like the DPI driver's.
+- STC8 backlight protocol confirmed: I2C 0x2F reg 0x20 duty write ACKs and
+  controls brightness (blank at init, 80% after first frame). There is no
+  P4-only backlight path - the write is required (errata 1 stands).
+- GT911: driver-managed reset (RST GPIO36, INT GPIO42) straps the address
+  deterministically to **0x5D**; TouchPad_ID 0x39,0x31,0x31, config version
+  0x99. Runtime drive of the GPIO36 strap is safe as predicted (factory
+  behavior); pin left high after init.
+- LDO4 (3300 mV) acquire works and the GPIO45-54 I2C bank is live despite the
+  schematic's R109 NC marking (STC8 + GT911 both respond).
+- Radio kill GPIO20 verified as the first app_main action over two monitored
+  boots; 34 s stable each, zero errors, steady heap (32.5 MB free).
+
+## 7. The 7 / 9 / 10.1 inch siblings (added 2026-08-17, multi-board work)
+
+Contrary to the earlier "identical electronics" assumption, the 1024x600 DSI
+siblings are a DIFFERENT electrical layout, not just a different panel. Facts
+below were verified per board against its own V1.0 Eagle schematic
+(machine-parsed) and its factory firmware
+(`factory_sourcecode/V1.0/ESP32-P4-Adcance-brookesia_phone_inch{7,9,10_1}.zip`,
+a modified `espressif__esp32_p4_function_ev_board` BSP 4.1.1 +
+`sdkconfig.defaults`); all three boards are identical to each other in every
+checked item:
+
+- **C6 radio kill: P4 GPIO32 -> C6 EN** (schematic net `C6_EN`:
+  `U7.GPIO32 -> IC1.EN`, 10K pullup R77 to the always-on C6 3V3 - same
+  power-on-window story as the 5inch), factory
+  `CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=32`. So espboards.dev's "IO32"
+  claim is right for THESE boards and wrong for the 5inch (GPIO20).
+- **C6 SDIO (never configured by notyas): 1-bit** - CMD=19, CLK=18, D0=14,
+  D1=15 (factory sdkconfig `ESP_HOSTED_PRIV_SDIO_PIN_*`).
+- **Display: 1024x600 2-lane MIPI-DSI, EK79007** via
+  `espressif/esp_lcd_ek79007` (^1). Factory DPI config (explicit values in
+  `esp32_p4_function_ev_board.c`, `CONFIG_BSP_LCD_TYPE_1024_600` branch):
+  DPI 51 MHz, lane bit rate 1000 Mbps, HBP 160 / HPW 70 / HFP 160,
+  VBP 23 / VPW 10 / VFP 12, RGB565, `use_dma2d`, no LCD reset pin.
+  LDO channel 3 at 2500 mV for the DSI PHY (`bsp_enable_dsi_phy_power`).
+- **Backlight: direct LEDC PWM on P4 GPIO31** (30 kHz, 10-bit,
+  non-inverted) - unlike the 5inch there is no STC8 in the backlight path
+  (the STC8 is still present for battery/GPIO duties).
+- **Touch: GT911 on I2C SDA=45/SCL=46 (same as 5inch), RST=GPIO40 (a plain
+  GPIO here, NOT a strap), INT=GPIO42.** Factory uses the driver-managed
+  reset with INT strapping, primary address 0x5D, backup 0x14.
+- 16 MB flash, `ESP32P4_REV_MIN_1` / `REV_MAX_FULL=199` family pin, same as
+  the 5inch factory config.
+
+No physical 7/9/10.1 board exists on this bench: notyas carries these as
+compile-checked UNTESTED scaffolds only (`board-elecrow-7/-9/-101`,
+`firmware/src/board/elecrow_dsi.rs`); see docs/BOARDS.md status table.
 
 Sources:
 [wiki](https://www.elecrow.com/wiki/CrowPanel_Advanced_5inch_ESP32-P4_HMI_AI_Display_800x480_IPS_Touch_Screen_with_WiFi_6.html),

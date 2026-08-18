@@ -1,22 +1,34 @@
 # notyas - Multi-board design
 
-Status: design, 2026-08-17. Governs how the firmware supports more than one physical
-board. SECURITY.md remains normative for the invariants; this file defines how each
-board satisfies them. Board fact sheets: docs/HARDWARE.md (Waveshare 4B),
-docs/research/elecrow-board.md (Elecrow CrowPanel Advanced 5inch).
+Status: implemented 2026-08-17 (originally authored as a design the same day; deltas
+between design and implementation are marked "implementation note" inline). Governs how
+the firmware supports more than one physical board. SECURITY.md remains normative for
+the invariants; this file defines how each board satisfies them. Board fact sheets:
+docs/HARDWARE.md (Waveshare 4B), docs/research/elecrow-board.md (Elecrow CrowPanel
+Advanced family).
 
-## Supported boards
+## Supported boards and status
 
-| Feature name | Board | Display | Flash | Radio kill |
-|---|---|---|---|---|
-| `board-waveshare-4b` | Waveshare ESP32-P4-WiFi6-Touch-LCD-4B | 720x720 MIPI-DSI (ST7703) | 32 MB | GPIO54 low -> C6 EN |
-| `board-elecrow-5` | Elecrow CrowPanel Advanced 5inch ESP32-P4 | 800x480 parallel RGB565 | 16 MB | GPIO20 low -> C6 EN |
+| Feature name | Board | Display | Flash | Radio kill | Status |
+|---|---|---|---|---|---|
+| `board-waveshare-4b` | Waveshare ESP32-P4-WiFi6-Touch-LCD-4B | 720x720 MIPI-DSI (ST7703) | 32 MB | GPIO54 low -> C6 EN | **VERIFIED** on hardware (COM3 dev unit) |
+| `board-elecrow-5` | Elecrow CrowPanel Advanced 5inch ESP32-P4 | 800x480 parallel RGB565 | 16 MB | GPIO20 low -> C6 EN | **VERIFIED** on hardware (COM6 dev unit) |
+| `board-elecrow-7` | Elecrow CrowPanel Advanced 7inch ESP32-P4 | 1024x600 MIPI-DSI (EK79007) | 16 MB | GPIO32 low -> C6 EN | **UNTESTED scaffold** - compiles, never ran |
+| `board-elecrow-9` | Elecrow CrowPanel Advanced 9inch ESP32-P4 | 1024x600 MIPI-DSI (EK79007) | 16 MB | GPIO32 low -> C6 EN | **UNTESTED scaffold** - compiles, never ran |
+| `board-elecrow-101` | Elecrow CrowPanel Advanced 10.1inch ESP32-P4 | 1024x600 MIPI-DSI (EK79007) | 16 MB | GPIO32 low -> C6 EN | **UNTESTED scaffold** - compiles, never ran |
 
-Both are ESP32-P4NRW32 (32 MB PSRAM), rev v1.3 dev silicon, GT911 touch, and carry an
-ESP32-C6 whose only control line is its EN pin from a P4 GPIO. The Elecrow board's size
-variant is not yet physically confirmed (see TODO list at the end): the 7/9/10.1 inch
-siblings share the electronics but use 1024x600 MIPI-DSI panels, which would be a
-different board feature, not a variant of this one.
+"UNTESTED scaffold" is a hard status: every constant traces to a published Elecrow
+source (factory firmware + that board's own V1.0 Eagle schematic), the module carries
+an UNTESTED banner, the firmware logs `UNTESTED BOARD CONFIG` at boot, and build.ps1
+warns. No verification claim of any kind until a physical unit runs it.
+
+All five are ESP32-P4NRW32 (32 MB PSRAM), GT911 touch, and carry an ESP32-C6 whose
+only control line is its EN pin from a P4 GPIO; both bench units are rev v1.3 dev
+silicon. Correction to the original design text: the 7/9/10.1 inch siblings do NOT
+"share the electronics" with the 5inch - they are a different layout (C6 EN on GPIO32
+not 20, 1-bit SDIO on GPIO14/15/18/19 not 4-bit on 49-54, direct LEDC backlight on
+GPIO31 instead of the STC8 path, touch RST on GPIO40 not the GPIO36 strap). See
+docs/research/elecrow-board.md section 7.
 
 ## Board selection: one cargo feature, no runtime detection
 
@@ -84,9 +96,20 @@ pub fn touch_init() -> Touch;          // GT911 with per-board SDA/SCL/RST/INT w
 //   waveshare_4b: LCD_RESET=27, BL_EN=33, BL_PWM=26, TOUCH_SDA=7, TOUCH_SCL=8,
 //                 TOUCH_RST=23, TOUCH_INT=NC (polled)
 //   elecrow_5:    RGB pin map (DE=2, PCLK=3, HSYNC=40, VSYNC=41, DATA0..15),
-//                 TOUCH_SDA=45, TOUCH_SCL=46, TOUCH_RST=36 (BOOT strap - never
-//                 drive low around reset), TOUCH_INT=42, STC8_ADDR=0x2F
+//                 TOUCH_SDA=45, TOUCH_SCL=46, TOUCH_RST=36 (BOOT strap - the
+//                 driver's runtime reset pulse is safe and factory-proven; the
+//                 strap is only sampled at P4 reset, and the driver leaves the
+//                 pin high), TOUCH_INT=42, STC8_ADDR=0x2F
+//   elecrow_dsi (7/9/10.1): EK79007 DSI 1024x600, BL_PWM=31 (direct LEDC),
+//                 TOUCH_SDA=45, TOUCH_SCL=46, TOUCH_RST=40, TOUCH_INT=42
 ```
+
+Implementation notes (2026-08-17): `UNTESTED: bool` was added to the surface
+(main logs `UNTESTED BOARD CONFIG` for scaffold boards); the surface functions
+panic internally on esp_err failures (visible abort over limping); the three
+DSI siblings share `board/elecrow_dsi.rs` with per-board `BOARD_NAME` wrappers,
+since all three were independently verified identical in every checked item
+(research doc section 7).
 
 What is deliberately NOT in the surface: anything cryptographic (notyas-core never
 sees a board), the UI (draws on the returned DrawTarget), microSD (0.2.x will add
@@ -147,6 +170,11 @@ grid derived from the display dimensions.** Simplest sound mechanism:
 This keeps the UI code single-source and testable on host (render into an image buffer
 at each board's resolution; golden-image tests per resolution).
 
+Implementation note (2026-08-17): the full `Layout` struct lands with the real
+screens (notyas-ui workstream). The m2 demo shell already follows the rule - a
+`ShellLayout` in firmware main.rs derives the card and status-line geometry from
+`board::DISPLAY_WIDTH/HEIGHT` as fractions; no screen code hardcodes pixels.
+
 ## sdkconfig: base + per-board overlay
 
 esp-idf-sys honors `ESP_IDF_SDKCONFIG_DEFAULTS` as a semicolon-separated list applied
@@ -167,6 +195,14 @@ firmware/
 Build sets `ESP_IDF_SDKCONFIG_DEFAULTS = "<abs>/sdkconfig.base.defaults;<abs>/boards/<board>/sdkconfig.defaults"`.
 The existing `firmware/sdkconfig.defaults` becomes the base file plus the Waveshare
 overlay; nothing in the base may name a GPIO or a flash size.
+
+Implemented as designed (all five boards have overlays; the elecrow-5 RGB path
+needed no extra kconfig options). One addition: `.cargo/config.toml` keeps
+`ESP_IDF_SDKCONFIG_DEFAULTS` pointing at the base+waveshare pair (relative,
+resolved against the pinned CARGO_WORKSPACE_DIR) so a bare `cargo build` cannot
+silently fall back to stock IDF defaults (the rev-v3.x boot-loop trap); building
+any non-Waveshare board therefore REQUIRES build.ps1 (firmware/README.md
+pitfall 8).
 
 **Stale-artifact hazard:** the IDF build dir bakes in the merged sdkconfig; switching
 boards inside one CARGO_TARGET_DIR risks flashing a stale bootloader for the wrong
@@ -221,6 +257,23 @@ guarantee on the Verify screen.
   and its firmware is unverifiable. We send it exactly one register write (backlight
   duty) and read nothing security-relevant from it.
 
+### board-elecrow-7 / board-elecrow-9 / board-elecrow-101 (UNTESTED scaffolds)
+
+- Kill: **GPIO32 -> C6 CHIP_PU (EN)**, driven low first thing in app_main, never
+  released. Verified against each board's own V1.0 Eagle schematic (net `C6_EN`:
+  `U7.GPIO32 -> IC1.EN`, 10K pullup R77) AND each board's factory sdkconfig
+  (`CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=32`). Same power-on window as the
+  5inch (pullup to an always-on rail); same warning logged at boot. SDIO host
+  never configured on GPIO14/15/18/19 (1-bit slot on these boards).
+- **UNTESTED**: source-verified only - no such hardware has ever run this
+  firmware. The modules carry the banner, the boot log says `UNTESTED BOARD
+  CONFIG`, and build.ps1 warns. A physical unit must reproduce the elecrow-5
+  verification protocol (lockdown line first, panel, touch, 30 s stable)
+  before the status table row can say verified.
+- Whether these boards have a wireless-module socket like the 5inch has not
+  been surveyed; assume the socket-must-be-empty requirement until the fact
+  sheet covers them.
+
 ## Flash size and partition table
 
 Waveshare has 32 MB flash, Elecrow 16 MB. Decision: **one shared partition table,
@@ -234,7 +287,7 @@ header field), which the per-board sdkconfig overlay owns. If 0.2.x ever wants a
 OTA/anti-rollback scheme it must still fit 16 MB, keeping the smallest board the
 binding constraint by policy.
 
-## Build and flash tooling (sketch - scripts not yet edited)
+## Build and flash tooling (implemented in tools/build.ps1 + tools/flash.ps1)
 
 `tools/build.ps1` gains a `-Board` parameter (mandatory once a second board module
 exists; until then defaults to `waveshare-4b`):
@@ -259,26 +312,43 @@ CH343; COM6 = Elecrow CH340K - port letters drift, still overridable). The exist
 newest-bootloader-under-esp-idf-sys search is unchanged and now runs inside the
 per-board target dir, which removes the wrong-board-bootloader hazard by construction.
 
+Implemented as designed, extended to all five boards (scaffold target dirs
+C:\nyt-e7 / C:\nyt-e9 / C:\nyt-e101; scaffolds get a build.ps1 UNTESTED warning
+and no default flash port - `-Port` must be passed explicitly).
+
 Release packaging (tools, later): build both boards, emit
 `notyas-<ver>-<board>.bin` + per-board SHA256 lines into one signed SHA256SUMS.txt.
 
-## Open TODOs (need the schematic or the physical board)
+## TODOs (resolutions 2026-08-17, from the physical elecrow-5 bring-up)
 
-1. **TODO-verify-board: Elecrow size variant.** Serial probe cannot distinguish
-   5/7/9/10.1 inch (identical electronics). Confirm 5inch by panel dimensions or
-   rear silkscreen before implementing `board-elecrow-5`; if it is a 7/9/10.1 the
-   display section of this design changes (1024x600 MIPI-DSI, different feature).
-2. **TODO-verify-schematic: Waveshare C6 EN default state** (pullup or floating) -
-   determines whether the Waveshare board has the same power-on radio window the
-   Elecrow board verifiably has. Re-read the 4B schematic around U1 EN / R34.
-3. **TODO-verify-board: Elecrow GT911 address** (0x5D vs 0x14 as powered up) and
-   touch behavior with RST on the GPIO36 boot strap - confirm probing order works
-   and that leaving RST untouched after boot is safe.
-4. **TODO-verify-board: Elecrow panel timings** - factory uses pclk 25 MHz, Arduino
-   lessons 18 MHz; pick per observed tearing/stability with our double-FB setup.
-   The panel's integrated driver IC is undocumented; treat timings as empirical.
-5. **TODO-verify-board: STC8 protocol** - confirm backlight write (0x2F/0x20) against
-   the physical board; Elecrow's C and MicroPython sources are the only references.
-6. **TODO-verify-schematic: Elecrow LDO4/R109 mismatch** - schematic marks the LDO4
-   route NC yet factory firmware acquires it and the I2C bank works; keep the acquire
-   and verify I2C function on the physical board without relying on the schematic.
+1. **RESOLVED - Elecrow size variant is the 5inch.** User-confirmed panel size,
+   then verified live: 800x480 RGB timings drive the panel and GT911 reports at
+   the expected wiring. (The 7/9/10.1 turned out NOT to share the electronics -
+   see the correction at the top and research doc section 7.)
+2. **OPEN - TODO-verify-schematic: Waveshare C6 EN default state** (pullup or
+   floating) - determines whether the Waveshare board has the same power-on radio
+   window the Elecrow board verifiably has. Re-read the 4B schematic around
+   U1 EN / R34. Until resolved, assume the same window exists there.
+3. **RESOLVED - Elecrow GT911 address.** The factory sequence is used: the
+   esp_lcd_touch_gt911 driver owns RST (GPIO36) and INT (GPIO42) and straps INT
+   low during the reset pulse, making the address deterministically 0x5D
+   (observed on hardware; 0x14 fallback kept like Elecrow's own lessons).
+   Driving the GPIO36 strap at runtime is factory-proven safe: the strap is only
+   sampled at P4 reset and the driver leaves the pin high afterwards, so warm
+   resets strap correctly. The Waveshare pitfall-7 race cannot occur (INT is
+   driven, not floating).
+4. **RESOLVED - Elecrow panel timings.** Factory pclk 25 MHz (HPW4/HBP8/HFP8,
+   VPW4/VBP16/VFP16) ran stable over repeated 34 s monitored boots with the
+   single-framebuffer no-copy path; no driver errors, no underruns logged.
+   Visual tearing assessment on real screen flows stays open until animated
+   screens exist - if it appears, the Arduino lessons' 18 MHz is the known-good
+   fallback.
+5. **RESOLVED - STC8 protocol.** Backlight write addr 0x2F reg 0x20 duty 0-100
+   ACKs and controls the panel; blanked at display init, 80% after first frame.
+   Backlight does NOT work without talking to the STC8 (the MT9201 EN sits on
+   an STC8 pin with a pulldown - there is no P4-only path), so the single
+   register write stays, as the accepted-risk note above describes.
+6. **RESOLVED - Elecrow LDO4/R109 mismatch.** LDO channel 4 acquired at
+   3300 mV as the factory firmware does; the GPIO45-54 I2C bank demonstrably
+   works (STC8 and GT911 both respond). The schematic's NC marking on R109 does
+   not reflect the assembled board; the acquire stays.
