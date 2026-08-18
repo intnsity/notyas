@@ -11,10 +11,15 @@
 //!    screen, not a silent brick), then the device refuses to operate.
 //! 4. The notyas-ui screens, fed with a VerifyInfo built entirely from
 //!    values read at boot (src/verify.rs).
-//! 5. Main loop: GT911 poll -> Down/Move/Up synthesis -> Ui::touch ->
-//!    full-screen Ui::draw -> panel publish. Full repaint every frame is the
-//!    UI contract (no dirty rectangles in 0.1.0); the achieved frame time is
-//!    measured and logged once at startup.
+//! 5. Main loop: GT911 poll -> Down/Move/Up synthesis -> Ui::touch -> and,
+//!    only when input arrived, full-screen Ui::draw into the back buffer ->
+//!    whole-frame publish. Repaints are event-driven: the Ui's pixels are a
+//!    pure function of its state, and this loop is the only thing that
+//!    mutates that state (touch events; set_verify_info before the first
+//!    frame), so "an event was fed" is a complete change signal - an idle
+//!    device performs ZERO repaints (provable from the heartbeat's repaint
+//!    counter) and the scan-out buffer never shows a partial frame (see
+//!    display.rs). The full draw+publish time is measured and logged once.
 //!
 //! Everything hardware-specific lives in src/board/<name>.rs behind the flat
 //! surface re-exported by `board`; this file is board-agnostic.
@@ -114,9 +119,10 @@ fn main() {
     );
     ui.set_verify_info(info);
 
-    // First frame, timed: full repaint every frame is the UI contract, so this
-    // draw + publish pair IS the steady-state frame time. Logged once here;
-    // per-frame timing would only spam the log with the same number.
+    // First frame, timed: every repaint is a full-screen draw into the back
+    // buffer plus a whole-frame publish (driver copy + cache writeback - see
+    // display.rs), so this pair IS the cost of any later event-driven repaint.
+    // Logged once here; per-frame timing would only spam the log.
     let t0 = Instant::now();
     ui.draw(&mut display).unwrap(); // draw errors are Infallible on this target
     let draw_ms = t0.elapsed().as_millis();
@@ -146,19 +152,31 @@ fn main() {
     let mut last_point: Option<(u16, u16)> = None;
     let mut last_screen = ui.screen();
     let mut last_heartbeat = Instant::now();
+    // Total repaints since boot, reported in every heartbeat: an untouched
+    // device must show the same number for the whole idle stretch - the
+    // provable form of "static screens repaint zero times".
+    let mut repaints: u64 = 0;
     loop {
         let point = touch.poll();
+        // Event-driven dirty flag (see the module docs): any synthesized
+        // event marks the frame dirty, except a Move that goes nowhere (a
+        // resting finger re-reports the same point every poll - repainting
+        // an identical frame 40x/s would be flicker-free but pointless).
+        let mut dirty = false;
         match (last_point, point) {
             (None, Some((x, y))) => {
                 log::info!("touch down x={x} y={y}");
                 ui.touch(TouchEvent::Down { x: x as i32, y: y as i32 });
+                dirty = true;
             }
-            (Some(_), Some((x, y))) => {
+            (Some(prev), Some((x, y))) => {
                 ui.touch(TouchEvent::Move { x: x as i32, y: y as i32 });
+                dirty = prev != (x, y);
             }
             (Some((x, y)), None) => {
                 log::info!("touch up x={x} y={y}");
                 ui.touch(TouchEvent::Up { x: x as i32, y: y as i32 });
+                dirty = true;
             }
             (None, None) => {}
         }
@@ -172,13 +190,17 @@ fn main() {
             log::info!("screen: {screen:?}");
         }
 
-        ui.draw(&mut display).unwrap();
-        display.flush().expect("frame publish");
+        if dirty {
+            ui.draw(&mut display).unwrap();
+            display.flush().expect("frame publish");
+            repaints += 1;
+            log::debug!("repaint {repaints} ({screen:?})");
+        }
 
         if last_heartbeat.elapsed() >= Duration::from_secs(1) {
             last_heartbeat = Instant::now();
             log::info!(
-                "notyas {VERSION} | IDF {idf_version} | free heap {} bytes",
+                "notyas {VERSION} | IDF {idf_version} | free heap {} bytes | repaints {repaints}",
                 unsafe { sys::esp_get_free_heap_size() }
             );
         }

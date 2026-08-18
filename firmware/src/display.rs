@@ -1,17 +1,27 @@
-//! Board-agnostic display plumbing: an embedded-graphics `DrawTarget` over
-//! the esp_lcd panel driver's own PSRAM framebuffer, plus the small esp_err
-//! helpers the board modules share.
+//! Board-agnostic display plumbing: an embedded-graphics `DrawTarget` over an
+//! off-screen back buffer, published whole-frame to the esp_lcd panel driver,
+//! plus the small esp_err helpers the board modules share.
 //!
 //! Framebuffer strategy (identical on every supported bus): the panel driver
 //! (MIPI-DSI DPI on the Waveshare board, LCDCAM RGB on the Elecrow 5 inch)
-//! allocates its framebuffer in PSRAM and streams it continuously. We draw
-//! straight into that buffer and publish by passing the same pointer back
-//! through `esp_lcd_panel_draw_bitmap`: both drivers recognize their own
-//! framebuffer, skip the copy, and perform only the required cache writeback
-//! (esp_cache_msync) for the dirtied window. One buffer, no memcpy, and the
-//! cache maintenance stays inside the driver instead of being hand-rolled.
-//! (Verified in IDF v5.5.4: esp_lcd_panel_dpi.c and esp_lcd_panel_rgb.c both
-//! take the no-copy path when the draw buffer lies inside a driver fb.)
+//! allocates its framebuffer in PSRAM and streams it to the panel
+//! continuously. We never draw into that live buffer: every screen repaint
+//! begins by clearing to the page background, so drawing in place puts
+//! half-drawn frames on glass at scan-out rate - the "m3 flicker". Instead,
+//! all drawing lands in a heap back buffer (one allocation, PSRAM via the
+//! spiram malloc pool) and [`Display::flush`] publishes the finished frame
+//! through `esp_lcd_panel_draw_bitmap`, whose copy path memcpys into the
+//! driver framebuffer row-contiguously and handles the cache writeback
+//! (esp_cache_msync) itself. The scan-out buffer therefore only ever holds
+//! either the previous complete frame or the next one.
+//!
+//! Why a back buffer + copy rather than the drivers' own double buffering
+//! (`num_fbs = 2` + flip): the flip APIs differ per bus (DPI and RGB expose
+//! different config knobs and semantics), enabling them is per-board config
+//! - the board modules' territory - and the copy is one board-agnostic
+//! mechanism that behaves identically on both paths. The copy cost is paid
+//! only when a frame actually changes (the main loop repaints on input, not
+//! on a timer), measured and logged once at startup.
 //!
 //! Board modules construct `Display` via [`Display::over_panel_fb`] after
 //! their bus-specific bring-up; everything above this layer (theme, screens)
@@ -49,19 +59,24 @@ pub(crate) use esp_check;
 
 pub struct Display {
     panel: sys::esp_lcd_panel_handle_t,
-    fb: *mut u16,
+    /// The complete-frames-only staging buffer all drawing goes into.
+    back: Vec<u16>,
     width: usize,
     height: usize,
 }
 
 impl Display {
-    /// Wrap a panel whose driver-owned RGB565 framebuffer was fetched by the
-    /// board module (`esp_lcd_dpi_panel_get_frame_buffer` /
-    /// `esp_lcd_rgb_panel_get_frame_buffer`).
+    /// Wrap a panel whose bring-up the board module just finished. `fb` is the
+    /// driver-owned framebuffer pointer the board fetched
+    /// (`esp_lcd_dpi_panel_get_frame_buffer` /
+    /// `esp_lcd_rgb_panel_get_frame_buffer`); it is validated but not retained
+    /// - drawing goes through the back buffer and the driver's own copy path,
+    /// never through this pointer (see the module docs). The parameter stays
+    /// so the board-module contract (and its proof that the driver allocated
+    /// a framebuffer at all) is unchanged.
     ///
-    /// Safety contract (callers are the board modules only): `fb` points at
-    /// a width*height RGB565 buffer owned by `panel`'s driver and valid for
-    /// the process lifetime; the panel is initialized and streaming.
+    /// Safety contract (callers are the board modules only): the panel is
+    /// initialized and streaming, and `fb` came from its driver.
     pub fn over_panel_fb(
         panel: sys::esp_lcd_panel_handle_t,
         fb: *mut u16,
@@ -69,35 +84,29 @@ impl Display {
         height: usize,
     ) -> Self {
         assert!(!fb.is_null(), "panel driver returned a null framebuffer");
-        Self { panel, fb, width, height }
+        // One allocation for the process lifetime. With the PSRAM malloc pool
+        // enabled (sdkconfig), an allocation this size lands in PSRAM.
+        let back = vec![0u16; width * height];
+        Self { panel, back, width, height }
     }
 
     pub fn size_rect(&self) -> Rectangle {
         Rectangle::new(Point::zero(), Size::new(self.width as u32, self.height as u32))
     }
 
-    /// Publish the whole framebuffer to the panel (cache writeback only).
+    /// Publish the back buffer as one complete frame. The driver memcpys it
+    /// into its scan-out framebuffer and performs the cache writeback; partial
+    /// frames can never reach the glass because nothing else writes there.
     pub fn flush(&mut self) -> Result<(), DisplayError> {
-        self.flush_area(&self.size_rect())
-    }
-
-    /// Publish one window of the framebuffer. `area` is clipped to the panel.
-    pub fn flush_area(&mut self, area: &Rectangle) -> Result<(), DisplayError> {
-        let Some(area) = self.clip(area) else {
-            return Ok(());
-        };
-        let (x0, y0) = (area.top_left.x, area.top_left.y);
-        // esp_lcd end coordinates are exclusive. Passing the framebuffer's own
-        // base pointer makes the driver take the no-copy cache-sync path; the
-        // window offsets are computed driver-side from the coordinates.
         esp_check!(
             sys::esp_lcd_panel_draw_bitmap(
                 self.panel,
-                x0,
-                y0,
-                x0 + area.size.width as i32,
-                y0 + area.size.height as i32,
-                self.fb as *const c_void,
+                0,
+                0,
+                // esp_lcd end coordinates are exclusive.
+                self.width as i32,
+                self.height as i32,
+                self.back.as_ptr() as *const c_void,
             ),
             "esp_lcd_panel_draw_bitmap"
         );
@@ -128,8 +137,7 @@ impl DrawTarget for Display {
         for Pixel(p, color) in pixels {
             if (0..self.width as i32).contains(&p.x) && (0..self.height as i32).contains(&p.y) {
                 let raw = RawU16::from(color).into_inner();
-                // Bounds just checked; the framebuffer is width*height u16s.
-                unsafe { *self.fb.add(p.y as usize * self.width + p.x as usize) = raw };
+                self.back[p.y as usize * self.width + p.x as usize] = raw;
             }
         }
         Ok(())
@@ -142,13 +150,8 @@ impl DrawTarget for Display {
         let raw = RawU16::from(color).into_inner();
         let (x0, y0) = (area.top_left.x as usize, area.top_left.y as usize);
         for y in y0..y0 + area.size.height as usize {
-            let row = unsafe {
-                core::slice::from_raw_parts_mut(
-                    self.fb.add(y * self.width + x0),
-                    area.size.width as usize,
-                )
-            };
-            row.fill(raw);
+            let start = y * self.width + x0;
+            self.back[start..start + area.size.width as usize].fill(raw);
         }
         Ok(())
     }
