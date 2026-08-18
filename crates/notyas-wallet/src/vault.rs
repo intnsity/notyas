@@ -392,7 +392,10 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
     /// must match the running firmware. A mismatch is a refusal, never a best-effort
     /// reinterpretation, because that refusal is exactly what lets a future firmware
     /// change the layout without silently eating a user's wallets.
-    fn validate_superblock(&self) -> Result<(), MountError<F::Error, M::Error>> {
+    fn validate_superblock(&mut self) -> Result<(), MountError<F::Error, M::Error>> {
+        if self.superblock.is_none() {
+            return self.diagnose_foreign();
+        }
         let (Some(sb), Some(keys)) = (self.superblock.as_ref(), self.keys.as_ref()) else {
             return Ok(());
         };
@@ -404,6 +407,42 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
         }
         if sb.kdf != self.cfg.kdf {
             return Err(MountError::LayoutMismatch);
+        }
+        Ok(())
+    }
+
+    /// No superblock elected. Before calling that corruption, check whether the bytes on
+    /// flash still look like a superblock written by a different board, because those are
+    /// two different sentences to show a user and only one of them means "your data is
+    /// gone".
+    ///
+    /// The read is unauthenticated and it has to be: on a foreign board every device-bound
+    /// MAC fails, so there is nothing left to authenticate it with. It decides the wording
+    /// of a refusal and nothing else. On a release unit with flash encryption on it will
+    /// usually find nothing at all, because the XTS key moved with the board too, and the
+    /// refusal falls back to the generic one.
+    fn diagnose_foreign(&mut self) -> Result<(), MountError<F::Error, M::Error>> {
+        let cfg = self.cfg;
+        let Some(want) = self.keys.as_ref().map(|k| k.device_tag) else {
+            return Ok(());
+        };
+        let slot = SlotId::superblock();
+        for side in Side::BOTH {
+            let Some(base) = slot.side_offset(side, &cfg.layout) else {
+                continue;
+            };
+            let Some(at) = base.checked_add(crate::format::HEADER_LEN as u32) else {
+                continue;
+            };
+            let mut body = [0u8; 0x48];
+            if self.flash.read(Region::Records, at, &mut body).is_err() {
+                continue;
+            }
+            if let Some((domain, device_tag)) = Superblock::peek_fingerprint(&body) {
+                if domain == cfg.domain_tag && device_tag != want {
+                    return Err(MountError::Foreign);
+                }
+            }
         }
         Ok(())
     }
@@ -561,6 +600,64 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
 
     pub fn into_parts(self) -> (F, M) {
         (self.flash, self.mac)
+    }
+
+    /// The flash backend, so the power-loss harness can arm a cut mid-operation.
+    ///
+    /// Compiled out of every firmware build. It is not a back door into the state machine
+    /// - it hands out the backend the caller already owned before `mount` took it - and
+    /// without it the fuzzer could only cut between operations, which is the one place a
+    /// cut is uninteresting.
+    #[cfg(feature = "testkit")]
+    pub fn backend_mut(&mut self) -> &mut F {
+        &mut self.flash
+    }
+
+    /// Every (slot, side) anywhere on flash whose ciphertext opens under `pin`, elected or
+    /// not, erased-pending or not.
+    ///
+    /// This exists for one invariant: "no stale old-PIN ciphertext survives a completed
+    /// change". That property is about sides no election will ever reach, so it cannot be
+    /// tested through `read`, and testing it by re-implementing the record parser in the
+    /// harness would only prove the harness agrees with itself. Compiled out of every
+    /// firmware build.
+    #[cfg(feature = "testkit")]
+    pub fn open_any_side(
+        &mut self,
+        pin: &Pin,
+        scratch: Scratch<'_>,
+    ) -> Result<alloc::vec::Vec<(SlotId, Side)>, SErr<F, M>> {
+        let cfg = self.cfg;
+        let bound = self.stretch(pin, scratch)?;
+        let mut found = alloc::vec::Vec::new();
+        for slot in records::all_slots(&cfg) {
+            if slot.class() == SlotClass::Superblock {
+                continue;
+            }
+            for side in Side::BOTH {
+                let keys = self.keys.as_ref().ok_or(StorageError::WrongState)?;
+                let Some(header) =
+                    records::read_header::<F, M>(&mut self.flash, keys, &cfg, slot, side)?
+                else {
+                    continue;
+                };
+                let keys = self.keys.as_ref().ok_or(StorageError::WrongState)?;
+                if records::read_record::<F, M>(
+                    &mut self.flash,
+                    keys,
+                    &cfg,
+                    slot,
+                    side,
+                    &header,
+                    bound.as_bytes(),
+                )?
+                .is_ok()
+                {
+                    found.push((slot, side));
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Domain-separated device-bound derivation for embedder use: anti-phishing words,
@@ -1344,7 +1441,11 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
         }
         for i in 0..cfg.layout.identities {
             if let Some(slot) = SlotId::new(SlotClass::Canary, i, &cfg.layout) {
-                if self.table.get(slot, &cfg).is_some() {
+                // A canary slot holding filler is not an identity. Counting it would make
+                // the confirmation screen name three duress identities the user never
+                // created, which is exactly the kind of number Q5.5 says must be read from
+                // the store rather than guessed.
+                if self.slot_state_unkeyed(slot)? {
                     destroyed.identities = destroyed.identities.saturating_add(1);
                 }
             }

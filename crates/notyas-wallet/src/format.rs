@@ -323,6 +323,25 @@ impl Superblock {
         })
     }
 
+    /// The device fingerprint out of a superblock body that has NOT been authenticated.
+    ///
+    /// Used for one thing only: telling a user whose flash came from another board that
+    /// this is what happened, instead of showing them a generic corruption message. It
+    /// cannot be used for anything else, and the reason is worth stating because it is a
+    /// limit of the design rather than of this function. The superblock's integrity comes
+    /// from `header_mac` under the device-bound `hdr_key`, so on a foreign board the MAC
+    /// fails first and no superblock is ever elected - which means the authenticated
+    /// `device_tag` comparison ESP-SEAL.md 3.5 describes can never actually run. The
+    /// fingerprint read here is therefore unauthenticated by necessity, is forgeable by
+    /// anyone with a programmer, and is allowed to influence exactly one thing: which
+    /// refusal message is shown. It never grants access.
+    pub fn peek_fingerprint(raw: &[u8]) -> Option<([u8; 16], [u8; 8])> {
+        if by::rd(raw, 0, 4)? != MAGIC_SUPERBLOCK {
+            return None;
+        }
+        Some((by::rd_arr::<16>(raw, 0x08)?, by::rd_arr::<8>(raw, 0x18)?))
+    }
+
     /// Does the recorded map describe the same slots the running firmware expects?
     /// Only the fields that move a slot are compared; `records_sectors` is not stored.
     pub fn layout_matches(&self, want: &Layout) -> bool {

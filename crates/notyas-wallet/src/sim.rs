@@ -97,6 +97,11 @@ pub enum CutMode {
     BitRot,
 }
 
+impl CutMode {
+    /// Every mode, in a fixed order so a fuzzer case id means the same thing every run.
+    pub const ALL: &'static [CutMode] = &[CutMode::Clean, CutMode::PartialPrefix, CutMode::BitRot];
+}
+
 /// The only way a [`SimFlash`] access can fail.
 ///
 /// There is exactly one variant because there is exactly one thing a correct engine driving

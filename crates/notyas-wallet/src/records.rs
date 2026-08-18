@@ -135,6 +135,12 @@ pub(crate) fn read_header<F: Flash, M: DeviceMac>(
             {
                 return Ok(None);
             }
+            // The provenance flags must match the key this board actually has. A record
+            // sealed with a development key is not a candidate on a production board and
+            // vice versa, and saying so here means no crypto is spent finding it out.
+            if h.flags != keys.provenance.flags() {
+                return Ok(None);
+            }
             Ok(Some(h))
         }
         Err(_) => Ok(None),
@@ -212,7 +218,7 @@ fn read_body<F: Flash, M: DeviceMac>(
 
 /// Build the `RecordInfo` a header derives its key from. There is exactly one place this
 /// is constructed, so the header on flash and the key that opens it cannot diverge.
-pub(crate) fn record_info(cfg: &Config, header: &RecordHeader) -> RecordInfo {
+pub(crate) fn record_info(cfg: &Config, keys: &DeviceKeys, header: &RecordHeader) -> RecordInfo {
     let mut domain_prefix = [0u8; 8];
     if let Some(src) = cfg.domain_tag.get(..8) {
         domain_prefix.copy_from_slice(src);
@@ -221,22 +227,16 @@ pub(crate) fn record_info(cfg: &Config, header: &RecordHeader) -> RecordInfo {
         slot_class: header.slot_class,
         slot_index: header.slot_index,
         slot_side: header.slot_side,
-        provenance: provenance_of(header),
+        // The LIVE provenance, never the one the header claims. Deriving it from the
+        // header would make the binding circular and let a development-mode build open a
+        // production record simply by reading a flag it also wrote. With the live value in
+        // the info string, a record sealed at one provenance cannot be opened at another -
+        // not "should not", cannot, because the key is different.
+        provenance: keys.provenance.tag(),
         wipe_epoch: header.wipe_epoch,
         pin_gen: header.pin_gen,
         seal_seq: header.seal_seq,
         domain_prefix,
-    }
-}
-
-/// Recover the provenance byte from the header flags. It is in the AAD as flags and in
-/// `RecordInfo` as a tag; deriving one from the other keeps them from disagreeing.
-fn provenance_of(header: &RecordHeader) -> u8 {
-    use crate::hal::KeyProvenance::*;
-    match header.flags & 0b11 {
-        0b01 => Emulated.tag(),
-        0b10 => EfuseReadable.tag(),
-        _ => EfuseReadProtected.tag(),
     }
 }
 
@@ -279,7 +279,7 @@ pub(crate) fn write_sealed<F: Flash, M: DeviceMac>(
         body_capacity: cap as u32,
     };
     let aad = header.aad();
-    let info = record_info(cfg, &header);
+    let info = record_info(cfg, keys, &header);
 
     // S3: derive twice by independent invocations and compare in constant time. A single
     // fault would have to corrupt both identically.
@@ -444,7 +444,7 @@ pub(crate) fn open_body(
     by::wr(scratch.as_mut_slice(), 0, body).ok_or(Corruption::Geometry)?;
     let _ = digest;
 
-    let info = record_info(cfg, header);
+    let info = record_info(cfg, keys, header);
     let okm = crypto::record_okm(key_source, &keys.kdf_salt, &info);
     let tag = by::rd_arr::<TAG_LEN>(body, ct_len).ok_or(Corruption::Geometry)?;
     let aad = header.aad();

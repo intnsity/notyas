@@ -44,16 +44,26 @@ impl Layout {
         identities: 4,
     };
 
-    /// Total bytes of the records region.
+    /// Total bytes of the records region. Saturating rather than wrapping: a layout whose
+    /// arithmetic overflows is rejected by [`Config::validate`], and until then a clamped
+    /// value is safer than a wrapped one because every consumer treats it as an upper
+    /// bound.
     pub const fn records_bytes(&self) -> u32 {
-        self.records_sectors * self.sector_size
+        self.records_sectors.saturating_mul(self.sector_size)
     }
 
     /// Sectors consumed by the slot map, i.e. everything before the reserved tail.
     pub(crate) const fn mapped_sectors(&self) -> u32 {
-        2 + (self.canary_slots as u32) * 2
-            + (self.payload_slots as u32) * (self.payload_slot_sectors as u32) * 2
-            + (self.registry_slots as u32) * (self.registry_slot_sectors as u32) * 2
+        let canary = (self.canary_slots as u32).saturating_mul(2);
+        let payload = (self.payload_slots as u32)
+            .saturating_mul(self.payload_slot_sectors as u32)
+            .saturating_mul(2);
+        let registry = (self.registry_slots as u32)
+            .saturating_mul(self.registry_slot_sectors as u32)
+            .saturating_mul(2);
+        2u32.saturating_add(canary)
+            .saturating_add(payload)
+            .saturating_add(registry)
     }
 }
 
