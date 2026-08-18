@@ -1,0 +1,21 @@
+# Host-side UI simulator for notyas. Drives crates/notyas-ui through its public touch
+# API with deterministic, well-known test-vector data and renders every screen at the
+# primary 720x720 geometry into docs/screenshots/ui/*.png for human review. Same input
+# -> same PNG bytes: the tool renders each frame twice and refuses to write on any
+# divergence.
+[package]
+name = "uisim"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Renders every notyas-ui screen to PNG with fixed test-vector sample data"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+notyas-ui = { path = "../../crates/notyas-ui" }
+# Same trait version notyas-ui draws to; the simulator's framebuffer implements it.
+embedded-graphics = "0.8"
+# PNG encoding only. `png` over `image`: image is a facade over a dozen codecs of which
+# exactly one is needed; png is that one codec, dependency-light and deterministic.
+png = "0.17"
