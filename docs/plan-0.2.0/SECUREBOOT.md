@@ -249,8 +249,8 @@ both are the owner's, and both must be protected.
 
 | | **Release manifest key** | **Secure-boot signing key** |
 |---|---|---|
-| What it is | OpenPGP RSA-4096, the existing BigDice identity | RSA-3072, **new, does not exist yet** |
-| Fingerprint / identity | `A1E9 53B2 5C6A 623B 77A1 D522 3AC4 BBCF E51A B37D` | none yet; identified by the SHA-256 digest of its public key |
+| What it is | OpenPGP RSA-3072 `intnsity-esp`, the notyas release identity (created 2026-08-18, no expiry). Desktop BigDice keeps its own RSA-4096 `A1E9 53B2 5C6A 623B 77A1 D522 3AC4 BBCF E51A B37D` | RSA-3072, **new, does not exist yet** |
+| Fingerprint / identity | `7D66 F06B DDF9 AF62 82AA 8AB9 E64B 89C5 55CB 922B` | none yet; identified by the SHA-256 digest of its public key |
 | What it signs | `SHA256SUMS.txt`, and the annotated git tag | `bootloader.bin` and `app.bin`, as an appended signature block |
 | Who verifies it | **a person, on their computer, before flashing** | **the chip's boot ROM and bootloader, on every single boot** |
 | The question it answers | "did this file come from intnsity?" | "may this firmware run on this chip?" |
@@ -262,9 +262,14 @@ both are the owner's, and both must be protected.
 **They cannot be the same key and the GPG key cannot be converted into one.** Three
 independent reasons, any one sufficient:
 
-1. **The sizes do not match.** ESP32-P4 Secure Boot v2 requires RSA-3072. The owner's GPG
-   key is RSA-4096. The signature block format has a fixed 384-byte modulus field; a
-   4096-bit modulus is 512 bytes and does not fit. This is not a configuration option.
+1. **The matching size is a coincidence, and it is a trap.** The notyas release key
+   `intnsity-esp` happens to be OpenPGP RSA-3072, the same modulus size Secure Boot v2
+   requires, so unlike the RSA-4096 BigDice key (whose 512-byte modulus simply does not fit
+   the signature block's fixed 384-byte field) there is no arithmetic obstacle to extracting
+   its RSA parameters and reusing them. Do not. The size matching removes the mechanical
+   barrier without removing either real objection below, which makes this the most likely
+   way the mistake actually gets made. A key that is capable of being misused this way must
+   be documented as forbidden rather than merely impractical.
 2. **The formats and the tooling do not meet.** `espsecure` consumes a PEM-encoded
    PKCS#8/PKCS#1 private key. An OpenPGP secret key is a different container with different
    packet framing, and if the key is on a hardware token (`OPEN-QUESTIONS` Q30, deferred)
