@@ -1,0 +1,52 @@
+# notyas root workspace.
+#
+# Unifies every crate under one Cargo.lock so dependency versions are resolved
+# consistently across the firmware, the host simulator and the build tools.
+#
+# The firmware crate (esp-idf-sys, riscv32imafc-esp-espidf target, nightly
+# toolchain) is a workspace MEMBER so it shares the lockfile, but is NOT a
+# default-member: a bare `cargo build` from the repository root must not try
+# to build the ESP image, which would fail without the IDF toolchain,
+# sdkconfig overlays and nightly -Zbuild-std. The firmware is built through
+# tools/build.ps1, which cd's into firmware/ first — there,
+# firmware/.cargo/config.toml (target, linker, CARGO_WORKSPACE_DIR,
+# ESP_IDF_SDKCONFIG_DEFAULTS, ESP_IDF_VERSION) and firmware/rust-toolchain.toml
+# still drive the build unchanged. This file does not override either of them.
+#
+# resolver = "2" is required by esp-idf-sys; feature unification across the
+# std/no_std split in this tree also depends on it.
+#
+# The firmware's profiles (opt-level "z" for dev, "s" for release) previously
+# lived in firmware/Cargo.toml. Under a workspace, cargo ignores [profile.*]
+# sections in non-root packages, so they are declared here to keep the
+# firmware image's optimization level byte-for-byte unchanged.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/notyas-core",
+    "crates/notyas-ui",
+    "crates/notyas-fonts",
+    "firmware",
+    "tools/uisim",
+    "tools/fonts/atlasgen",
+]
+# A bare `cargo build` / `cargo test` from the root builds only the host-safe
+# crates. The firmware needs the ESP toolchain + nightly; build it through
+# tools/build.ps1, or `cargo build -p notyas-firmware` from firmware/.
+default-members = [
+    "crates/notyas-core",
+    "crates/notyas-ui",
+    "crates/notyas-fonts",
+    "tools/uisim",
+    "tools/fonts/atlasgen",
+]
+
+# Lifted from firmware/Cargo.toml: a workspace root is the only place cargo
+# honors [profile.*], so these must live here to preserve the firmware build.
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true # symbols are nice and they don't increase the size on flash
+opt-level = "z"
