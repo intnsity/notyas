@@ -3,11 +3,44 @@
 # smallest board's 16 MB, identical app offset everywhere so the Verify
 # screen's running-partition SHA256 procedure is board-independent).
 #
-# Stateless device: a single 4 MB factory app partition and NOTHING else -
-# no NVS, no otadata, no phy_init, no data partitions of any kind
-# (SECURITY.md invariant 2: nothing is ever written to flash at runtime).
-# tools/flash.ps1 hands this CSV to espflash directly, so the flashed table
-# is repo-pinned, not an IDF build artifact.
+# 0.1.0 shipped a single app partition and nothing else. 0.2.0-m4a adds the two
+# raw regions the sealing engine owns, and NOTHING ELSE: still no NVS, no
+# otadata, no phy_init, no coredump, no emul_efuse (SECUREBOOT.md trap T4).
+# SECURITY.md invariant 2 is unchanged in substance - a device that has never
+# saved a wallet still writes nothing, which is a property of the firmware and
+# is proven by a flash readback, not by the absence of somewhere to write.
 #
-# Name,  Type, SubType, Offset,  Size
-factory, app,  factory, 0x10000, 4M
+# The two regions are separate partitions rather than one because their write
+# rules are physically different (ESP-SEAL.md 2.2 / ARCHITECTURE.md 2.5):
+# `wallets` holds AEAD records and is write-once per cipher block between
+# erases, `counters` holds guarded bit-log cells advanced by clearing bits in
+# an already-erased cell. Conflating them is the mistake the red-team pass
+# caught, and a partition boundary makes it unrepresentable.
+#
+# Sizes are frozen by notyas_wallet::Layout::V1 and MUST NOT be changed: the
+# superblock records the layout and a mismatch is a hard mount refusal, which
+# is exactly what stops a repartition from silently reinterpreting a user's
+# records. 64 sectors of 4 KiB + 4 sectors of 4 KiB.
+#
+# Both carry subtype `undefined` (0x06) - the IDF subtype that means exactly
+# "data no IDF subsystem defines", which is the truth here - and are told apart
+# by LABEL, which is how the firmware looks them up. A numeric user-range
+# subtype would say no more and espflash's partition-table converter panics on
+# one (esp-idf-part 0.6 only knows the named data subtypes), so this is the
+# encoding that survives the tool the flash script actually uses.
+#
+# The `encrypted` flag on `wallets` is inert on a dev unit (flash encryption is
+# off) and correct on a release unit, where it is what makes the records region
+# XTS-encrypted and therefore write-once per 16-byte cipher block between
+# erases - the rule the driver reports through Geometry::cipher_block whether
+# or not this particular board honours it. `counters` must NOT carry it: the
+# guarded bit-log advances by clearing bits in an already-programmed cell,
+# which an encrypted partition cannot express at all.
+#
+# tools/flash.ps1 hands this CSV to espflash directly, so the flashed table is
+# repo-pinned, not an IDF build artifact.
+#
+# Name,   Type, SubType,   Offset,   Size, Flags
+factory,  app,  factory,   0x10000,  4M
+wallets,  data, undefined, 0x410000, 256K, encrypted
+counters, data, undefined, 0x450000, 16K

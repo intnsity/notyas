@@ -39,6 +39,9 @@ mod hmac_check;
 #[cfg(feature = "measure")]
 mod measure;
 mod readout;
+/// The sealed store: the two `esp_partition` regions, the device-binding MAC, the PSRAM
+/// Argon2id working set and the session lifetime. Product code, always compiled.
+mod store;
 mod theme;
 mod touch;
 mod verify;
@@ -131,6 +134,40 @@ fn main() {
         }
     }
 
+    // The sealed store, brought up AFTER the panel so the heap numbers it reports are
+    // the ones that matter: what is left with the framebuffers already standing. A
+    // failure here is not fatal - the stateless flow needs no storage at all, and a
+    // device that cannot mount its store must still be usable as a 0.1.0 device and must
+    // say why on the Verify screen rather than refusing to boot.
+    let mut store = match store::Store::bring_up() {
+        Ok(mut s) => {
+            let r = s.report().clone();
+            log::info!(
+                "store: key {} | state {} | records @0x{:x} | ledger @0x{:x}",
+                r.provenance,
+                store::state_label(r.state),
+                r.records_base,
+                r.ledger_base
+            );
+            log::info!(
+                "store: argon2 scratch {} bytes in PSRAM | free PSRAM {} -> {} (delta {}) | free internal {}",
+                r.scratch_bytes,
+                r.free_psram_before,
+                r.free_psram_after,
+                r.free_psram_before.saturating_sub(r.free_psram_after),
+                store::free_internal()
+            );
+            // VERIFY.md 6 / Q61: counted before the user is shown any verdict, and only
+            // on a formatted store (R24 - a blank device still writes nothing).
+            s.record_boot();
+            Some(s)
+        }
+        Err(e) => {
+            log::error!("store: unavailable: {e:?} - the stateless flow is unaffected");
+            None
+        }
+    };
+
     // The product UI, laid out for this board's panel, fed with measured facts.
     let mut ui = Ui::new(board::DISPLAY_WIDTH, board::DISPLAY_HEIGHT);
     // One pass over the chip and flash, then everything downstream is a
@@ -210,6 +247,15 @@ fn main() {
             // line: this is the one operation slow enough for a user to call
             // the device hung, so a regression here is a user-visible freeze.
             log::info!("derivation: finished in {} ms", t_tick.elapsed().as_millis());
+        }
+
+        // Auto-lock, ticked from the wall clock rather than from a pass count so that a
+        // pass which spent 1.8 s inside an Argon2id derivation ages the session by
+        // 1.8 s. Placed AFTER `ui.tick` for that reason: a long derivation must be
+        // charged to the session it happened during, not to the next pass. A pass that
+        // locks is a pass that must repaint.
+        if store.as_mut().is_some_and(store::Store::tick) {
+            dirty = true;
         }
 
         let point = touch.poll();

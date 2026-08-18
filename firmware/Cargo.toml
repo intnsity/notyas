@@ -45,6 +45,24 @@ measure = ["dep:argon2"]
 # could program a fuse.
 hmac-virtual-check = ["esp-idf-hmac/provisioning"]
 
+# ESP-SEAL.md 6.4 fence 1. Substitutes a COMPILED-IN device-binding key for the
+# read-protected eFuse block, so storage logic can be exercised on boards whose
+# fuses must stay virgin. Deliberately ugly, never a default, and never enabled
+# by a release build: fence 2 is build.rs, which fails the build outright when
+# this is on in the release profile. Fences 3 and 4 make it harmless even if it
+# somehow shipped - the provenance byte is inside every AEAD's associated data,
+# so a record sealed under this key cannot be opened by a production build, and
+# a product Config accepts only KeyProvenance::EfuseReadProtected at mount.
+unsafe-emulated-key = ["dep:hmac", "dep:sha2"]
+
+# The hardware-in-the-loop test console (src/hil.rs): a line-oriented serial
+# command set that drives the store directly, so a bench operator can run the
+# known-answer test, format, seal, cut power and read the ledger back. It is how
+# m4a's manual power-cut gate is evidenced (MILESTONES.md m4a test method) and it
+# is OFF by default; tools/ci/check-release-symbols.sh asserts its symbols are
+# absent from a shipped binary (Q41).
+hil-console = ["dep:hmac", "dep:sha2"]
+
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.52", features = ["binstart"] }
@@ -73,6 +91,17 @@ esp-idf-hmac = { path = "../crates/esp-idf-hmac" }
 # hash_password_into_with_memory API with a scratch buffer it allocates itself, so
 # the crate never needs an allocator or an RNG (SECURITY.md invariant 3).
 argon2 = { version = "0.5", default-features = false, optional = true }
+# The sealing and storage engine. no_std, no RNG, no clock: it borrows this
+# crate's flash, MAC and Argon2 scratch through src/store/ and computes
+# everything else itself. `testkit` is NEVER enabled here - it would pull the
+# host power-loss simulator into the device image, and tools/build-graph-check.sh
+# asserts it is absent.
+notyas-wallet = { path = "../crates/notyas-wallet" }
+# Software HMAC-SHA256, for the development key substitute and the known-answer
+# test only (src/store/mac.rs). Both are feature-gated; a product image links
+# neither. Versions match notyas-wallet's so the workspace resolves one copy.
+hmac = { version = "0.13.0", default-features = false, optional = true }
+sha2 = { version = "0.11.0", default-features = false, optional = true }
 
 [build-dependencies]
 embuild = "0.33"
