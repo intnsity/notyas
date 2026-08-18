@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# release.sh — tag and push notyas 0.1.0
+# release.sh - tag and push notyas 0.1.0
 # Run this from Windows (where the GPG key is) after all code fixes are committed.
 #
 # Prerequisites:

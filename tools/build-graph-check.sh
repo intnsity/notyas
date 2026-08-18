@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-graph-check.sh — SECURITY.md invariant 1 + invariant 3 enforcement.
+# build-graph-check.sh - SECURITY.md invariant 1 + invariant 3 enforcement.
 #
 # Walks every Cargo.lock in the workspace and asserts that no banned crate
 # (RNG, networking, or I/O that the airgap/deterministic invariants forbid)
@@ -7,10 +7,10 @@
 # claimed but the repo never implemented (found by the 0.2.0 readiness audit).
 #
 # Banned crates and the invariant each serves:
-#   rand, rand_core, getrandom          — invariant 3 (deterministic: no RNG)
-#   ring                                — invariant 1 (no closed crypto blobs)
-#   reqwest, hyper, http, tokio,         — invariant 1 (no radio/network stack)
-#   mio, socket2, libsqlite3-sys        — invariant 1 (no I/O surface)
+#   rand, rand_core, getrandom          - invariant 3 (deterministic: no RNG)
+#   ring                                - invariant 1 (no closed crypto blobs)
+#   reqwest, hyper, http, tokio,         - invariant 1 (no radio/network stack)
+#   mio, socket2, libsqlite3-sys        - invariant 1 (no I/O surface)
 #
 # The firmware crate (std on ESP-IDF) is excluded from the no-std invariant
 # but still checked for RNG/networking crates: the firmware calls into the
@@ -24,7 +24,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Crates that must never appear as a RUNTIME dependency. Build-only deps
-# (embuild, cc, bindgen — pulled by esp-idf-sys at build time, never linked
+# (embuild, cc, bindgen - pulled by esp-idf-sys at build time, never linked
 # into the firmware image) are exempt: they run on the host during `cargo
 # build`, not on the device. We approximate this by checking the notyas-core
 # and notyas-ui lockfiles strictly (they are no_std, no build-deps, no host
@@ -41,7 +41,7 @@ BUILD_DEP_EXEMPT="embuild tempfile getrandom"
 LOCKS=$(find . -name Cargo.lock -not -path './.git/*' -not -path '*/target/*')
 
 if [ -z "$LOCKS" ]; then
-    echo "build-graph-check: no Cargo.lock found — run 'cargo generate-lockfile' first"
+    echo "build-graph-check: no Cargo.lock found - run 'cargo generate-lockfile' first"
     exit 1
 fi
 
@@ -49,14 +49,14 @@ VIOLATIONS=0
 
 # The no_std crates (notyas-core, notyas-ui) have no build-deps: ANY banned
 # crate in their lockfiles is a real violation. The firmware lockfile contains
-# build-time deps from esp-idf-sys/embuild that run on the host only — those
+# build-time deps from esp-idf-sys/embuild that run on the host only - those
 # are exempt (getrandom via tempfile via embuild, never in the device image).
 for lock in $LOCKS; do
     # Strict check for no_std crate lockfiles.
     if echo "$lock" | grep -q 'notyas-core\|notyas-ui\|notyas-fonts'; then
         for crate in $BANNED_ALL; do
             if grep -q "^name = \"${crate}\"$" "$lock"; then
-                echo "VIOLATION: banned crate '${crate}' found in ${lock} (no_std crate — no exemptions)"
+                echo "VIOLATION: banned crate '${crate}' found in ${lock} (no_std crate - no exemptions)"
                 VIOLATIONS=$((VIOLATIONS + 1))
             fi
         done
@@ -109,7 +109,7 @@ for lock in $LOCKS; do
 done
 
 # Also check that secp256k1 IS present (invariant 4: equivalence requires the
-# same crypto as desktop BigDice). This is a positive check — its absence would
+# same crypto as desktop BigDice). This is a positive check - its absence would
 # mean the derivation path is stubbed.
 SECP_FOUND=0
 for lock in $LOCKS; do
@@ -119,14 +119,14 @@ for lock in $LOCKS; do
     fi
 done
 if [ "$SECP_FOUND" -eq 0 ]; then
-    echo "VIOLATION: secp256k1 not found in any Cargo.lock — invariant 4 (equivalence) is broken"
+    echo "VIOLATION: secp256k1 not found in any Cargo.lock - invariant 4 (equivalence) is broken"
     VIOLATIONS=$((VIOLATIONS + 1))
 fi
 
 if [ "$VIOLATIONS" -gt 0 ]; then
-    echo "build-graph-check: FAILED — ${VIOLATIONS} violation(s)"
+    echo "build-graph-check: FAILED - ${VIOLATIONS} violation(s)"
     exit 1
 fi
 
-echo "build-graph-check: OK — no banned crates, secp256k1 present"
+echo "build-graph-check: OK - no banned crates, secp256k1 present"
 exit 0

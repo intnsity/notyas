@@ -8,7 +8,7 @@
 # default-member: a bare `cargo build` from the repository root must not try
 # to build the ESP image, which would fail without the IDF toolchain,
 # sdkconfig overlays and nightly -Zbuild-std. The firmware is built through
-# tools/build.ps1, which cd's into firmware/ first — there,
+# tools/build.ps1, which cd's into firmware/ first - there,
 # firmware/.cargo/config.toml (target, linker, CARGO_WORKSPACE_DIR,
 # ESP_IDF_SDKCONFIG_DEFAULTS, ESP_IDF_VERSION) and firmware/rust-toolchain.toml
 # still drive the build unchanged. This file does not override either of them.
