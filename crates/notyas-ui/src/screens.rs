@@ -656,6 +656,21 @@ fn phrase_layout(m: &Metrics) -> PhraseLayout {
     }
 }
 
+/// Per-frame copies of the typed phrase, wiped on drop. `draw_phrase` can leave early
+/// through `?` on any draw error; owning the temporaries in a drop guard means no exit
+/// path - early or normal - strands unwiped secret bytes in freed allocations.
+struct PhraseTemps {
+    chars: Vec<char>,
+    lines: Vec<String>,
+}
+
+impl Drop for PhraseTemps {
+    fn drop(&mut self) {
+        self.lines.zeroize();
+        self.chars.zeroize();
+    }
+}
+
 fn draw_phrase<D: DrawTarget<Color = Rgb565>>(
     t: &mut D,
     m: &Metrics,
@@ -671,13 +686,16 @@ fn draw_phrase<D: DrawTarget<Color = Rgb565>>(
     let inner = l.well.inset(8);
     let adv = MONO_SMALL.glyph('m').advance as i32;
     let per_line = (inner.w / adv).max(1) as usize;
-    // These per-frame copies of the typed phrase are wiped before they are freed: the
-    // phrase is shown unmasked by design, but its heap copies still obey the hygiene
-    // rule (no stale secret bytes stranded in freed allocations).
-    let mut chars: Vec<char> = s.text.chars().collect();
-    let mut lines: Vec<String> = chars.chunks(per_line).map(|c| c.iter().collect()).collect();
-    let visible = lines.len().min(3);
-    for (i, line) in lines[lines.len() - visible..].iter().enumerate() {
+    // The phrase is shown unmasked by design, but its per-frame heap copies still obey
+    // the hygiene rule: the drop guard wipes them on every exit path, including the `?`
+    // returns inside the draw loop below.
+    let tmp = {
+        let chars: Vec<char> = s.text.chars().collect();
+        let lines: Vec<String> = chars.chunks(per_line).map(|c| c.iter().collect()).collect();
+        PhraseTemps { chars, lines }
+    };
+    let visible = tmp.lines.len().min(3);
+    for (i, line) in tmp.lines[tmp.lines.len() - visible..].iter().enumerate() {
         text(
             t,
             line,
@@ -688,8 +706,7 @@ fn draw_phrase<D: DrawTarget<Color = Rgb565>>(
             PAPER_3,
         )?;
     }
-    lines.zeroize();
-    chars.zeroize();
+    drop(tmp);
 
     // Advisory only, never a veto: the desktop derives from any phrase and warns beside
     // it, and this screen reports the same three findings.
