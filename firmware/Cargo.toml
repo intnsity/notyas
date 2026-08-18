@@ -23,6 +23,11 @@ opt-level = "z"
 # and a build that does not name its hardware must fail, not guess.
 default = []
 board-waveshare-4b = []
+board-waveshare-5 = []
+board-waveshare-7b = []
+board-waveshare-7x = []
+board-waveshare-8x = []
+board-waveshare-101x = []
 board-elecrow-5 = []
 board-elecrow-7 = []
 board-elecrow-9 = []
@@ -58,15 +63,42 @@ remote_component = { name = "espressif/esp_lcd_touch_gt911", version = "^1" }
 bindings_header = "bindings/gt911.h"
 
 # Elecrow CrowPanel Advanced boards. The EK79007 DSI panel driver serves the
-# 7/9/10.1 inch siblings; the bindings header also surfaces the core-IDF RGB
-# panel API used by the 5 inch. NOTE: esp-idf-sys package metadata cannot be
-# feature-gated, so every board build compiles all components and carries all
-# bindings - the cfg-gated Rust in src/board/ only ever calls its own board's
-# surface (the security argument lives in what runs, but keep this in mind
-# when auditing the C side of the image).
+# Elecrow 7/9/10.1 inch siblings AND the Waveshare Touch-LCD-7B (same
+# controller; ^1 suffices for both - the 2.x line only adds IDF6
+# compatibility per its CHANGELOG). The bindings header also surfaces the
+# core-IDF RGB panel API used by the Elecrow 5 inch. NOTE: esp-idf-sys
+# package metadata cannot be feature-gated, so every board build compiles
+# all components and carries all bindings - the cfg-gated Rust in src/board/
+# only ever calls its own board's surface (the security argument lives in
+# what runs, but keep this in mind when auditing the C side of the image).
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/esp_lcd_ek79007", version = "^1" }
 bindings_header = "bindings/elecrow.h"
+
+# Waveshare Touch-LCD-5 (board-waveshare-5): HX8394 DSI panel driver - the
+# 5 BSP's own component pin (its default init table IS this panel's).
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "waveshare/esp_lcd_hx8394", version = "^2.1.0" }
+bindings_header = "bindings/hx8394.h"
+
+# Waveshare Touch-LCD-7 "X" (board-waveshare-7x): ILI9881C DSI panel driver;
+# its default init table was verified identical to the X BSP's 7-inch table.
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "waveshare/esp_lcd_ili9881c", version = "^2" }
+bindings_header = "bindings/ili9881c.h"
+
+# Waveshare Touch-LCD-8 / -10.1 "X" (board-waveshare-8x / -101x): per-size
+# JD9365 drivers whose default init tables carry each panel's command set
+# (the X BSP feeds the same data to a generic driver). Distinct exported
+# symbols (esp_lcd_new_panel_jd9365_8 vs esp_lcd_new_panel_jd9365), so both
+# can ride in every build without clashing (see the NOTE above).
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "waveshare/esp_lcd_jd9365_8", version = "^2" }
+bindings_header = "bindings/jd9365_8.h"
+
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "waveshare/esp_lcd_jd9365_10_1", version = "^2" }
+bindings_header = "bindings/jd9365_10_1.h"
 
 # Verify-screen surface (SECURITY.md invariant 5). No component is built - the entry
 # only widens the bindgen surface with the running-partition hash and the secure-boot /
