@@ -366,6 +366,10 @@ pub(crate) struct PassState {
     pub confirm: Zeroizing<String>,
     pub focus: PassFocus,
     pub page: Page,
+    /// Show/Hide toggle (default hidden). When true the passphrase fields render
+    /// unmasked so the user can verify what they typed — an unseen typo silently
+    /// derives a different wallet, which is the worse failure.
+    pub show: bool,
 }
 
 /// The QR modal, open over the schemes screen: a finished symbol plus its title.
@@ -688,6 +692,7 @@ impl Ui {
                     confirm: secret_buf(PASS_MAX),
                     focus: PassFocus::Entry,
                     page: Page::Lower,
+                    show: false,
                 });
             }
 
@@ -724,6 +729,7 @@ impl Ui {
                     confirm: secret_buf(PASS_MAX),
                     focus: PassFocus::Entry,
                     page: Page::Lower,
+                    show: false,
                 });
             }
 
@@ -737,6 +743,7 @@ impl Ui {
                     s.focus = PassFocus::Entry;
                 }
             }
+            (State::Passphrase(s), RegionId::PassShow) => s.show = !s.show,
             (State::Passphrase(s), RegionId::PassEntry) => s.focus = PassFocus::Entry,
             (State::Passphrase(s), RegionId::PassConfirm) => s.focus = PassFocus::Confirm,
             (State::Passphrase(s), RegionId::Key(c)) => pass_edit(s, Some(c)),

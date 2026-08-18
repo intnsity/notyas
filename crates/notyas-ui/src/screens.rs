@@ -91,6 +91,7 @@ pub(crate) fn regions(m: &Metrics, state: &State) -> Vec<Region> {
         State::Passphrase(s) => {
             let l = pass_layout(m);
             out.push(Region { id: RegionId::Back, rect: back_rect(m) });
+            out.push(Region { id: RegionId::PassShow, rect: l.show_btn });
             out.push(Region { id: RegionId::PassToggle, rect: l.toggle });
             if s.enabled {
                 out.push(Region { id: RegionId::PassEntry, rect: l.entry });
@@ -933,6 +934,7 @@ fn draw_phrase<D: DrawTarget<Color = Rgb565>>(
 struct PassLayout {
     toggle_label_y: i32,
     toggle: Rect,
+    show_btn: Rect,
     entry: Rect,
     confirm: Rect,
     status_y: i32,
@@ -947,6 +949,10 @@ fn pass_layout(m: &Metrics) -> PassLayout {
     let toggle_h = 48;
     let toggle_w = (body.w / 3).max(200);
     let toggle = Rect::new(body.right() - toggle_w, body.y, toggle_w, toggle_h);
+    // Show/Hide button sits to the LEFT of the Off/On toggle: same height, a compact
+    // label width, at the left edge of the body. The toggle keeps its right-anchored
+    // position, so the two cannot overlap on either shipped geometry.
+    let show_btn = Rect::new(body.x, body.y, 120, toggle_h);
     let fields_y = body.y + toggle_h + g;
     let (entry, confirm, status_y) = if m.landscape() {
         let fw = (body.w - g) / 2;
@@ -962,6 +968,7 @@ fn pass_layout(m: &Metrics) -> PassLayout {
     PassLayout {
         toggle_label_y: body.y + (toggle_h - LINE) / 2,
         toggle,
+        show_btn,
         entry,
         confirm,
         status_y,
@@ -982,6 +989,10 @@ fn draw_passphrase<D: DrawTarget<Color = Rgb565>>(
 
     text(t, "Use passphrase", body.x, l.toggle_label_y, BODY, INK_PRIMARY, PAPER_1)?;
     toggle(t, l.toggle, ["Off", "On"], usize::from(s.enabled))?;
+    // Show/Hide the passphrase fields (default Hidden): an unseen typo silently derives
+    // a different wallet, which is the worse failure. Plain button, no confirm.
+    let show_label = if s.show { "Hide" } else { "Show" };
+    button(t, l.show_btn, show_label, ButtonKind::Secondary, PAPER_1)?;
 
     if !s.enabled {
         // Desktop wording for the off state, then the warning that matters before
@@ -1004,13 +1015,13 @@ fn draw_passphrase<D: DrawTarget<Color = Rgb565>>(
 
     // Entry and confirm fields. Both masked with the house FIXED bullet run - the char
     // counter below gives typing feedback, as the desktop's NFKD counter does.
-    canvas::field(t, l.entry, &s.entry, true, s.focus == PassFocus::Entry)?;
+    canvas::field(t, l.entry, &s.entry, !s.show, s.focus == PassFocus::Entry)?;
     if s.entry.is_empty() {
         let y = l.entry.y + (l.entry.h - LINE) / 2;
         text(t, "passphrase", l.entry.x + 12, y, BODY, INK_MUTED, PAPER_3)?;
     } else {
         // The opt-in confirm field appears once there is something to confirm.
-        canvas::field(t, l.confirm, &s.confirm, true, s.focus == PassFocus::Confirm)?;
+        canvas::field(t, l.confirm, &s.confirm, !s.show, s.focus == PassFocus::Confirm)?;
         if s.confirm.is_empty() {
             let y = l.confirm.y + (l.confirm.h - LINE) / 2;
             text(t, "repeat passphrase", l.confirm.x + 12, y, BODY, INK_MUTED, PAPER_3)?;
