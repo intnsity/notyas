@@ -81,27 +81,33 @@ per-board airgap statement), `docs/HARDWARE.md`, `docs/research/`.
 | WALLET-API.md | 3 | notyas-wallet API design (authoritative for the crate) | PRESENT at reconciliation (commit 7a67983); its OPEN: W1-W5 folded in as Q22-Q26 |
 | REPRODUCIBLE.md | 3 | reproducible-build recipe, release gate | PRESENT; its six OPEN items folded in as Q27-Q32 |
 | BACKUP-FEATURES.md | 3 | backup/restore/seed-lifecycle detail | PRESENT; OPEN-B1 folded into Q14, B2 -> Q33, B3 folded into Q17, B4 -> Q34 |
+| UX-SCREENS.md | 3 | per-screen build spec | PRESENT; its five open items -> Q35-Q38 and Q24; one gap to patch, below |
+| CORPUS.md | 3 | adversarial PSBT corpus, m6/m7 exit criteria | PRESENT; corpus-1..5 -> Q39-Q43 |
 | ESP-SEAL.md | 3 | firmware platform traits, sealed-storage layer | PENDING - open-item sweep still owed |
-| UX-SCREENS.md | 3 | per-screen build spec | PENDING - open-item sweep still owed, plus the Q22 check below |
-| CORPUS.md | 3 | adversarial PSBT corpus, m6/m7 exit criteria | PENDING - open-item sweep still owed |
-| CAMERA-HW.md | 3 | camera bring-up detail | PENDING - open-item sweep still owed |
+| CAMERA-HW.md | 3 | camera bring-up detail | PENDING - open-item sweep still owed (CAMERA.md covers the decision in the meantime) |
 
 **Outstanding sweep (as of 2026-08-17):** every open item present in this directory at
 reconciliation time is in OPEN-QUESTIONS.md, including those that do not use the
 literal `OPEN:` prefix (BACKUP-FEATURES.md uses `OPEN-Bn`). The four PENDING documents
 above had not landed; when each arrives, its open items must be folded into
-OPEN-QUESTIONS.md (continue numbering from Q34, attribute the source document, keep
+OPEN-QUESTIONS.md (continue numbering from Q43, attribute the source document, keep
 its recommendation) and its row updated to PRESENT. A document listed here as PENDING
 that is now on disk means the sweep is owed.
 
-**Gap to patch when UX-SCREENS.md lands:** OPEN-QUESTIONS Q22 is RESOLVED (the BIP39
-passphrase is never stored), and its warning must appear at three specific places -
-passphrase entry during creation before the wallet is saved, the post-creation backup
-screen, and every restore or unlock flow that asks for a passphrase - plus a one-time
-acknowledgment before the first passphrase wallet is saved. UX-SCREENS.md had not
-landed at reconciliation time, so nobody has verified it carries all three placements
-and the exact copy. Verify on arrival; if any placement is missing, that is a patch to
-UX-SCREENS.md, not a re-decision.
+**Gap found in UX-SCREENS.md, to patch (not a re-decision):** OPEN-QUESTIONS Q22 is
+RESOLVED - the BIP39 passphrase is never stored - and its warning has three required
+placements. UX-SCREENS.md as landed covers the "a different passphrase is a different
+wallet" framing and echoes the fingerprint on S-15/S-18/S-19, which is the right
+instinct, but it does not carry the not-stored substance anywhere: that the passphrase
+is not stored on this device, that restoring needs BOTH the seed words and the
+passphrase, that a seed backup alone will not recover the wallet, and that the device
+cannot help recover a forgotten passphrase. Missing specifically: (i) that text at the
+S-15 passphrase entry before the wallet is saved, (ii) the same at the post-creation
+backup screen, (iii) the same in every restore and unlock flow that asks for a
+passphrase, (iv) the one-time explicit acknowledgment before the first passphrase
+wallet is saved, and (v) the overridable `passphrase_check` mismatch warning at
+unlock. Patch UX-SCREENS.md with the copy; MILESTONES m4b already carries all five as
+acceptance criteria.
 
 **Recorded disagreements between documents, left for the user rather than silently
 settled:** Q14 (BACKUP-FEATURES.md recommends shipping seed-bearing encrypted backup
@@ -245,6 +251,9 @@ OPEN-QUESTIONS.md carries the same map.
 | OPEN-B2 | Q33 | Seed XOR part-generation default (BACKUP-FEATURES.md) |
 | OPEN-B3 | folded into Q17 as option (b) | SeedQR display behind a secret-QR screen class (BACKUP-FEATURES.md) |
 | OPEN-B4 | Q34 | Publish the backup container format (BACKUP-FEATURES.md) |
+| - | Q35-Q38 | PIN pad shuffle domain, deliver escape hatch, wrong-PIN visibility, address truncation (UX-SCREENS.md) |
+| - | folded into Q24 | Expert overrides - the warning-versus-refusal line (UX-SCREENS.md) |
+| corpus-1..5 | Q39-Q43 | Corpus licensing, bitcoind in CI, HIL console, lookalike warning, HIL hardware (CORPUS.md) |
 
 WALLET-API.md's internal decisions D1-D11 are its own and are not re-opened here.
 

@@ -330,6 +330,12 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   Note: anti-phishing words derive from the eFuse key, so they exist only after
   provisioning. A blank stateless device has none, and no screen may imply otherwise
   (R20).
+- **Build specs:** UX-SCREENS.md for screens 2 and 16; ESP-SEAL.md for the driver and
+  the provisioning path; CORPUS.md for the hardware-in-the-loop procedure.
+- **Test rig (lead time, order at m1):** the power-cut gate below needs a
+  USB-controlled relay or FET; it cannot be faked (Q43). The HIL test-mode console
+  ships build-feature-gated and off by default, with a release gate asserting its
+  symbols are absent from the shipped binary (Q41).
 - **Crates / areas:** firmware, notyas-wallet (session), notyas-ui (minimal).
 - **Exit gate (hardware), on both boards:** create a wallet, power cycle, unlock;
   wrong PIN decrements the counter and the decrement survives a reboot AND a power
@@ -428,7 +434,10 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   Review-screen requirements that are gates, not polish: full address in mono
   chunked to the end, one page per output, non-address outputs rendered explicitly,
   nLockTime and RBF surfaced, the >10-output overview page, no sign affordance until
-  the last page has been visited.
+  the last page has been visited, and the lookalike-address warning (compare each
+  external output against our own derived addresses in the gap window - Q42), which
+  counters an active attack that showing the full address only partly mitigates.
+  Expert settings may tune WARNING thresholds and may never disable a REFUSAL (Q24).
 - **Build specs:** WALLET-API.md (policy engine, verdicts, limits), CORPUS.md (the
   corpus cases and their expected verdicts and rendered text - m6's exit criteria are
   defined there, not here), UX-SCREENS.md (screens 9-11).
@@ -626,6 +635,10 @@ Hard serialization on hardware resources, stated so two agents do not collide:
     competing crate, if m8/m11 needed it.
   - `bsms` (BIP-129) crate: build only if m7 left capacity; on-device BSMS stays
     deferred either way (OPEN-QUESTIONS Q15).
+  - The adversarial PSBT vector files published permissively with their own SPDX
+    headers (harness stays GPL3) and selected cases offered upstream to HWI and
+    psbt_faker (Q39) - a contribution that costs no engineering because the vectors
+    already exist as m6's gate.
 - **Crates / areas:** new published crates, tools, CI, docs.
 - **Exit gate (hardware):** a second machine reproduces both board images
   bit-for-bit; the reproduced image flashes and boots with the same Verify-screen

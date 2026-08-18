@@ -7,7 +7,7 @@ is noted on each item so earlier references stay traceable.
 
 **Q1-Q8 block milestone 1.** Nothing downstream can start until they are answered,
 because each one pins either a document that must precede the code or a byte-level
-format that cannot change once a user has sealed a wallet. Q9-Q34 can be answered at
+format that cannot change once a user has sealed a wallet. Q9-Q43 can be answered at
 their milestone. **Q22 is already RESOLVED by the user** (the BIP39 passphrase is
 never stored) and is kept in place with its resolution, because its two consequences
 are implementation requirements.
@@ -394,16 +394,23 @@ rather than a refusal. Re-check both constants against real coordinator behavior
 m6. **Blast radius:** m6 policy engine; (b) would also make it a record-format change,
 which is the main reason to decide it now rather than later.
 
-## Q24. Expert overrides for the sighash whitelist and stateless multisig?
-[WALLET-API.md W3] - by m6
+## Q24. Expert overrides: what may a Settings toggle change?
+[WALLET-API.md W3; UX-SCREENS.md "Expert overrides"] - by m6
 
-**Recommendation: neither ships in 0.2.0.** SIGHASH_ALL/DEFAULT-only and
-"stateless mode refuses multisig change claims" are hard rules; the enum variants
-exist so the future is expressible, but no Settings screen turns them on. A setting
-that disables the check which stops output substitution is a setting an attacker will
-talk a user into enabling, and the device cannot detect that conversation. Note this
-narrows Q12's suggestion of an expert override for stateless multisig.
-**Blast radius:** m6 policy surface and the Settings screen; reversible later.
+**Recommendation: draw the line at warnings versus refusals.**
+- No override ever disables a REFUSAL. SIGHASH_ALL/DEFAULT-only, "stateless mode
+  refuses multisig change claims", ownership re-derivation and the post-sign gate are
+  hard rules. The enum variants exist so the future is expressible, but no Settings
+  screen turns them on. A setting that disables the check which stops output
+  substitution is a setting an attacker will talk a user into enabling, and the device
+  cannot detect that conversation. This narrows Q12's suggested override.
+- An expert toggle MAY adjust WARNING thresholds (fee percentage and sat/vB per Q13,
+  lookalike-address sensitivity per Q42) with each override individually named and no
+  master bypass, which is what UX-SCREENS.md's S-44 specifies. Accepted on that
+  boundary: refusing to build any gate at all pushes determined users toward patched
+  firmware, which is worse.
+**Blast radius:** m6 policy surface and the Settings screen; the warning/refusal line
+is also the sentence SECURITY.md invariant 7 has to keep true.
 
 ## Q25. Accepted PSBT size cap [WALLET-API.md W4] - by m6
 
@@ -503,6 +510,84 @@ either way. Whether the decoder also ships as a published crate follows Q8's
 licensing answer. Applies only if Q14 ships a backup at all.
 **Blast radius:** m12 documentation; no firmware change.
 
+## Q35. PIN pad shuffle domain [UX-SCREENS.md] - by m4a
+
+The randomized keypad permutation derives from the device-bound HMAC ladder with its
+own HKDF info string. **Recommendation: accept as specified.** It keeps invariant 3
+mechanically checkable, and a display permutation needs unpredictability to an
+observer between attempts, not cryptographic unpredictability.
+**Blast radius:** one derivation label in m4a; none elsewhere.
+
+## Q36. Deliver-screen escape hatch [UX-SCREENS.md] - by m6
+
+S-38 keeps the user in the delivery flow until one delivery succeeds, then offers
+"Discard signed transaction" after two failures.
+**Recommendation: accept.** The alternative is a power cycle, which discards it
+anyway without informed consent. Reject only if you would rather the device never
+offer to discard a signature it already produced. **Blast radius:** one screen.
+
+## Q37. Wrong-PIN policy visibility [UX-SCREENS.md] - decide with Q2
+
+S-44 shows the current wipe threshold; Q5 sets its default.
+**Recommendation: show the threshold, and hide the slot count if Q2 chooses the
+deniability package** - the two are separable, and three screens (S-01, S-03, S-46)
+degrade together if the count goes. Decide Q2 first. **Blast radius:** three screens
+and SECURITY invariant 5's wording.
+
+## Q38. Address-list truncation [UX-SCREENS.md] - by m10
+
+S-22 truncates addresses in the navigation list and states "never check an address
+from this list"; the stricter alternative is indices and paths only.
+**Recommendation: keep the truncated preview.** Users navigate by the characters they
+already know, and the verification screen is one tap away and never truncates. Reject
+if you want a zero-truncation product with no exception to explain.
+**Blast radius:** one screen; UX commandment 1's phrasing.
+
+## Q39. Corpus licensing and publication [CORPUS.md corpus-1] - by m12
+
+**Recommendation: keep the harness GPL-3.0-or-later, license the VECTOR FILES
+permissively (CC0 or MIT) with their own SPDX headers, and upstream selected cases to
+HWI and Coldcard's psbt_faker.** Test vectors gain their value from adoption - the
+same argument Q8 makes for the extracted crates - and a vector carries no
+implementation to protect. **Blast radius:** repo licensing headers; a genuine
+community contribution at no engineering cost.
+
+## Q40. Does CI get a bitcoind? [CORPUS.md corpus-2] - by m6
+
+**Recommendation: a pinned container, run on pull requests that touch notyas-core or
+notyas-wallet plus nightly, not on every push.** The fast lane stays fast. The
+operational cost is real, but a signer whose acceptance testing is manual will
+eventually ship a transaction the network rejects. **Blast radius:** CI cost and one
+maintained image; m6's differential gate depends on it.
+
+## Q41. The HIL test-mode console [CORPUS.md corpus-3] - by m4a
+
+Repeatable hardware testing wants a serial console that can inject touch events and
+dump the screen model - which is an attack surface if it ever ships.
+**Recommendation: accept the proposed package** - build-feature gated, off by
+default, "HIL BUILD" banner on the Verify screen, and a release gate asserting the
+symbols are absent from the shipped binary. Every mitigation is mechanical rather
+than procedural. Without it, hardware verification stays a person with a camera and a
+checklist. **Blast radius:** firmware build features and one m13 release gate.
+
+## Q42. Lookalike-address warning [CORPUS.md corpus-4] - by m6
+
+Compare each external output address against our own derived addresses in the gap
+window and warn on a prefix/suffix near-match ("this address resembles your own
+address at index 7").
+**Recommendation: implement it in m6.** It costs a handful of string comparisons over
+addresses the device already derives, and it counters a documented active attack that
+showing the full address only partially addresses, because users still compare ends.
+Sensitivity is a warning threshold, so Q24's expert gate may tune it; it can never be
+turned into a refusal. **Blast radius:** m6 policy engine and the review screen.
+
+## Q43. HIL hardware purchases [CORPUS.md corpus-5] - now
+
+**Recommendation: buy the USB-controlled relay or FET for the power-cut rig now** -
+m4a's "power cut taken mid-decrement" gate cannot be faked - and treat the SD-mux as
+optional, since the SD steps are few and already batched into the release run.
+**Blast radius:** a small purchase with lead time; it gates m4a's exit.
+
 ---
 
 ## Disposition notes
@@ -521,11 +606,15 @@ licensing answer. Applies only if Q14 ships a backup at all.
   REPRODUCIBLE.md's six OPEN items -> Q27-Q32; BACKUP-FEATURES.md OPEN-B1 -> folded
   into Q14 (not duplicated), OPEN-B2 -> Q33, OPEN-B3 -> folded into Q17 as option
   (b), OPEN-B4 -> Q34.
+- UX-SCREENS.md and CORPUS.md map: shuffle domain -> Q35, deliver escape hatch ->
+  Q36, wrong-PIN visibility -> Q37, address truncation -> Q38, expert overrides ->
+  folded into Q24 (with the warning-versus-refusal line drawn there); corpus-1 -> Q39,
+  corpus-2 -> Q40, corpus-3 -> Q41, corpus-4 -> Q42, corpus-5 -> Q43.
 - Sweep status (2026-08-17): every open item present in docs/plan-0.2.0/ at
   reconciliation time is folded in, including the ones that do not use the literal
-  `OPEN:` prefix (BACKUP-FEATURES.md uses `OPEN-Bn`). Still absent and therefore
-  still owed a sweep: ESP-SEAL.md, CORPUS.md, UX-SCREENS.md, CAMERA-HW.md. INDEX.md
-  tracks which are outstanding.
+  `OPEN:` prefix (BACKUP-FEATURES.md uses `OPEN-Bn`, CORPUS.md uses `OPEN: (corpus-n)`).
+  Still absent and therefore still owed a sweep: ESP-SEAL.md and CAMERA-HW.md.
+  INDEX.md tracks which are outstanding.
 - Where a wave-3 document recommends the opposite of this reconciliation, both
   positions are stated in the question rather than one being silently dropped:
   Q14 (BACKUP-FEATURES wants seed-bearing backup in 0.2.0) and Q17 (BACKUP-FEATURES
