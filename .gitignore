@@ -5,6 +5,13 @@
 # licence are settled - third-party models (e.g. Makerworld) carry their own terms
 # that may not permit redistribution under GPL-3.0. Revisit for 0.2.0.
 /3dp/
+
+# The original internal project brief. Kept on the working tree for provenance but
+# out of the published repository: it records local working paths and internal
+# workflow instructions that mean nothing to a reader of the public tree. docs/
+# carries the design record that superseded it.
+/plan.md
+
 **/*.rs.bk
 *.swp
 *.swo

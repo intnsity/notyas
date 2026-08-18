@@ -8,7 +8,7 @@ description = "Pre-rasterized notyas Sans / notyas Mono glyph atlases (derived f
 # from IBM Plex and remains under the SIL Open Font License 1.1 - see LICENSE-fonts at
 # the repository root and the crate docs.
 license = "GPL-3.0-or-later"
-repository = "https://github.com/intnsity/BigDice"
+repository = "https://github.com/intnsity/notyas"
 publish = false
 
 [dependencies]
