@@ -37,7 +37,7 @@ jobs:
     name: test + clippy (host)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Toolchain versions
         run: |
@@ -70,7 +70,7 @@ jobs:
       AR_riscv32imac_unknown_none_elf: riscv64-unknown-elf-ar
       CFLAGS_riscv32imac_unknown_none_elf: -march=rv32imac_zicsr -mabi=ilp32
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install RISC-V bare-metal C toolchain
         run: |
@@ -97,7 +97,7 @@ jobs:
     name: build-graph invariants (SECURITY.md 1 and 3)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # No RNG source, no network stack, no closed crypto blob anywhere in the
       # dependency graph - and secp256k1 present, so the derivation path cannot
