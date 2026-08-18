@@ -582,7 +582,11 @@ pub(crate) fn commit_policy<F: Flash, M: DeviceMac>(
     policy: &Policy,
 ) -> Result<(), StorageError<F::Error, M::Error>> {
     let sector = live_sector(state).map_err(StorageError::Invariant)?;
-    let index = state.policy_consumed;
+    // Scanned rather than taken from the in-RAM length, for the same reason
+    // `commit_pin_gen` scans: a previous commit interrupted between the program and the
+    // state update would leave the cursor one behind, and re-programming a cell that is
+    // already written is the one thing the LEDGER INVARIANT forbids.
+    let index = next_free_cell::<F, M>(flash, sector, &POLICY_LOG)?;
     let offset = POLICY_LOG.cell_offset(index).ok_or(StorageError::Capacity)?;
     let cell = format::policy_cell(
         &keys.guard_key,
@@ -592,7 +596,7 @@ pub(crate) fn commit_policy<F: Flash, M: DeviceMac>(
         &policy.encode(),
     );
     program_cell::<F, M>(flash, sector, offset, &cell)?;
-    state.policy_consumed = index.saturating_add(1);
+    state.policy_consumed = state.policy_consumed.max(index.saturating_add(1));
     state.policy = Some(*policy);
     Ok(())
 }

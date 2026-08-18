@@ -1080,3 +1080,39 @@ fn the_pin_entropy_estimate_is_advisory_and_monotonic() {
         "one digit out of ten is log2(10) rounded down, and the number is an upper bound          on a keyspace rather than a claim about what the user chose"
     );
 }
+
+#[test]
+fn an_oversized_derivation_input_is_refused_rather_than_truncated() {
+    // The failure this guards against is subtle and was real: a fixed staging buffer that
+    // silently dropped everything past its end would let two inputs differing only past
+    // the cut derive the same value, which is exactly the collision the length prefix in
+    // front of them exists to prevent.
+    let cfg = fuzz_config();
+    let mut v = blank(&cfg);
+    let mut out = [0u8; 32];
+
+    assert!(v.device_derive(&[b'x'; 64], &[b'y'; 256], &mut out).is_ok());
+    assert!(
+        matches!(
+            v.device_derive(&[b'x'; 65], b"", &mut out),
+            Err(StorageError::Capacity)
+        ),
+        "an over-long label must be refused"
+    );
+    assert!(
+        matches!(
+            v.device_derive(b"", &[b'y'; 257], &mut out),
+            Err(StorageError::Capacity)
+        ),
+        "over-long data must be refused"
+    );
+
+    // And the pair that would have collided under truncation stays distinct.
+    let mut a = [0u8; 32];
+    let mut b = [0u8; 32];
+    v.device_derive(b"label", &[b'z'; 200], &mut a).expect("derive");
+    let mut longer = vec![b'z'; 200];
+    longer.push(b'z');
+    v.device_derive(b"label", &longer, &mut b).expect("derive");
+    assert_ne!(a, b);
+}

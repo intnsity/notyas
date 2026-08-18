@@ -87,24 +87,24 @@ impl core::fmt::Debug for Bound {
 }
 
 /// HMAC-SHA256 under the read-protected eFuse key, with a one-byte domain tag.
-fn hmac_efuse<M: DeviceMac>(
+///
+/// The payload length is a const generic rather than a slice length, and the buffer is
+/// sized from it, so an internal message that outgrew its staging buffer is a compile
+/// error. That matters more than it looks: silently truncating the message would make two
+/// different internal derivations collide, and the whole reason for the tag byte is that
+/// two derivations must never collide.
+fn hmac_efuse<M: DeviceMac, const N: usize>(
     mac: &mut M,
     tag: u8,
-    msg: &[u8],
+    msg: &[u8; N],
 ) -> Result<Zeroizing<[u8; 32]>, M::Error> {
-    // A fixed 96-byte staging buffer: the longest internal message is one tag plus a
-    // 32-byte prestretch, and device_derive builds its own message.
     let mut out = Zeroizing::new([0u8; 32]);
-    let mut buf = Zeroizing::new([0u8; 96]);
-    let len = msg.len().min(95);
-    if let Some(slot) = buf.get_mut(0) {
-        *slot = tag;
-    }
-    if let (Some(dst), Some(src)) = (buf.get_mut(1..=len), msg.get(..len)) {
-        dst.copy_from_slice(src);
-    }
-    let framed = buf.get(..len.saturating_add(1)).unwrap_or(&[]);
-    mac.hmac(framed, &mut out)?;
+    let mut buf = Zeroizing::new([0u8; N]);
+    buf.copy_from_slice(msg);
+    let mut framed = Zeroizing::new(alloc::vec::Vec::with_capacity(N.saturating_add(1)));
+    framed.push(tag);
+    framed.extend_from_slice(buf.as_slice());
+    mac.hmac(framed.as_slice(), &mut out)?;
     Ok(out)
 }
 
@@ -220,42 +220,57 @@ pub(crate) fn bind<M: DeviceMac>(
     Ok(Bound(hmac_efuse(mac, TAG_BOUND, prestretch)?))
 }
 
-/// Embedder-facing device-bound derivation: anti-phishing words, PIN-pad permutation,
-/// lock-screen words. Length-prefixed so it can never collide with an internal message.
+/// Longest label and longest data [`device_derive`] will accept.
+///
+/// Generous for what the embedder actually does with it - a fixed word-list label and a
+/// partial PIN - and bounded because the framing has to be, see below.
+pub(crate) const DERIVE_MAX_LABEL: usize = 64;
+pub(crate) const DERIVE_MAX_DATA: usize = 256;
+
+/// Embedder-facing device-bound derivation: anti-phishing words, the PIN-pad permutation,
+/// lock-screen words.
+///
+/// Tag `0x7f` and length-prefixed inputs, so it can never collide with an internal
+/// message, whose payloads are fixed-length and whose tags are `0x01..0x0f`. That
+/// separation is load-bearing: the anti-phishing words are derived from a partial PIN,
+/// i.e. from attacker-chosen input to the same eFuse key that produces `bound`, and
+/// without it a chosen-prefix query could be steered to collide with `0x02 || prestretch`.
+///
+/// Oversized inputs are REFUSED rather than truncated. An earlier version silently dropped
+/// everything past a 96-byte staging buffer, which would have let `(label, data)` pairs
+/// that differ only past the cut produce the same words - the exact collision the length
+/// prefix exists to prevent, reintroduced by the buffer behind it.
 pub(crate) fn device_derive<M: DeviceMac>(
     mac: &mut M,
     label: &[u8],
     data: &[u8],
     out: &mut [u8],
-) -> Result<(), M::Error> {
-    // A 32-byte MAC over a length-prefixed message, expanded with HKDF so the caller can
-    // ask for any output size without the framing changing.
-    let mut msg = Zeroizing::new([0u8; 96]);
-    let mut n = 0usize;
-    let mut push = |bytes: &[u8]| {
-        if let (Some(dst), Some(src)) = (
-            msg.get_mut(n..n.saturating_add(bytes.len())),
-            bytes.get(..bytes.len()),
-        ) {
-            dst.copy_from_slice(src);
-            n = n.saturating_add(bytes.len());
-        }
-    };
-    let llen = (label.len().min(u16::MAX as usize) as u16).to_le_bytes();
-    let dlen = (data.len().min(u16::MAX as usize) as u16).to_le_bytes();
-    push(&[TAG_DEVICE_DERIVE]);
-    push(&llen);
-    push(label);
-    push(&dlen);
-    push(data);
+) -> Result<bool, M::Error> {
+    if label.len() > DERIVE_MAX_LABEL || data.len() > DERIVE_MAX_DATA {
+        return Ok(false);
+    }
+    // Lengths are bounded above by the constants just checked, so both casts are exact.
+    let llen = (label.len() as u16).to_le_bytes();
+    let dlen = (data.len() as u16).to_le_bytes();
+    let mut msg = Zeroizing::new(alloc::vec::Vec::with_capacity(
+        DERIVE_MAX_LABEL
+            .saturating_add(DERIVE_MAX_DATA)
+            .saturating_add(5),
+    ));
+    msg.push(TAG_DEVICE_DERIVE);
+    msg.extend_from_slice(&llen);
+    msg.extend_from_slice(label);
+    msg.extend_from_slice(&dlen);
+    msg.extend_from_slice(data);
 
     let mut root = Zeroizing::new([0u8; 32]);
-    let framed = msg.get(..n).unwrap_or(&[]);
-    mac.hmac(framed, &mut root)?;
+    mac.hmac(msg.as_slice(), &mut root)?;
 
+    // HKDF over the MAC so the caller can ask for any output size without the framing
+    // changing, and so an output length is never itself a domain separator by accident.
     let h = Hkdf::<Sha256>::new(None, root.as_slice());
     let _ = h.expand(b"esp-seal/device-derive/v1", out);
-    Ok(())
+    Ok(true)
 }
 
 /// The 40-byte HKDF `info` that separates every record key from every other one.

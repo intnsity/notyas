@@ -680,9 +680,14 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
     /// Domain-separated device-bound derivation for embedder use: anti-phishing words,
     /// the PIN-pad permutation, lock-screen words.
     ///
-    /// Length-prefixed under tag `0x7f`, so an attacker who can choose the input - and for
-    /// the anti-phishing words they can, it is a partial PIN - can never steer it into
-    /// colliding with the fixed-length internal message `0x02 || prestretch`.
+    /// Length-prefixed under tag `0x7f`, so an attacker who can choose the input, and for
+    /// the anti-phishing words they can because it is a partial PIN, can never steer it
+    /// into colliding with the fixed-length internal message `0x02 || prestretch`.
+    ///
+    /// A label longer than 64 bytes or data longer than 256 is refused with
+    /// [`StorageError::Capacity`]. Truncating instead would let two inputs that differ
+    /// only past the cut derive the same value, which is precisely what the length prefix
+    /// is there to stop.
     pub fn device_derive(
         &mut self,
         label: &[u8],
@@ -692,8 +697,13 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
         if self.keys.is_none() {
             return Err(StorageError::WrongState);
         }
-        crypto::device_derive(&mut self.mac, label, data, out)
-            .map_err(|e| StorageError::Hardware(HardwareFault::Mac(e)))
+        let accepted = crypto::device_derive(&mut self.mac, label, data, out)
+            .map_err(|e| StorageError::Hardware(HardwareFault::Mac(e)))?;
+        if accepted {
+            Ok(())
+        } else {
+            Err(StorageError::Capacity)
+        }
     }
 
     /// Program one boot-log cell and return the new count (Q53).

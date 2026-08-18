@@ -450,14 +450,14 @@ pub(crate) fn open_body(
     key_source: &[u8; 32],
     body: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>, Corruption> {
+    // The body digest is NOT checked here. It is checked by the caller, before this
+    // function is reached, so that a torn body is a cheap and specific answer rather than
+    // an expensive generic one - and computing it twice would be a second HMAC over the
+    // whole 4 KiB or 8 KiB side on a device whose entire unlock budget is 1.8 seconds.
     let cap = body.len();
     let ct_len = cap.checked_sub(TAG_LEN).ok_or(Corruption::Geometry)?;
-    let digest = header.body_digest(&keys.hdr_key, body);
-    // `body_digest` is checked before any AEAD work and before any Argon2 spend upstream:
-    // a torn body is a cheap, specific answer rather than an expensive generic one.
     let mut scratch = Zeroizing::new(vec![0u8; cap]);
     by::wr(scratch.as_mut_slice(), 0, body).ok_or(Corruption::Geometry)?;
-    let _ = digest;
 
     let info = record_info(cfg, keys, header);
     let okm = crypto::record_okm(key_source, &keys.kdf_salt, &info);
@@ -482,7 +482,26 @@ pub(crate) fn verify_body_digest<F: Flash, M: DeviceMac>(
     header: &RecordHeader,
 ) -> Result<bool, StorageError<F::Error, M::Error>> {
     let body = read_body::<F, M>(flash, cfg, slot, side)?;
-    let want = header.body_digest(&keys.hdr_key, body.as_slice());
+    check_body_digest::<F, M>(flash, keys, cfg, slot, side, header, body.as_slice())
+}
+
+/// The same check against a body the caller already has in hand.
+///
+/// Split out because the read path had been reading every side twice and hashing it
+/// twice: once to open it and once to check the digest it had just read. Mount does this
+/// for every slot, so on the shipped map that was 21 redundant 4 KiB reads and HMACs on
+/// every boot.
+#[allow(clippy::too_many_arguments)]
+fn check_body_digest<F: Flash, M: DeviceMac>(
+    flash: &mut F,
+    keys: &DeviceKeys,
+    cfg: &Config,
+    slot: SlotId,
+    side: Side,
+    header: &RecordHeader,
+    body: &[u8],
+) -> Result<bool, StorageError<F::Error, M::Error>> {
+    let want = header.body_digest(&keys.hdr_key, body);
     let off = side_offset::<F, M>(cfg, slot, side)?;
     let mut stored = [0u8; 16];
     flash
@@ -507,7 +526,7 @@ pub(crate) fn read_record<F: Flash, M: DeviceMac>(
     key_source: &[u8; 32],
 ) -> OpenedBody<F, M> {
     let body = read_body::<F, M>(flash, cfg, slot, side)?;
-    if !verify_body_digest::<F, M>(flash, keys, cfg, slot, side, header)? {
+    if !check_body_digest::<F, M>(flash, keys, cfg, slot, side, header, body.as_slice())? {
         return Ok(Err(Corruption::BodyDigest));
     }
     Ok(open_body(keys, cfg, header, key_source, body.as_slice()))
@@ -523,7 +542,7 @@ pub(crate) fn read_plain_body<F: Flash, M: DeviceMac>(
     header: &RecordHeader,
 ) -> OpenedBody<F, M> {
     let body = read_body::<F, M>(flash, cfg, slot, side)?;
-    if !verify_body_digest::<F, M>(flash, keys, cfg, slot, side, header)? {
+    if !check_body_digest::<F, M>(flash, keys, cfg, slot, side, header, body.as_slice())? {
         return Ok(Err(Corruption::BodyDigest));
     }
     Ok(Ok(body))
