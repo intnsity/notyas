@@ -124,7 +124,8 @@ alternatives, and why:
 ### 2.2 The key ladder
 
 All primitives vetted; construction ours. PIN means "PIN or passphrase" throughout -
-the entry surface accepts full alphanumeric (OPEN-QUESTIONS Q5).
+the entry surface accepts full alphanumeric (OPEN-QUESTIONS Q4, ratified: minimum 6
+characters, no maximum below 64).
 
 ```
 pin_norm    = NFKD(pin)                                   # same normalization discipline as BIP39
@@ -149,9 +150,13 @@ ct          = ChaCha20-Poly1305.seal(key, nonce,
                                                           #   (Trezor PVC intent, stronger primitive)
 ```
 
-- HMAC-eFuse step: `ESP_EFUSE_KEY_PURPOSE_HMAC_UP` key, burned at first save and
-  read-protected (`esp_efuse_set_read_protect`), after which it can be made
-  "completely inaccessible for any resources outside the cryptographic modules".
+- HMAC-eFuse step: `ESP_EFUSE_KEY_PURPOSE_HMAC_UP` key. **Burned by the HOST with
+  `espefuse.py` as a provisioning step before first boot, then write- and
+  read-protected - NOT burned at first save (amended 2026-08-17 by the ratified
+  OPEN-QUESTIONS Q45; release firmware contains no eFuse-burn code at all, and a blank
+  unprovisioned device refuses to format rather than burning anything).** After
+  read-protection the key can be made "completely inaccessible for any resources outside
+  the cryptographic modules".
   P4-specific citation (red-team fix - the earlier draft cited the ESP32-S3 page):
   the ESP32-P4 HMAC peripheral with eFuse keys and `esp_hmac_calculate()` is
   documented for IDF v5.5 at
@@ -264,10 +269,13 @@ test to the new crate; getrandom/rand* stay banned from the whole graph).
   slot can never repeat a (key, nonce) pair. Residual, stated honestly: an attacker
   who restores a FULL pre-wipe flash snapshot (records + counters) and returns the
   device unnoticed is the evil-maid/snapshot tier SECURITY.md already concedes.
-- Wipe-on-N: default N=10 consecutive failures -> erase both seed-record slots and
-  bump a wipe-epoch marker. Because notyas is deterministic (dice/mnemonic re-derive),
-  a wipe is a recoverable inconvenience, not a brick - which is why N can be
-  aggressive (OPEN-QUESTIONS Q3 for the default).
+- Wipe-on-N: default N=10 consecutive failures, range 3..=25 (OPEN-QUESTIONS Q5,
+  ratified) -> erase both seed-record slots and bump a wipe-epoch marker. Because notyas
+  is deterministic, the SEED is re-derivable from the user's dice rolls or words, which
+  is why N can be aggressive. **Stated precisely, because the loose version is false:
+  multisig registrations, labels and device settings are NOT re-derivable from a
+  mnemonic and a wipe destroys them permanently.** The wipe screens must say so, and
+  Q14 owns whether a backup exists to recover them.
 - Honest limits, stated in SECURITY.md, and stated precisely because the loose
   version overstates the protection (corrected 2026-08-17 from ESP-SEAL.md 7.2): the
   counter lives in flash the CPU can address, and the `counters` partition is
@@ -336,12 +344,24 @@ design (https://docs.trezor.io/trezor-firmware/storage/index.html).
 
 ### 2.7 Partition table evolution
 
+**SUPERSEDED 2026-08-17 by the ratified OPEN-QUESTIONS Q7 (reconciliation R2). The
+offsets below are the frozen ones; the original 0x410000 / 0x450000 layout is gone
+because a growing app would have relocated them and destroyed every sealed record on
+upgrade.**
+
 ```
-# Name,    Type, SubType, Offset,   Size, Flags
-factory,   app,  factory, 0x10000,  4M
-wallets,   data, 0x40,    0x410000, 256K, encrypted
-counters,  data, 0x41,    0x450000, 16K
+# Name,    Type, SubType, Offset,   Size,     Flags
+factory,   app,  factory, 0x10000,  0xDF0000
+wallets,   data, 0x40,    0xE00000, 256K,     encrypted
+counters,  data, 0x41,    0xE40000, 16K
 ```
+
+- The app is declared at its collision bound (0xE00000 - 0x10000 = 0xDF0000 =
+  13.94 MiB) rather than at a nominal size, so the frozen table never needs a later
+  edit and `partition-table.bin` stays a byte-stable published artifact. App-size
+  discipline is an explicit CI budget constant (fail above 8 MiB, warn above 6 MiB),
+  not the partition size field. Table ends at 0xE44000 = 14.27 MiB, inside board B's
+  16 MB with 1.73 MiB spare, unchanged on board A's 32 MB.
 
 - `counters` (red-team addition, see 2.5): plaintext by necessity - Trezor-style
   bit-clear attempt logs are incompatible with XTS-encrypted partitions' 16-byte
@@ -476,7 +496,7 @@ regression-corpus case (MILESTONES m5 gate):
 | 4 | Multisig outputs rebuilt from the REGISTERED descriptor only; membership, M/N/format/derivation match | Coldcard xpub substitution 2021 (https://benma.github.io/2021/02/09/coldcard-multisig-vulnerability.html) | NW over MS |
 | 5 | Network isolation: coin_type and address network must match wallet's declared network | Coldcard isolation bypass 2020 (https://benma.github.io/2020/11/24/coldcard-isolation-bypass.html) | NW |
 | 6 | Fee: computed from validated prevouts; reject negative; warn/cap absolute + sat/vB + percent-of-send | fee burn | RB arithmetic, NW thresholds |
-| 7 | Sighash whitelist: SIGHASH_ALL / SIGHASH_DEFAULT only (expert-gated otherwise) | output swap after signing | NW (RB would honor any type) |
+| 7 | Sighash whitelist: SIGHASH_ALL / SIGHASH_DEFAULT only, with NO override (ratified Q24: no Settings toggle ever disables a refusal; the earlier "expert-gated otherwise" is struck) | output swap after signing | NW (RB would honor any type) |
 | 8 | Taproot: correct output-key tweak; script-path leaves only from registered descriptor; reject unknown annex | key leak / unknown-leaf signing | RB tweak, NW/MS whitelist |
 | 9 | Global sanity: no duplicate inputs, no already-finalized inputs, every input classified (ours/not-ours) and shown, unknown fields preserved untouched, never trusted | malformed/hostile PSBTs | RB parse + NW |
 | 10 | Post-sign gate: miniscript finalize interpreter re-verifies sigs/timelocks/preimages before anything leaves the device | any policy-engine bug | MS |
@@ -506,8 +526,9 @@ derived, re-asserted immediately before signing; UI renders its output verbatim
 
 - Storage driver: Storage-trait impl over `esp_partition_erase_range/write/read`
   against the `wallets` partition; HMAC peripheral call
-  (`esp_hmac_calculate`) wrapped in one small module; eFuse burn/read-protect in the
-  provisioning path with Verify-screen readout of the true state.
+  (`esp_hmac_calculate`) wrapped in one small module; eFuse STATE READOUT only, surfaced
+  on the Verify screen as actually read and able to render "not provisioned" - the burn
+  itself is a host step and no burn code ships (ratified Q45).
 - SD: per-board `sd_init()/sd_deinit()` joins the board surface (Elecrow 5 is 1-bit
   SDMMC, Waveshare 4-bit - BOARDS.md 124-127; scaffold boards inherit UNTESTED
   status); IDF FATFS/VFS mount-on-demand lifecycle tied to the signing/export flows.

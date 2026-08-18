@@ -261,7 +261,18 @@ esp-seal stores **opaque bytes**. It knows nothing about BIP39, descriptors, or 
 notyas-wallet keeps the wallet record schema, the registry semantics, the session type,
 and every policy decision; it calls esp-seal for seal, unseal, and counter state.
 
-OPEN: **esp-seal vs notyas-wallet crate boundary.** ARCHITECTURE.md section 1 currently
+RESOLVED 2026-08-17 (OPEN-QUESTIONS Q44): **there is no separate crate.** The owner
+answered Q8 GPL-3.0-or-later for everything, and section 9.1's own stated consequence
+therefore applies - a GPL3 sealing crate the permissive ESP32/Rust ecosystem will not
+depend on is worse than an honest internal module. The sealing layer is a module inside
+notyas-wallet; ARCHITECTURE.md section 1's crate table stands unchanged; WALLET-API.md's
+`seal` and `store` modules keep the ground they claim; and **this document remains
+authoritative for the DESIGN of that module** - the byte-exact format, the state machine,
+the power-loss guarantees and the attack analysis are all still normative. Only the
+address changed. The original item is kept below because its reasoning is why the
+boundary inside notyas-wallet is still drawn where it is.
+
+OPEN (resolved): **esp-seal vs notyas-wallet crate boundary.** ARCHITECTURE.md section 1 currently
 assigns "seal/unseal (PIN KDF ladder + AEAD), two-slot storage record format" to
 notyas-wallet. This document proposes those move into esp-seal and that notyas-wallet
 depend on it, keeping only the payload schema.
@@ -709,7 +720,23 @@ This refines ARCHITECTURE 2.2's "burned at first save".
 because a general-purpose crate must serve products that provision in the field. notyas
 release builds do not enable it, and the build-graph check asserts that.
 
-OPEN: **in-app provisioning for notyas.** ARCHITECTURE 2.2 says the HMAC key is "burned at
+RESOLVED 2026-08-17 (OPEN-QUESTIONS Q45): **factory provisioning, as recommended.** No
+eFuse-burn code ships in release firmware; the `Provisioner` stays behind a non-default
+`provisioning` feature and the build-graph check asserts it is off. Five requirements were
+added when the decision was ratified, because this section did not name them: a real
+`StoreState::Unprovisioned` and an absent tier on `KeyProvenance` (the state diagram
+already draws the state but neither enum can express it, so the refusal would otherwise
+degrade into a generic hardware fault); specified behaviour for the PIN-pad permutation
+and the backup-quiz distractors, both of which are HMAC_efuse-derived and so cannot run
+unprovisioned; a refusal on the RESTORE path, not only on first save
+(BACKUP-FEATURES.md 2.6 currently burns there); the burn ORDER written into the runbook -
+HMAC key before flash encryption and secure boot, because Release-mode flash encryption
+disables the UART download path `espefuse.py` uses - to be worded jointly with the
+secure-boot key-ownership question (Q32); and a rename, because `Vault::provision()`
+currently means "format" while PROVISION now means the irreversible host ceremony. The
+original item is kept below.
+
+OPEN (resolved): **in-app provisioning for notyas.** ARCHITECTURE 2.2 says the HMAC key is "burned at
 first save"; this document proposes a factory step with `espefuse.py` instead, and no burn
 code in release firmware.
 RECOMMENDATION: factory provisioning. It preserves invariant 3 without argument, removes a
@@ -978,7 +1005,10 @@ pub struct Config {
     pub domain_tag: [u8; 16],
     pub kdf: KdfParams,
     pub layout: Layout,
-    /// Consecutive failures that destroy the store. 1..=25.
+    /// Consecutive failures that destroy the store. 3..=25 (OPEN-QUESTIONS Q5, ratified;
+    /// the floor was 1 here, which would have let one mistyped PIN destroy a device, and
+    /// 3 is what the product-level decision specifies). The CEILING of 25 is a frozen
+    /// format constant, not a preference: the ledger's tail reserve is sized to it.
     pub wipe_after: u8,
     pub occupancy: Occupancy,
     /// Provenance values this product is willing to run with. A release build passes
@@ -1533,7 +1563,7 @@ None of these numbers exist yet, and no number in this document is invented in t
 | M6 | **Maximum partial-page programs between erases for the actual NOR parts on both boards.** | The ledger programs up to 32 cells per 256-byte page. If the part specifies fewer, the cell size or the page layout must change. This is a datasheet read plus an empirical soak test, and it is the single most likely reason the format would need revising. |
 | M7 | The P4's Development-mode flash-encryption re-flash count eFuse field. | Determines how many times the sacrificial board can be re-flashed before it is consumed. |
 | M8 | Full unlock wall time end to end, cold boot to session. | The UX budget in UX.md depends on it. |
-| M9 | `esp-seal` crate name availability on crates.io. | Cheap, and it is embarrassing to discover late. |
+| M9 | ~~`esp-seal` crate name availability on crates.io.~~ **WITHDRAWN 2026-08-17**: under OPEN-QUESTIONS Q8/Q44/Q46 there is no crate and nothing is published, so there is no name to check. |
 
 ---
 
@@ -1564,7 +1594,19 @@ esp-seal"; that is precisely backwards for adoption, because esp-seal is the ite
 shortlist with the largest audience outside Bitcoin - every ESP32 product that holds a
 secret is a potential user, not just wallets.
 
-OPEN: **esp-seal licence.** GPL-3.0-or-later versus dual MIT OR Apache-2.0.
+RESOLVED 2026-08-17 by the project owner (OPEN-QUESTIONS Q8): **GPL-3.0-or-later.** The
+owner's position is that for wallet firmware copyleft prevents closed forks of code that
+handles user keys, and the adoption cost on the low-level pieces is accepted. This
+section's own analysis is therefore not overturned - it is accepted and its stated
+consequence is applied: **the crate is not extracted at all** (Q44), and the design in
+this document is the contribution instead, published in-repo so any project can read the
+format, the power-loss analysis and the attack analysis and reimplement freely. A
+document does not impose its licence on an independent implementation of the ideas it
+describes, so the argument that "the thing worth protecting here is the design, and the
+design is published either way" holds under the answer that was given. The original item
+is kept below.
+
+OPEN (resolved): **esp-seal licence.** GPL-3.0-or-later versus dual MIT OR Apache-2.0.
 RECOMMENDATION: **dual MIT OR Apache-2.0** for `esp-seal`, `esp-seal-idf`, `esp-seal-sim`,
 and the future `esp-seal-hal`, with the published test vectors under CC0-1.0 so any
 implementation may validate against them. notyas firmware stays GPL-3.0-or-later and is
@@ -1572,7 +1614,12 @@ unaffected. If the answer is GPL3 instead, the crate should not be extracted at 
 it should stay a module in notyas-wallet, because a GPL3 "platform contribution" that no
 platform can adopt is worse than an honest internal module.
 
-OPEN: **where esp-seal lives and when it is published.** In-tree under `crates/esp-seal*`
+RESOLVED 2026-08-17 (OPEN-QUESTIONS Q46): **in-tree for the life of 0.2.0, never
+published.** Publication is not deferred, it is withdrawn, because Q8/Q44 leave no crate
+to publish. Measurement M9 (crate-name availability on crates.io) is withdrawn with it.
+The original item is kept below.
+
+OPEN (resolved): **where esp-seal lives and when it is published.** In-tree under `crates/esp-seal*`
 during 0.2.0, or a separate repository from day one.
 RECOMMENDATION: develop in-tree through m3 and m4a where the API is still moving, extract
 to its own repository and publish at the 0.2.0 release, with notyas pinning an exact

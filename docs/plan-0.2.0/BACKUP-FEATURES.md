@@ -34,8 +34,10 @@ it. The rule this document applies everywhere:
 > explanation screen the user must page to the end of. The main flows
 > (create, restore, receive, sign, export xpub) never surface it.
 
-Seed XOR, BIP-85, SeedQR display, saved passphrases, Lock Down Seed and the
-seed-bearing backup profile are all inside that gate. Encrypted backup of
+Seed XOR, BIP-85, saved passphrases, Lock Down Seed and the seed-bearing backup
+profile are all inside that gate. (SeedQR display was in this list and is removed:
+OPEN-QUESTIONS Q17 is ratified and display-out is not shipped at all, so there is
+nothing to gate.) Encrypted backup of
 settings and registrations, the backup password quiz, restore, and the
 final-word calculator are not: they are ordinary recovery, and hiding recovery
 is its own footgun.
@@ -67,7 +69,7 @@ notyas-core qr.rs mode/ECC extension (section 6.1).
 | B11 | BIP-85 app 32' - child XPRV | 1 "BIP-85 derived seeds" / a | Child BIP-32 root | B10 | S | As B10 | **0.2.0, advanced menu** |
 | B12 | BIP-85 app 128169' - hex entropy | 1 "BIP-85 derived seeds" / a | 16-64 raw bytes | B10 | S | Medium | 0.2.x |
 | B13 | BIP-85 app 2' - HD-Seed WIF | 1 "BIP-85 derived seeds" / a | A single loose private key | B10 | S | High: encourages loose-key handling, matches the deferred WIF Store row | Later |
-| B14 | BIP-85 apps 707764'/707785' - passwords | 1 "BIP-85 passwords + HID" / d | Deterministic passwords, display and QR only | B10 | S | Medium; scope creep into password management | Later. **USB HID typing: rejected**, it contradicts the no-USB-data posture |
+| B14 | BIP-85 apps 707764'/707785' - passwords | 1 "BIP-85 passwords + HID" / d | Deterministic passwords, **display only** - the "and QR" clause is struck 2026-08-17, because a QR of a BIP-85 password is a secret QR and the ratified Q17 declines those | B10 | S | Medium; scope creep into password management | Later. **USB HID typing: rejected**, it contradicts the no-USB-data posture |
 | B15 | BIP-85 app 89101' - dice rolls | 1 "BIP-85 derived seeds" / a | BIP85-DRNG dice stream | B10 | S | Low; no use case on a device whose entropy is real dice | Later, low priority |
 | B16 | Use a BIP-85 child as the active session seed | 1 "Temporary seeds" / a | Sign with a child without saving it | B10, Q11 | S | Medium | **0.2.0** if Q11 (stateless signing) is accepted |
 | B17 | Passphrase wallets: multiple, fingerprint-verify-only slots | 1 "BIP-39 passphrase" / a | A named slot stores the parent reference and the EXPECTED XFP, not the passphrase; typo detection without holding the secret | STO | S-M | Low. Best-in-class answer to the wrong-passphrase problem | **0.2.0**, default |
@@ -75,9 +77,9 @@ notyas-core qr.rs mode/ECC extension (section 6.1).
 | B19 | Passphrase saved to SD, bound to card serial (Coldcard model) | 1 "BIP-39 passphrase" / a | Encrypted passphrase file on a specific card | SD | S | Medium | Later. B17/B18 cover the need without a third secret artifact |
 | B20 | Seed Vault (Coldcard construction: seeds encrypted under the master seed's key) | 1 "Seed Vault" / b | - | - | - | - | **Rejected as a construction** (5.4). The 8-slot PIN-sealed wallet list already IS the vault; its UX affordances are adopted |
 | B21 | Lock Down Seed | 1 "Lock Down Seed" / b | Destructively replace the master seed with the passphrase-derived secret | STO | S | High: irreversible, and its main benefit is covered by B17 | Later (0.2.x), typed-name confirmation |
-| B22 | SeedQR display (standard, numeric) | 1 "Scan seed via QR" / c-b | Render the seed as a SeedSigner-compatible QR for transcription or backup | QR | S | **Highest-risk display in the product**: a camera-readable seed on screen | **0.2.0, advanced menu**, subject to OPEN-B5 |
-| B23 | CompactSeedQR display (binary) | 1 "Scan seed via QR" / c-b | 21x21 / 25x25 transcription-friendly form | QR (byte API) | S | As B22 | **0.2.0, advanced menu**, subject to OPEN-B5 |
-| B24 | Guided transcription flow (grid template, module by module) | 1 "Scan seed via QR" / c-b | Walks the user through inking a paper/metal grid | B23 | M | As B22 | 0.2.x |
+| B22 | **DROPPED (Q17 ratified 2026-08-17: display-out declined)** SeedQR display (standard, numeric) | 1 "Scan seed via QR" / c-b | Render the seed as a SeedSigner-compatible QR for transcription or backup | QR | S | **Highest-risk display in the product**: a camera-readable seed on screen | **0.2.0, advanced menu**, subject to OPEN-B5 |
+| B23 | **DROPPED (Q17 ratified 2026-08-17)** CompactSeedQR display (binary) | 1 "Scan seed via QR" / c-b | 21x21 / 25x25 transcription-friendly form | QR (byte API) | S | As B22 | **0.2.0, advanced menu**, subject to OPEN-B5 |
+| B24 | **DROPPED (Q17 ratified 2026-08-17; it is polish on top of B23 and inherits the secret-QR screen class B23 no longer has)** Guided transcription flow (grid template, module by module) | 1 "Scan seed via QR" / c-b | Walks the user through inking a paper/metal grid | B23 | M | As B22 | dropped, not 0.2.x |
 | B25 | SeedQR / CompactSeedQR scan-in | 1 "Scan seed via QR" / c base, b with camera | Restore a seed by scanning | CAM, QR | M | Medium (camera path is the trust boundary; CAMERA.md section 4) | **0.2.0 iff the camera path is approved**, otherwise 0.3.0 |
 | B26 | Manual word entry with prefix completion | 1 "Import seed by word entry" / a | Already in notyas-core (`words_with_prefix`, `check_phrase`); m4b/m6 wire the keyboard | - | done/S | Low | **0.2.0** (already planned) |
 | B27 | Final-word (checksum) calculator | 1 "Import seed by word entry" / a | Given the first 11/14/17/20/23 words, list every valid last word | CORE | S | Low, with one wording trap (6.4) | **0.2.0** |
@@ -389,9 +391,12 @@ Rules:
   that changed anti-phishing words are normal, which trains away the exact
   reflex the feature exists to build. The user-chosen lock-screen word does
   travel in settings; the anti-phishing words cannot.
-- Restore onto a device that has never been provisioned burns the eFuse HMAC
-  key and sets a PIN as part of the flow, reusing the first-save provisioning
-  path.
+- Restore onto a device that has never been provisioned **refuses**, and says so:
+  "This device has not been provisioned. Run the provisioning step from the setup
+  guide, then restore." **Amended 2026-08-17 by the ratified OPEN-QUESTIONS Q45** - it
+  previously said the restore burns the eFuse HMAC key and sets a PIN, reusing the
+  first-save provisioning path, and release firmware now contains no eFuse-burn code at
+  all. Q45's blast radius named the first-save path but not this one; both refuse.
 
 ### 2.7 The password quiz - adapting Coldcard's
 
@@ -496,10 +501,18 @@ and they are **not** security-equivalent:
   Coldcard does record the related consequence: the deterministic approach
   "allows attackers to verify they have a seed that was split by Coldcard".
 
-**DECISION: dice parts are the default; deterministic parts are the second
-option on the same screen**, labeled with the downgrade in one line
-("reproducible from your seed; protected by hashing rather than by
-mathematics"). B7 is worth shipping anyway because it gives (a) reproducibility
+**DECISION (OPEN-B2 -> OPEN-QUESTIONS Q33, RATIFIED 2026-08-17): dice parts are
+the default; deterministic parts ship as the clearly labeled second option -
+but behind their OWN confirmation screen, not a one-line label on the same
+screen.** The amendment was made when Q33 was ratified, and the reason is the
+incentive gradient: only N-1 parts are rolled, so a 24-word seed costs 99 rolls
+for 2 parts, 198 for 3 and 297 for 4, while the weaker mode costs zero - which
+puts the cheap button in front of the user exactly when they are most fatigued,
+and a downgrade from information-theoretic to computational secrecy is not
+proportionate to one line of label text. The confirmation screen names the
+downgrade in the same style B18 already gets. The label wording stands as the
+summary line: "reproducible from your seed; protected by hashing rather than by
+mathematics". B7 is worth shipping anyway because it gives (a) reproducibility
 - a user who still has the seed can regenerate a lost part - and (b) a
 byte-level interop vector against Coldcard, which is exactly the kind of
 verifiable equivalence claim this project makes elsewhere. **OPEN-B2** if the
@@ -941,15 +954,17 @@ reconciliation, not an edit.
   of them need storage and the session type and none of them need SD, PSBT or
   multisig. This is the natural "m4c" and it is mostly notyas-core math plus
   one menu.
-- **B22, B23** (SeedQR display): with the seed-tools screen if OPEN-B5 is
-  accepted, since they share the secret-display class.
+- **B22, B23, B24** (SeedQR display and its transcription flow): **dropped.** Q17 is
+  ratified and display-out is declined; PARITY's SeedQR row is satisfied by scan-in
+  (B25) and documented as deliberately declined for output.
 - **B1-B4, B29** (backup and restore): **after m7**, because the backup's
   headline content is the multisig registry and there is no point serializing a
   registry format twice. Its own milestone slot, roughly m7b, ahead of m8's
   UR2 work.
 - **B25** (SeedQR scan): with the camera bring-up, wherever CAMERA.md lands.
 - **B28** (duress): m9, per Q2.
-- **B5, B12, B13, B14, B19, B21, B24**: 0.2.x and later, in that rough order.
+- **B5, B12, B13, B14, B19, B21**: 0.2.x and later, in that rough order. (B24 was in
+  this list and is dropped with B22/B23 under the ratified Q17.)
 
 Total new dependencies added by this entire cluster: **zero**. Everything here
 is arithmetic over primitives ARCHITECTURE already admits (sha2, hmac, argon2,
@@ -960,10 +975,20 @@ feature is wrong, not the rule.
 
 ---
 
-## 9. Open items
+## 9. Open items - status after the 2026-08-17 ratification
+
+**Status line, so nobody has to cross-reference:** OPEN-B1 -> **OPEN-QUESTIONS Q14,
+STILL OPEN and the project owner's** (it would amend the invariant that forbids key
+material on removable media, which is a doctrine change). OPEN-B2 -> Q33, **RATIFIED**
+(dice default, deterministic behind its own confirmation screen). OPEN-B3/B5 -> Q17,
+**RATIFIED AGAINST this document's recommendation** (display-out declined; B22-B24
+dropped; the invariant-2 QR corollary restored to plan-0.2.0/SECURITY.md 2a, which had
+silently lost it). OPEN-B4 -> Q34, **STILL OPEN and the project owner's** (publishing a
+format is a standing compatibility commitment); its crate half is answered by Q8 -
+GPL-3.0-or-later, nothing published, so it is a document, not a crate.
 
 **OPEN-B1. Ship encrypted backup and restore in 0.2.0, reversing
-OPEN-QUESTIONS Q8?** Q8 currently recommends deferral, on reasoning written
+OPEN-QUESTIONS Q8 [wave-1 numbering; the question is now Q14]?** Q8 currently recommends deferral, on reasoning written
 before the plan added multisig registrations and settings - state that no
 mnemonic can re-derive (2.0). RECOMMENDATION: **yes**, with the two-profile
 split - seedless as the default offer, seed-bearing behind the advanced gate -

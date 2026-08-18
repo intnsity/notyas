@@ -896,8 +896,11 @@ pub struct VerifiedRegistration { /* private */ }
 ### 2.8 `policy` - the validation pipeline
 
 ```rust
-/// Policy constants in one place (OPEN-QUESTIONS Q12 for the fee numbers). Adjustable only
-/// behind the Settings expert gate; the defaults are what ships.
+/// Policy constants in one place (OPEN-QUESTIONS Q13 for the fee numbers, ratified at 5%
+/// and 500 sat/vB). **Only the WARNING thresholds are adjustable behind the Settings
+/// expert gate - `fee.warn_percent_of_send` and `fee.warn_sat_per_vb`. `sighash` and
+/// `fee.hard_max_percent` are NOT settable from any screen (ratified Q24: no override
+/// ever disables a refusal).** The defaults are what ships.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     pub max_psbt_bytes: usize,
@@ -1326,8 +1329,14 @@ Notes that are part of the contract, not commentary:
 - The whole pipeline runs before any key derivation because `evaluate` takes a
   `WalletView`, which has no path to a seed. This is enforced by the type system, not by
   code review.
-- Gate 5's stateless refusal implements the Q11 recommendation ("refuse-by-default with an
-  expert override"); the override is not implemented in 0.2.0 (see OPEN-W3).
+- Gate 5's stateless refusal is terminal. **There is no expert override, in 0.2.0 or
+  later** (ratified Q24, which explicitly narrowed the wave-1 Q11 recommendation this line
+  used to quote). One sub-item is settled at m6: whether the refusal covers all stateless
+  multisig signing or only change claims. The gate-5 row scopes it to any multisig input
+  OR output; three other places in this document and in UX-SCREENS scope it to change
+  claims. The recommended answer is the broader one, because without a registration the
+  input's witness-script membership is unverifiable too, which makes a stateless multisig
+  signature unverifiable regardless of outputs.
 - Unknown PSBT fields are preserved byte-for-byte through signing and re-emission and are
   never trusted for any decision. A PSBT carrying them earns
   `Warning{UnknownPsbtFieldsPresent}` so the review screen can say so.
@@ -1653,8 +1662,18 @@ wear, latency, and a write the user did not ask for, against UX.md commandment 6
 tighter bound on a case that D4 already handles with a warning rather than a refusal. The
 two constants should be reviewed against real coordinator behavior at m6.
 
-**OPEN: W3 - is there an expert override for the sighash whitelist and for stateless
-multisig?**
+RESOLVED 2026-08-17 (OPEN-QUESTIONS Q24): **neither ships, and neither ever will** - the
+recommendation below is ratified verbatim and is now the governing line for the whole
+project: an expert toggle may adjust WARNING thresholds, and no override ever disables a
+REFUSAL. Six places carried the opposite licence and have been corrected: ARCHITECTURE 5.3
+check 7's "(expert-gated otherwise)", UX-SCREENS' S-31 "Hold to sign anyway" branch and
+its stateless override badge, S-33's unknown-script override, S-40's "shown as UNVERIFIED
+instead of refused" card, S-44's copy ("Expert options let you sign transactions this
+device would otherwise refuse"), and CORPUS A5/A21. SECURITY invariant 7 is written
+without exceptions and is what makes this non-negotiable.
+
+OPEN (resolved): **W3 - is there an expert override for the sighash whitelist and for
+stateless multisig?**
 ARCHITECTURE.md 5.3 check 7 says "expert-gated otherwise" and Q11 suggests an override for
 stateless multisig change. RECOMMENDATION: neither ships in 0.2.0. `SighashPolicy::AllOnly`
 and `SigningMode::Stateless` refusing multisig claims are hard rules; the enum variants

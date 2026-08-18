@@ -311,12 +311,12 @@ files.
 | A2 | Keep both, make `witness_utxo.value` disagree with the prev-tx output | same family, direct amount substitution | 2 | Reject `PrevoutAmountMismatch` |
 | A3 | Substitute a `non_witness_utxo` whose txid is not the input's prevout txid | prev-tx substitution | 2 | Reject `PrevTxMismatch` |
 | A4 | Point the input at a valid prev-tx but a different output index | prevout index confusion | 2 | Reject `PrevoutIndexMismatch` |
-| A5 | Change output whose `script_pubkey` is NOT what our descriptor derives at the claimed index | fake change / theft-as-change; Coldcard 2019 change-path issue (https://coinkite.com/historical-disclosures) | 3 | Reject `ChangeNotDerivable`; UI must show it as EXTERNAL if signing proceeds under an override |
+| A5 | Change output whose `script_pubkey` is NOT what our descriptor derives at the claimed index | fake change / theft-as-change; Coldcard 2019 change-path issue (https://coinkite.com/historical-disclosures) | 3 | Reject `ChangeNotDerivable`. Terminal: there is no override that lets signing proceed (ratified Q24) |
 | A6 | Change at an index far beyond the gap bound (100000) | change-path ransom: funds land where the user's wallet will never scan | 3 | Reject `ChangeIndexOutOfRange` |
 | A7 | Owned output on the EXTERNAL keychain declared as change | change/receive confusion | 3 | Approve, but tagged OWN (receive), never CHANGE; ScreenModel asserted |
 | A8 | `bip32_derivation` claims our 4-byte fingerprint with a foreign xpub | fingerprint spoofing (4 bytes are trivially collidable, so a claimed origin is not evidence) | 1 | Approve-with-EXTERNAL: the output must NOT be classified as ours. Asserts classification is derivation-based, not claim-based |
 | A9 | Multisig change built from the registered descriptor with ONE cosigner xpub replaced | Coldcard 2021 xpub substitution (https://benma.github.io/2021/02/09/coldcard-multisig-vulnerability.html) | 4 | Reject `ChangeNotInRegistration` |
-| A10 | Valid-looking multisig PSBT for a wallet that was never registered | same family, one step earlier | 4 | Reject `NoRegistration` (stateless-mode behaviour per Q11) |
+| A10 | Valid-looking multisig PSBT for a wallet that was never registered | same family, one step earlier | 4 | Reject `NoRegistration` (stateless-mode behaviour per the ratified Q12; a refusal, never an expert-gated warning) |
 | A11 | Registration says 2-of-3, the PSBT's witness script is 1-of-3 | threshold downgrade | 4 | Reject `ScriptNotInRegistration` |
 | A12 | `multi()` key order where the registration says `sortedmulti()` | sorting/format confusion; different address, same keys | 4 | Reject `ScriptNotInRegistration` |
 | A13 | P2SH-P2WSH multisig (out of 0.2.0 scope) | unsupported-shape handling | 9 | Reject `UnsupportedScriptType`, in plain words, never a panic |
@@ -327,7 +327,7 @@ files.
 | A18 | Amounts summing past MAX_MONEY / near u64 overflow | integer-overflow in fee arithmetic, a classic wallet bug | 6/9 | Reject `AmountOutOfRange`, with no wrap and no panic |
 | A19 | SIGHASH_SINGLE on an input with no output at the same index | the SIGHASH_SINGLE bug; output substitution | 7 | Reject `SighashNotAllowed` |
 | A20 | SIGHASH_NONE | outputs freely replaceable after signing | 7 | Reject `SighashNotAllowed` |
-| A21 | SIGHASH_ALL \| ANYONECANPAY | input-set mutation, fee inflation by a third party adding inputs | 7 | Reject `SighashNotAllowed` (expert gate only) |
+| A21 | SIGHASH_ALL \| ANYONECANPAY | input-set mutation, fee inflation by a third party adding inputs | 7 | Reject `SighashNotAllowed`. No expert gate (ratified Q24) |
 | A22 | Different sighash types across inputs of one tx | partial-authorization confusion | 7/9 | Reject `SighashNotAllowed` |
 | A23 | Taproot input carrying an annex | BIP-341 leaves annex semantics undefined: signing over unknown data | 8 | Reject `UnknownAnnex` |
 | A24 | Taproot input with a `tap_leaf_script` not present in any registration | signing under an attacker-chosen script | 8 | Reject `LeafNotRegistered` |
@@ -768,7 +768,14 @@ Everything else parallelizes around it.
 
 ## 9. Open questions
 
-OPEN: (corpus-1) **Corpus licensing and publication.** The adversarial PSBT set is
+PARTLY RESOLVED 2026-08-17: **the harness and the generator are GPL-3.0-or-later**, per
+the owner's blanket Q8 answer. The vector FILES' own licence and the offer of selected
+cases upstream to HWI and psbt_faker are **OPEN-QUESTIONS Q51, for the owner** - both mean
+putting our work out under someone else's permissive terms, which is the same call Q8 was,
+and inferring a CC0 carve-out from a blanket GPL answer is not mine to make. Default if
+Q51 lapses: GPL-3.0-or-later in-repo, no upstreaming. Original item below.
+
+OPEN (partly resolved): (corpus-1) **Corpus licensing and publication.** The adversarial PSBT set is
 reusable by every other signer project, and publishing it is the kind of contribution
 PLATFORM.md argues for. Options: (a) keep it in-tree under GPL-3.0-or-later like
 everything else; (b) keep the harness GPL3 but license the vector FILES permissively
@@ -778,7 +785,10 @@ RECOMMENDATION: (b) plus (c). Test vectors gain their value from adoption, the s
 argument PLATFORM.md section 6 makes for the extracted crates, and vectors carry no
 implementation to protect. The generator stays GPL3.
 
-OPEN: (corpus-2) **Does CI get a bitcoind?** Layer 2 needs a pinned node, which means
+RESOLVED 2026-08-17 (Q40): **pinned container, on PRs touching notyas-core or
+notyas-wallet plus nightly, not every push** - the recommendation as written.
+
+OPEN (resolved): (corpus-2) **Does CI get a bitcoind?** Layer 2 needs a pinned node, which means
 either a container in hosted CI (slower, needs an image we maintain) or a self-hosted
 runner (faster, one more machine to operate).
 RECOMMENDATION: pinned container, run on PRs that touch notyas-core/notyas-wallet plus
@@ -786,7 +796,11 @@ nightly, not on every push. Lane A stays the fast gate. The operational cost is 
 but a signer whose acceptance testing is manual will eventually ship a transaction the
 network rejects.
 
-OPEN: (corpus-3) **The HIL test-mode console.** Repeatable hardware testing wants a
+RESOLVED 2026-08-17 (Q41): **the proposed package is accepted** - feature-gated, off by
+default, "HIL BUILD" banner on the Verify screen, and a release gate asserting the symbols
+are absent from the shipped binary.
+
+OPEN (resolved): (corpus-3) **The HIL test-mode console.** Repeatable hardware testing wants a
 serial console that can inject touch events and dump the ScreenModel; that console is
 an attack surface if it ever ships. Proposed package: build-feature gated, off by
 default, HIL BUILD banner on the Verify screen, and a release gate asserting the
@@ -795,7 +809,11 @@ RECOMMENDATION: accept the package. Without it, hardware verification stays a pe
 with a camera and a checklist, which is exactly the ad-hoc situation this section was
 asked to fix, and the mitigations are all mechanical rather than procedural.
 
-OPEN: (corpus-4) **Lookalike-address warning.** Case A34 covers address poisoning by
+RESOLVED 2026-08-17 (Q42): **implement it in m6** - the recommendation as written.
+Sensitivity is a warning threshold, so Q24's expert gate may tune it; it can never be
+turned into a refusal.
+
+OPEN (resolved): (corpus-4) **Lookalike-address warning.** Case A34 covers address poisoning by
 asserting we render the full address. We could go further: compare each external
 output address against our own derived addresses in the gap window and warn when a
 prefix/suffix near-match is found ("this address resembles your own address at index
@@ -804,15 +822,23 @@ RECOMMENDATION: implement it in m6. It directly counters a documented, active at
 (https://arxiv.org/abs/2501.16681) that the industry's standard mitigation - showing
 the full address - only partially addresses, because users still compare ends.
 
+STILL OPEN - **OPEN-QUESTIONS Q43, and it is the project owner's**: it costs money and has
+lead time. Recommendation unchanged (buy the relay/FET, treat the SD-mux as optional), and
+the ratified Q5 raises the stakes: a power cut taken mid-verification consumes an attempt
+by design, so m4a's power-cut gate is load-bearing and cannot be faked.
+
 OPEN: (corpus-5) **HIL hardware purchases.** A USB-controlled relay or FET for the
 power-cut rig (H4), and optionally an SD-mux so card insert/remove can be automated.
 RECOMMENDATION: buy the relay now (H4 is a milestone-m4a gate and cannot be faked);
 treat the SD-mux as optional, since SD steps are few and already batched into the
 release HIL run.
 
-Dependencies on existing open questions: Q13 sets the scope of layer 2's byte
-comparison (adopting low-R grinding upgrades ECDSA from "accepted" to "byte-identical"
-against Core); Q11 determines whether the stateless-signing corpus cases exist and
-whether A10's expected verdict is a refusal or an expert-gated warning; Q12's fee
-constants are the pinned numbers in P10 and A16; Q7 keeps taproot multisig and
-therefore BIP-342 script-path signing out of the 0.2.0 corpus.
+Dependencies on existing questions, ALL RESOLVED 2026-08-17 (numbers below are the
+wave-1 ones this document was written against; the reconciled numbers are in brackets):
+Q13 [Q3] set the scope of layer 2's byte comparison and is **ratified in favour of low-R
+grinding**, so ECDSA is upgraded from "accepted" to "byte-identical against Core" and
+layer 2 must assert bytes; Q11 [Q12] is **ratified yes**, so the stateless-signing corpus
+cases DO exist and **A10's expected verdict is a refusal, not an expert-gated warning**
+(Q24: no override disables a refusal); Q12 [Q13] fee constants are **ratified at 5% of
+send value and 500 sat/vB** and are the pinned numbers in P10 and A16; Q7 [Q16] keeps
+taproot multisig and therefore BIP-342 script-path signing out of the 0.2.0 corpus.

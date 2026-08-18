@@ -864,8 +864,12 @@ by design.
   anyway (derived from whatever was typed). It must, or the words themselves become
   an oracle for prefix correctness. Hint line unchanged.
 - Attempt counter reaching 0: C3 Busy ("Erasing stored wallets") then S-48b, the
-  post-wipe screen: "Stored wallets erased after 10 wrong PINs. This device is blank.
-  Restore from your dice rolls or seed words." with a single `[ Continue ]` to S-09.
+  post-wipe screen: "Stored wallets erased after N wrong PINs. This device is blank.
+  Restore your coins from your dice rolls or seed words. Your multisig registrations,
+  labels and settings are gone and cannot be re-derived." with a single `[ Continue ]`
+  to S-09. **Amended 2026-08-17 by the ratified Q5:** the accidental-wipe screen
+  previously disclosed less than the deliberate-erase screen S-48, which already names
+  registrations; that was backwards, and N is a format string, not a literal 10.
 - Storage unreadable (R-32): the pad is replaced by a C7 refusal, because typing a
   PIN into unreadable storage cannot succeed.
 - Mid-unseal power loss: next boot's S-01 storage row reports what survived; the A/B
@@ -2174,13 +2178,15 @@ at four groups per line.
 **Masked / shown.** Nothing masked. Ever.
 
 **Edge states.**
-- `CHANGE - CLAIMED, NOT VERIFIED` is a refusal condition by default (R-03); it only
-  renders as a page in the expert-override mode, and then the page carries the full
-  refusal text inline in `DANGER` and the terminal Sign action stays a hold with the
-  label "Hold to sign anyway".
-- Stateless (Q11) multisig: change cannot be verified without a registration; default
-  is refuse, per Q11's recommendation. The badge in override mode reads
-  `CHANGE - UNVERIFIED (no registration loaded)`.
+- `CHANGE - CLAIMED, NOT VERIFIED` is a refusal condition, full stop (R-03). It never
+  renders as a signable page. **Corrected 2026-08-17 by the ratified Q24: this entry
+  previously described an expert-override mode with a "Hold to sign anyway" action, and
+  no override may disable a refusal.** There is no such mode.
+- Stateless multisig (Q12): change cannot be verified without a registration, so the
+  claim is refused. **There is no override badge and no override mode**, for the same
+  reason: SECURITY invariant 7 is written without exceptions, and a setting that
+  disables the check which stops output substitution is a setting an attacker will talk
+  a user into enabling.
 - Dust output: `WARNING` line "Below the dust limit. Some nodes will not relay this."
 
 ---
@@ -2216,8 +2222,10 @@ characters or spoof the UI.
 
 **Edge states.** Unknown script type: badge `UNKNOWN SCRIPT`, the script rendered as
 disassembly if `rust-bitcoin` can, hex if not, plus "This device cannot tell who can
-spend this output." A transaction containing one is refused by default (R-09 family)
-unless the expert override is on.
+spend this output." A transaction containing one is refused (R-09 family). **There is no
+expert override; corrected 2026-08-17 by the ratified Q24.** (Cross-reference erratum
+noted while correcting: R-09 is "This file is malformed", not the unknown-script
+refusal; point this at the right row when the refusal manifest is next revised.)
 
 ---
 
@@ -2429,9 +2437,13 @@ bottom.
 **Regions.** `ActSign` ("Load a transaction", >= 300x`btn`), `Back`.
 
 **Copy.** The multisig limitation is stated before the user invests effort, not at the
-refusal (R-31). Q11's recommendation is refuse-by-default; with the expert override on
-(S-44), the second card gains "Expert options are on: multisig change will be shown as
-UNVERIFIED instead of refused."
+refusal (R-31). Stateless multisig claims are refused, and **there is no expert override
+that changes that** - the second card previously promised one and no longer does
+(corrected 2026-08-17 by the ratified Q24). One wording item is still open at m6, per
+Q12: whether the refusal covers all stateless multisig signing or only change claims.
+The recommended answer is the broader one - without a registration the input's
+witness-script membership is unverifiable too - in which case this copy must say
+"multisig cannot be signed in this mode" rather than implying a change-free workaround.
 
 **Masked / shown.** Fingerprint shown; no words, no key material.
 
@@ -2595,14 +2607,25 @@ layout and are not specified individually beyond their copy):
   the WriteNotice "Every stored wallet is re-encrypted with the new PIN and the old
   copies are erased." Failure mid-way leaves the old PIN authoritative (A/B slots) and
   says so.
-- **Wrong-PIN policy**: shows the current N and its bounds (Q3: 3..25, default 10),
-  with "After N wrong PINs the device erases its stored wallets. Your dice rolls or
-  seed words are the only way back."
-- **Expert options**: a single toggle gating the fee thresholds and the
-  sign-anyway overrides. Copy: "Expert options let you sign transactions this device
-  would otherwise refuse. Leave this off unless you know exactly which check you are
-  turning off." Each override inside is individually named; there is no master "skip
-  all checks".
+- **Wrong-PIN policy**: shows the current N and its bounds (Q5, ratified: 3..=25,
+  default 10), with "After N wrong PINs the device erases its stored wallets. Your dice
+  rolls or seed words bring back your coins, but your multisig registrations and
+  settings are gone." Two additions required by Q5's ratification: the copy is a format
+  string over N, not the hardcoded "10" it is elsewhere in this document; and the screen
+  must state that an interrupted verification costs an attempt - "If the device loses
+  power while checking a PIN, that attempt still counts. Otherwise power-cutting would
+  be a free way to guess." Whether N is editable here at all depends on the m3 decision
+  Q5 left open (superblock rewrite path versus format-time-only); if it is
+  format-time-only this row is read-only and says so.
+- **Expert options**: a single toggle gating the WARNING thresholds only - the fee
+  percentage and sat/vB (Q13) and the lookalike-address sensitivity (Q42). Copy:
+  "Expert options change when this device warns you. They cannot turn off a check that
+  makes the device refuse." Each threshold inside is individually named; there is no
+  master bypass and there is no sign-anyway. **Corrected 2026-08-17 by the ratified
+  Q24: this copy previously read "Expert options let you sign transactions this device
+  would otherwise refuse", which is exactly what Q24 forbids, on the very screen Q24
+  cited approvingly.** In the policy types, `warn_percent_of_send` and `warn_sat_per_vb`
+  are settable from here; `sighash` and `hard_max_percent` are not.
 - **Firmware**: read-only rows inside Verify device (S-46): version, running SHA256,
   and "Firmware is updated by USB reflash from a computer. This device never updates
   itself."
@@ -2952,7 +2975,25 @@ Named so nobody has to re-derive the omission:
 
 ---
 
-## 8. Open items
+## 8. Open items - ALL RESOLVED 2026-08-17
+
+Every item in this section was ratified in OPEN-QUESTIONS.md's 2026-08-17 pass. The
+recommendations are kept verbatim below because they are the reasoning behind the
+decision; the outcome of each is stated first.
+
+- **PIN pad shuffle domain -> Q35, accepted as specified.** One added requirement from
+  Q45: this derivation runs on the eFuse key, so it cannot run on an unprovisioned
+  device and that path needs specified behaviour.
+- **Deliver escape hatch -> Q36, accepted.**
+- **Wrong-PIN policy visibility -> Q37, ratified in the form that holds under every Q2
+  outcome:** the threshold is always shown; the slot count's visibility is Q2's to
+  decide and is not a separate question.
+- **Address list truncation -> Q38, truncated preview kept.**
+- **Expert overrides -> Q24, and the recommendation below was ACCEPTED ONLY IN PART.**
+  The gate is ratified for WARNING thresholds. It is refused for "sign-anyway": no
+  override may disable a refusal. S-44's copy and the S-31 / S-33 / S-40 override
+  branches have been corrected above.
+
 
 `OPEN:` **PIN pad shuffle domain.** The randomized keypad permutation derives from the
 device-bound HMAC ladder with its own HKDF info string (C10). Recommendation: accept

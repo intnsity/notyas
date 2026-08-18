@@ -125,9 +125,16 @@ Safe concurrency, explicitly:
 
 Hard serialization on hardware resources, stated so two agents do not collide:
 
-- **One eFuse budget per board (6 key blocks).** m4a burns one HMAC_UP key and
-  read-protects it. That is permanent. Do it on board B first; board A stays clean
-  until m4a's procedure is written down and repeated.
+- **One eFuse budget per board (6 key blocks).** One HMAC_UP key is burned and
+  read-protected per board, by the HOST with `espefuse.py` ahead of m4a (ratified Q45 -
+  release firmware contains no burn code). That is permanent. Do it on board B first;
+  board A stays clean until the procedure is written down and repeated. Retry budget,
+  worth knowing before the first burn: one block for the secure-boot digest, one for the
+  flash-encryption XTS key, one for the HMAC key, three spare - and Secure Boot v2 can
+  occupy up to three digest slots if multiple signing keys are enrolled, so it is three
+  retries with one signing key and one with three. Ordering is load-bearing and belongs
+  in the runbook: HMAC provisioning BEFORE flash encryption and secure boot, because
+  Release-mode flash encryption disables the UART download path `espefuse.py` uses.
 - **Flash encryption and secure boot burns are m13-only and release-unit-only.**
   The m1 benchmark measures the encryption cost using virtual-eFuse / development
   mode on board B, not by burning board A.
@@ -140,18 +147,24 @@ Hard serialization on hardware resources, stated so two agents do not collide:
 
 ### 0.2.0-m1 - Foundations, ratified decisions, frozen storage geometry
 
-- **Depends on:** the blocking answers in OPEN-QUESTIONS.md (Q1-Q7). This milestone
-  cannot close on engineering alone.
+- **Depends on:** nothing that is still open. **The blocking set is empty as of
+  2026-08-17**: Q1, Q3, Q4, Q5, Q6, Q7, Q44 and Q47 are ratified, Q8 was answered by the
+  owner (GPL-3.0-or-later, everywhere), and Q2's deadline is m4b because the duress
+  package needs no format change (revised R11). This milestone can now close on
+  engineering alone.
 - **Runs on:** board A and board B (partition table boot check), board B
   (benchmark, camera spike is board A).
 - **Scope:**
-  - Ratify OPEN-QUESTIONS Q1-Q7 with the user and write the decisions into SPEC and
-    the plan texts: randomness policy (ARCH 2.4), duress package (Q2 - behaviour
-    only; it does NOT change the m3 record format, see the revised R11), signing
-    equivalence and low-R grinding (Q3), PIN floor (Q4), wipe-after-N (Q5), camera
-    in-or-out (Q6), partition offsets (Q7). Take Q8 here too, even though it is not a
-    code dependency until m3h: it decides the SPDX header of the first extracted
-    crate and, with it, Q44 and Q46.
+  - Write the ratified decisions into SPEC and the plan texts: randomness policy
+    (Q1 / ARCH 2.4), signing equivalence and low-R grinding (Q3), PIN floor (Q4),
+    wipe-after-N (Q5, default 10, range 3..=25, with the copy and power-cut disclosure
+    requirements it carries), camera in-or-out (Q6), the frozen partition geometry
+    (Q7), the camera build variant (Q47), and the sealing layer's address (Q44 - a
+    notyas-wallet module, no extracted crate). Two sub-items that Q5 and Q12 left as
+    implementation design must be settled at their milestones, not here: whether
+    wipe-after-N is runtime-mutable or format-time-only (m3, inside the format freeze)
+    and the scope of the stateless multisig refusal (m6). Q2 is still the owner's and
+    is behaviour-only; nothing here waits on it.
   - Workspace and CI: the root workspace and the unified Cargo.lock already landed
     in 0.1.0 (commit b0f9452), as did tools/build-graph-check.sh (commit d151b2e).
     m1 does NOT rebuild them; it EXTENDS the ban list and the graph walk to every
@@ -161,20 +174,30 @@ Hard serialization on hardware resources, stated so two agents do not collide:
     inside 16 MB:
 
     ```
-    # Name,    Type, SubType, Offset,   Size, Flags
-    factory,   app,  factory, 0x10000,  8M
-    wallets,   data, 0x40,    0xE00000, 256K, encrypted
+    # Name,    Type, SubType, Offset,   Size,     Flags
+    factory,   app,  factory, 0x10000,  0xDF0000
+    wallets,   data, 0x40,    0xE00000, 256K,     encrypted
     counters,  data, 0x41,    0xE40000, 16K
     ```
 
-    App partition grows 4M -> 8M (miniscript, argon2, the AEAD stack and the SD/FATFS
-    subsystem all land in 0.2.0). Data partitions move to a fixed high offset so app
-    growth can never relocate a user's sealed records: **these offsets are a
-    permanent compatibility surface and are frozen here.** Headroom check: the app
-    may grow to 0xE00000 - 0x10000 = 13.94 MB before it collides; CI asserts image
-    size against the partition size. Ends at 0xE44000 = 14.27 MB, inside board B's
-    16 MB, unchanged on board A's 32 MB. App offset 0x10000 is unchanged, so the
-    Verify screen's running-partition SHA256 procedure stays board-independent.
+    Data partitions move to a fixed high offset so app growth can never relocate a
+    user's sealed records: **the whole table is a permanent compatibility surface and
+    is frozen here.** The app is declared at its collision bound, 0xE00000 - 0x10000 =
+    0xDF0000 = 13.94 MB, rather than at a nominal 8M, precisely so that the frozen
+    table never needs a later edit: ESP-IDF enforces the size field, so an 8M
+    declaration would have to be raised to use the space, and `partition-table.bin` is
+    a published byte-identical release artifact whose hash verifiers are told is
+    stable (REPRODUCIBLE.md 3.5). **App-size discipline moves out of the geometry and
+    into CI as an explicit budget constant: fail above 8 MiB, warn above 6 MiB.** That
+    is a policy number, freely revisable because it is not a compatibility surface,
+    and it separates the two things the old 8M field conflated. Ends at 0xE44000 =
+    14.27 MB, inside board B's 16 MB with 1.73 MB spare, unchanged on board A's 32 MB.
+    App offset 0x10000 is unchanged, so the Verify screen's running-partition SHA256
+    procedure stays board-independent. No `nvs`, `otadata` or `phy_init`, as in 0.1.0 -
+    and the m11 link-map gate additionally asserts `nvs_flash_init` and `nvs_open` are
+    absent from the image, because 0.2.0 adds components (FATFS, possibly
+    `esp_cam_sensor`) that could pull NVS in and fail at runtime on a device with no
+    recovery path. See OPEN-QUESTIONS Q7 for the full reasoning.
   - Fix the two known 0.1.0 defects: uisim stale VerifyInfo; firmware discarding
     UiRequest with notyas-core's `qr` feature off (QR buttons are dead on hardware).
     Wire UiRequest::Qr end to end - m8 builds on it.
@@ -218,15 +241,25 @@ Hard serialization on hardware resources, stated so two agents do not collide:
     operations), M4 (4 KiB erase and 256-byte page program times - sizes the
     power-loss window), M5 (64 MiB PSRAM zeroization time), M7 (the P4's
     Development-mode flash-encryption re-flash count eFuse field - how many times the
-    sacrificial board can be re-flashed), M8 (full cold-boot-to-session unlock wall
-    time) and M9 (`esp-seal` crate-name availability on crates.io). M1 and M2 are the
+    sacrificial board can be re-flashed) and M8 (full cold-boot-to-session unlock wall
+    time). **M9 (`esp-seal` crate-name availability on crates.io) is withdrawn**: under
+    the ratified Q8/Q44/Q46 there is no crate to name. M1 and M2 are the
     Argon2id and PSRAM-bandwidth runs above. Only M6 is an exit gate; the rest are
     "committed numbers, no invented values".
   - Camera decision spike (board A, half a day, CAMERA.md section 5): plug the
     user's SeedSigner OV5647 module into J1, run the esp-video `capture_stream`
-    example, record pass/fail. This is the cheapest possible answer to Q6 and it
-    must be answered before m1 closes because esp_video/esp_cam_sensor affect the
-    app-size budget the partition freeze depends on.
+    example, record pass/fail. This is the cheapest possible answer to Q6. **Two
+    corrections from the Q6 ratification.** It no longer gates the partition freeze -
+    the camera only ever affected the app partition's SIZE field, and under the
+    ratified Q7 that field is no longer a compatibility surface. And the spike gains a
+    second deliverable, because nobody has ever measured the thing the old dependency
+    was asserted on: **record `app.bin`'s byte count for the `capture_stream` build
+    and for a notyas build with the `camera` feature on**, and commit it beside the
+    Argon2 numbers. For scale, the current 0.1.0 debug build's flash-loadable sections
+    total roughly 2.5 MiB.
+  - **m-camera-1, the `board::shared_i2c_bus()` refactor** (CAMERA-HW.md 6.2, adopted
+    by the ratified Q6): cheap, independent of the camera answer, and landed here with
+    the early infrastructure work rather than inside m11.
   - Reproducible-build groundwork: keep CONFIG_APP_REPRODUCIBLE_BUILD, add path
     remapping and toolchain pinning to build.ps1 (the full two-machine proof is
     m12's gate).
@@ -274,7 +307,9 @@ Hard serialization on hardware resources, stated so two agents do not collide:
 
 ### 0.2.0-m3h - esp-idf-hmac: safe Rust over the P4 security peripherals
 
-- **Depends on:** m1 (Q8 licensing decides the crate's SPDX before first publish).
+- **Depends on:** m1. (Q8 is answered: GPL-3.0-or-later, and under Q46 nothing is
+  published, so this is an in-tree module rather than a crate. The SPDX header is
+  GPL-3.0-or-later from the first commit.)
 - **Runs on:** board B, then board A.
 - **Scope:** first platform contribution (PLATFORM.md shortlist item 2). A thin,
   safe crate over ESP-IDF's `esp_hmac.h` (and optionally `esp_ds.h`,
@@ -283,9 +318,14 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   header does not include these; esp-hal has HMAC for S2/S3/C3/C6/H2 but not P4.
   Surface: calculate HMAC-SHA256 with an eFuse key of purpose HMAC_UP, query key
   state, and a documented provisioning helper for burn plus read-protect that is
-  loud about being irreversible. Key Manager support is compiled out on rev < v3.0
+  loud about being irreversible - **behind a non-default `provisioning` feature that
+  notyas release builds never enable, with the build-graph check asserting that
+  (ratified Q45). The build-graph check's SPECIFICATION is extended here from a
+  banned-crate walk to feature-state assertions, because a crate walk cannot enforce a
+  feature being off; ESP-SEAL.md already describes the right check and REPRODUCIBLE.md
+  and this document did not.** Key Manager support is compiled out on rev < v3.0
   silicon and is not designed around (Q9).
-- **Crates / areas:** new out-of-tree crate (workspace member during development),
+- **Crates / areas:** in-tree workspace member (Q46: never extracted, never published),
   firmware (consumer).
 - **Exit gate (hardware):** on board B, `esp_hmac_calculate()` over a known key in a
   NOT-yet-read-protected eFuse block returns the expected HMAC-SHA256 for published
@@ -349,8 +389,10 @@ Hard serialization on hardware resources, stated so two agents do not collide:
     offset and after every erase. Property: mount yields the previous record or the
     new one, never garbage, never a panic - including the PIN-change
     erase-after-commit window.
-  - The sealing module is written extraction-ready: no ESP-IDF types cross its
-    boundary, so m12 can publish it as `esp-seal` without a rewrite (R4).
+  - The sealing module keeps a clean platform boundary: no ESP-IDF types cross it. The
+    reason is no longer extraction (Q44/Q46: it is never extracted) but testability -
+    the host simulator and the fuzz harness need to substitute the Storage,
+    DeviceBinding and KdfScratch traits, and that is worth the discipline on its own.
 - **Build specs:** WALLET-API.md is authoritative for the crate's types, traits and
   error taxonomy; ESP-SEAL.md is authoritative for the platform-trait contracts this
   crate is written against. m3 cannot close while either is absent.
@@ -369,10 +411,16 @@ Hard serialization on hardware resources, stated so two agents do not collide:
 ### 0.2.0-m4a - Storage on hardware and PIN unlock (minimal UI)
 
 - **Depends on:** m3, m3h.
-- **Runs on:** board B first (eFuse burn), then board A.
+- **Runs on:** board B first, then board A. (Under the ratified Q45 the eFuse burn is a
+  HOST step performed once per board with `espefuse.py` before this milestone's firmware
+  runs, not something the firmware does. It is still permanent, so board B still goes
+  first.)
 - **Scope:** firmware Storage-trait driver over `esp_partition_*` for the wallets and
-  counters partitions; HMAC peripheral binding and eFuse key provisioning with a
-  Verify-screen readout of the TRUE state; `Ui::tick()` plus hold-to-confirm plus the
+  counters partitions; HMAC peripheral binding with a Verify-screen readout of the TRUE
+  eFuse state (the key is provisioned by the host, ratified Q45, and the Verify row must
+  be able to render "not provisioned"); a blank UNPROVISIONED device refuses to format
+  rather than burning anything, which needs `StoreState::Unprovisioned` and its refusal
+  screen; `Ui::tick()` plus hold-to-confirm plus the
   horizontal-slop fix (a sideways swipe across a button must cancel the tap);
   minimal functional screens 2 and 16 only (randomized-pad PIN entry with
   anti-phishing words, lock screen); a bare-bones save/unlock path grafted onto the
@@ -571,8 +619,13 @@ Hard serialization on hardware resources, stated so two agents do not collide:
     rejected permanently (section 7).
   - Seed XOR split and recombine (2-4 parts, each a valid-checksum mnemonic).
   - Temporary and stateless seeds: a session need not come from a sealed slot
-    (OPEN-QUESTIONS Q12). Stateless multisig change is refused by default with an
-    expert override, because there is no registration to verify against.
+    (ratified Q12). Stateless multisig claims are REFUSED, with **no expert override** -
+    Q24 makes that a hard rule and SECURITY invariant 7 is written without exceptions.
+    (This line previously said "with an expert override", contradicting section 4's own
+    m6 statement; corrected 2026-08-17.) The SCOPE of that refusal - all stateless
+    multisig signing, or only change claims - is the one sub-item Q12 left open, is
+    settled at m6, and the recommended answer is the broader one, because without a
+    registration the input's witness-script membership is unverifiable too.
   - Lock Down Seed: destructively replace the stored record with the
     passphrase-derived secret.
   - Seed XOR part generation defaults to dice, with the deterministic mode as a
@@ -661,17 +714,19 @@ Hard serialization on hardware resources, stated so two agents do not collide:
 - **Exit gate (hardware):** on board A with the user's SeedSigner module, scan a
   CompactSeedQR and restore the expected fingerprint; scan an animated UR
   `crypto-psbt` emitted by Sparrow at Sparrow's default density and sign it; the
-  camera-off image is provably free of camera code; the per-board support statement
-  lands in BOARDS.md and on the Verify screen.
-  **Gate correction, pending Q47:** this clause previously read "the camera-off
-  build's image SHA256 is unchanged by the feature's presence in the tree".
-  CAMERA-HW.md 6.2 shows that is not achievable - esp-idf-sys metadata cannot be
-  feature-gated, so the esp_video C sources sit in every build's component tree and
-  only the per-board sdkconfig overlay turns them off. The replacement gate is a
-  LINK-MAP assertion that no camera symbol reaches the image, plus a pinned hash for
-  each separately named artifact. That is verification of absence rather than absence,
-  and the release notes must say which is being claimed. Q47 ratifies the artifact
-  split this depends on.
+  camera-off image is provably free of camera code by the LINK-MAP assertion below;
+  the per-board support statement lands in BOARDS.md and on the Verify screen.
+  **The absence gate, settled by the ratified Q47.** It cannot be a hash comparison:
+  esp-idf-sys metadata cannot be feature-gated, so the esp_video C sources sit in every
+  build's component tree and only the per-board sdkconfig overlay turns them off. The
+  gate is therefore a LINK-MAP assertion that no camera symbol reaches the image, plus a
+  pinned hash for each separately named artifact. **That is verification of absence
+  rather than absence, and the release notes must say which property is being claimed.**
+  The same link-map job additionally asserts `nvs_flash_init` and `nvs_open` are absent
+  (ratified Q7), which turns the never-mount-NVS invariant from prose into a linker
+  check. Two loose ends this creates: REPRODUCIBLE.md 3.5's artifact set has no camera
+  variant row and no occurrence of the word "camera" at all, and BOARDS.md's support
+  table needs the per-variant column. Both land with this milestone.
 - **Parity rows closed (only if this milestone ships):** scan seed via QR (c -> b),
   PSBT via QR scan-in (c -> b), QR scanner module (c -> b), verify-address input
   ergonomics (b), Key Teleport receive (still deferred - it needs protocol work
@@ -681,8 +736,9 @@ Hard serialization on hardware resources, stated so two agents do not collide:
 
 ### 0.2.0-m12 - Reproducible builds and platform contributions published
 
-- **Depends on:** m4a (esp-seal proven on hardware), m3h, m9 (`seedqr`), Q8
-  (licensing).
+- **Depends on:** m4a (the sealing layer proven on hardware), m3h, m9 (`seedqr`). Q8 is
+  answered (GPL-3.0-or-later) and Q46 withdraws publication, so this milestone's
+  contribution scope is documents, not crates.
 - **Runs on:** two independent build machines; boards for the artifact check.
 - **Scope:**
   - Reproducible build proven: the per-board images rebuild bit-identically on a
@@ -692,26 +748,36 @@ Hard serialization on hardware resources, stated so two agents do not collide:
     Jade's REPRODUCIBLE.md - the first public one for the Rust + esp-idf-sys stack.
     This directory's REPRODUCIBLE.md is the authoritative recipe and verification
     procedure; m12 and m13 cannot close while it is absent.
-  - `esp-seal` published: the extraction of notyas-wallet's proven sealing module
-    (PIN-sealed blob, eFuse-bound KDF, AEAD, fault-hardened attempt counter,
-    power-loss-safe commit) with its trust model documented honestly. Published
-    AFTER m4a proved it on silicon, not before (R4). Clean-room from published
-    designs only: Trezor's and Jade's code are copyleft and are never ported.
-  - `esp-idf-hmac` published (from m3h), offered upstream to esp-idf-hal.
-  - `seedqr` published (from m9).
-  - `bbqr` no_std decode contributed upstream as a feature PR rather than a
-    competing crate, if m8/m11 needed it.
-  - `bsms` (BIP-129) crate: build only if m7 left capacity; on-device BSMS stays
-    deferred either way (OPEN-QUESTIONS Q15).
-  - The adversarial PSBT vector files published permissively with their own SPDX
-    headers (harness stays GPL3) and selected cases offered upstream to HWI and
-    psbt_faker (Q39) - a contribution that costs no engineering because the vectors
-    already exist as m6's gate.
-- **Crates / areas:** new published crates, tools, CI, docs.
-- **Exit gate (hardware):** a second machine reproduces both board images
-  bit-for-bit; the reproduced image flashes and boots with the same Verify-screen
-  SHA256 on both boards; every published crate builds from crates.io into a fresh
-  project and its examples run on board B.
+  - **Nothing is published to crates.io.** Q8 was answered GPL-3.0-or-later for
+    everything, and Q44/Q46 follow from it: the sealing layer stays a module inside
+    notyas-wallet, `esp-idf-hmac`, `seedqr` and `bsms` stay in-tree, and no crate is
+    extracted. R4's "published after hardware proves it" sequencing is overtaken -
+    there is nothing to publish.
+  - **ESP-SEAL.md is published as the contribution instead**, in-repo under
+    GPL-3.0-or-later: the byte-exact on-flash format, the mount/unlock/seal/wipe state
+    machine, the power-loss analysis, the honest attempt-counter trust model and the
+    attack analysis. Any project can read it and reimplement freely; a document does
+    not impose its licence on an independent implementation of the ideas it describes.
+    ESP-SEAL.md 9.1 argued the value was in the design rather than in three thousand
+    lines of well-trodden construction, and this is that position carried through.
+    Clean-room constraint unchanged: Trezor's and Jade's code are copyleft and are
+    never ported.
+  - `bsms` (BIP-129): build only if m7 left capacity, in-tree; on-device BSMS stays
+    deferred either way (Q15). BDK's open request is no longer a reason to build it,
+    because BDK is permissive and cannot take a GPL dependency.
+  - The adversarial PSBT vector files: the harness and generator stay GPL-3.0-or-later
+    (Q39). **The vector files' own licence and the offer of selected cases upstream to
+    HWI and psbt_faker are OPEN-QUESTIONS Q51, for the owner** - both mean putting our
+    work out under someone else's permissive terms, which is the same call Q8 was.
+    Default if Q51 lapses: GPL-3.0-or-later in-repo, no upstreaming.
+  - **The no_std BBQr decode is also Q51**, for the same reason: it is an upstream
+    feature PR to SatoshiPortal's MIT crate rather than a crate of ours.
+- **Crates / areas:** tools, CI, docs. No new published crates (Q46).
+- **Exit gate (hardware):** a second machine reproduces every named artifact
+  bit-for-bit, including the camera variant (Q47); the reproduced image flashes and
+  boots with the same Verify-screen SHA256 on both boards; REPRODUCIBLE.md and
+  ESP-SEAL.md are complete enough that an outside reader could follow the recipe and
+  reimplement the format without asking a question.
 - **Parity rows closed:** tamper-evident supply chain (b/d - the notyas answer is
   reproducible builds plus user-flashable firmware, not a bag number); firmware
   upgrade verification (b, partial - completed at m13).
@@ -908,9 +974,12 @@ not recreate either.
 0x410000, immediately after a 4 MB app. 0.2.0 adds miniscript, argon2, an AEAD
 stack, FATFS and possibly esp_video; the app will outgrow 4 MB, and moving it moves
 the data partitions, which destroys every sealed record on upgrade. Resolution:
-factory grows to 8M and the data partitions move to a fixed high offset
-(0xE00000 / 0xE40000), frozen permanently at m1. Fits 16 MB with 1.7 MB to spare and
-13.94 MB of app headroom; unchanged on 32 MB. ARCH 2.7's offsets are superseded; its
+the data partitions move to a fixed high offset (0xE00000 /
+0xE40000), frozen permanently at m1, and - per the ratified Q7 - `factory` is declared
+at its collision bound 0xDF0000 rather than at a nominal 8M, so the frozen table never
+needs a later edit and `partition-table.bin` stays a stable published artifact. App-size
+discipline moves to an explicit CI budget constant (fail above 8 MiB, warn above 6 MiB).
+Fits 16 MB with 1.73 MB to spare and gives the app 13.94 MB; unchanged on 32 MB. ARCH 2.7's offsets are superseded; its
 reasoning (counters plaintext and separate, app offset unchanged, no OTA, 6-block
 eFuse budget) is retained.
 
@@ -923,26 +992,38 @@ UX are frozen. m6's load path takes a source abstraction so m11 adds a source ra
 than rewriting the flow. The UI wording changes from "no camera exists" to "no
 camera on this board/build". USB-UVC stays rejected in every build.
 
-**R4 - who owns sealing, notyas-wallet or esp-seal.** ARCH says notyas-wallet owns
-seal/unseal and warns against shallow wrapper crates; PLATFORM says esp-seal "is the
-crate under the 0.2.0 storage layer" and gates storage work. Resolution: the sealing
-LAYER gates all storage work and is written first (m3), in-tree, extraction-ready,
-with no ESP-IDF type crossing its boundary; the PUBLICATION of `esp-seal` trails
-hardware proof and lands at m12. The genuine prerequisite is the HMAC wrapper
-(m3h), which really does gate the on-hardware ladder. Publishing an unproven
-security crate to satisfy an ordering diagram would be a disservice to the
-ecosystem the contribution is meant to serve.
+**R4 - who owns sealing, notyas-wallet or esp-seal. SUPERSEDED 2026-08-17 by the
+ratified Q44/Q46: there is no `esp-seal` crate and nothing is published.** The original
+finding and its resolution are kept because the sequencing argument is still sound and
+still governs m3 versus m12.
+
+*Original:* ARCH says notyas-wallet owns seal/unseal and warns against shallow wrapper
+crates; PLATFORM says esp-seal "is the crate under the 0.2.0 storage layer" and gates
+storage work. Resolution: the sealing LAYER gates all storage work and is written first
+(m3), in-tree, extraction-ready, with no ESP-IDF type crossing its boundary; the
+PUBLICATION of `esp-seal` trails hardware proof and lands at m12. The genuine
+prerequisite is the HMAC wrapper (m3h), which really does gate the on-hardware ladder.
+Publishing an unproven security crate to satisfy an ordering diagram would be a
+disservice to the ecosystem the contribution is meant to serve.
+
+*What survives:* the layer is still written first, in-tree, at m3, with a clean platform
+boundary - now for testability rather than for extraction. What is withdrawn is the
+extraction and the m12 publication. ARCH's position (notyas-wallet owns seal/unseal)
+wins outright, and ESP-SEAL.md stays the authoritative design of that module.
 
 **R5 - two UR implementations.** ARCH adopts `foundation-ur` and explicitly rejects
 `ur` (std by default); CAMERA.md section 6 recommends `ur`. Resolution:
 `foundation-ur` + `foundation-urtypes`, one implementation, both with
 default-features off. CAMERA.md's recommendation is superseded.
 
-**R6 - GPL contagion through foundation-urtypes.** `foundation-urtypes` is
-GPL-3.0-or-later. Any crate depending on it must be GPL. Resolution: all UR and
-transport encoding stays inside notyas-wallet (GPL-3.0-or-later firmware), and no
-extracted, permissively licensed crate may depend on it. This constrains Q8 rather
-than being blocked by it.
+**R6 - GPL contagion through foundation-urtypes. MOOT since Q8 was answered
+(2026-08-17).** `foundation-urtypes` is GPL-3.0-or-later, so any crate depending on it
+must be GPL. The original resolution kept UR and transport encoding inside
+notyas-wallet so that no extracted, permissively licensed crate could depend on it.
+Under Q8's answer - GPL-3.0-or-later everywhere, nothing extracted - there is no
+permissive crate to contaminate and the constraint binds nothing. Kept on the register
+because the placement it produced is still the right one and should not be undone by
+someone who notices the constraint is gone.
 
 **R7 - PARITY.md's row and class counts.** "61 feature rows" counts sections 1-6
 only; the matrix has 72 rows. The class tally 30/17/12/6 recounts as 31/21/14/6.
@@ -1040,7 +1121,12 @@ evidence that encryption is active.
 All boards are ESP32-P4NRW32 with 32 MB PSRAM, so a 64 MiB Argon2 working set is a
 latency question, not a capacity one, on both boards. Cross-check passes.
 
-**R19 - SeedQR display-out versus the no-secret-in-a-QR rule.** 0.1.0 invariant 2's
+**R19 - SeedQR display-out versus the no-secret-in-a-QR rule. SETTLED 2026-08-17 by the
+ratified Q17: display-out is declined.** BACKUP-FEATURES rows B22-B24 are dropped, B14's
+"and QR" clause is struck, PARITY's SeedQR row is documented as scan-in only, and - the
+part that had actually gone wrong - the invariant-2 QR corollary, which this directory's
+SECURITY.md had dropped from both 2a and 2b while R19 promised it would be restated
+rather than quietly dropped, is restored to invariant 2a. Original finding below. 0.1.0 invariant 2's
 corollary is that QR display covers public values only, never a mnemonic. A SeedQR
 is a QR of a mnemonic. Resolution: notyas ships SeedQR scan-IN (m11) and the
 `seedqr` crate (m9/m12), but not display-out. m13's SECURITY rewrite restates the
@@ -1066,9 +1152,15 @@ The consequences are acceptance criteria, not copy suggestions: three warning
 placements at m4b and a one-time acknowledgment before the first passphrase wallet is
 saved (OPEN-QUESTIONS Q22).
 
-**R20 - anti-phishing words before provisioning.** The words derive from the eFuse
-key, which is burned at first save. A blank stateless device therefore has no words,
-and no screen or doc may imply it does.
+**R20 - anti-phishing words before provisioning. AMENDED 2026-08-17 by the ratified
+Q45.** The words derive from the eFuse key, which is burned **by the host with
+`espefuse.py` before the device ships or before a self-builder first boots it**, not at
+first save. A blank UNPROVISIONED device therefore has no words, and no screen or doc
+may imply it does. Two other derivations sit on the same key and inherit the same
+problem, which R20 as written did not name: the randomized PIN-pad permutation and the
+backup quiz's distractor set. An unprovisioned device cannot render its own PIN screen,
+so the refusal has to be an explicit state (`StoreState::Unprovisioned`) with its own
+screen, not a generic hardware fault.
 
 ---
 
@@ -1078,5 +1170,8 @@ The release is done when: every milestone gate above is green on both verified
 boards; every PARITY.md row is implemented, equivalent-and-documented, or deferred
 with the reason in section 7; every SECURITY.md claim is mechanically enforced or
 removed; both board images reproduce bit-for-bit on a second machine and the
-reproduced binaries are the signed ones; and the published crates build from
-crates.io for someone who has never seen this repository.
+reproduced binaries are the signed ones; and the published design documents -
+REPRODUCIBLE.md's recipe and ESP-SEAL.md's format and trust model - stand on their own
+for someone who has never seen this repository. (The old clause "the published crates
+build from crates.io" is withdrawn: under Q8, Q44 and Q46 there are no published
+crates.)

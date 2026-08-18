@@ -360,7 +360,11 @@ Fix: pin espflash to an exact version in the Dockerfile
 and cross-check the produced `app.bin` against `esptool image_info` from the
 image's own esptool (an independent implementation reading our output is a
 cheap, genuinely useful second opinion).
-OPEN: whether to make **esptool** rather than espflash the normative image
+RESOLVED 2026-08-17 (OPEN-QUESTIONS Q27): **compare both once during bring-up; if they
+differ at all, esptool becomes the normative release producer** and espflash stays the
+developer flashing tool. Pin the version exactly either way and record it in BUILDINFO.
+
+OPEN (resolved): whether to make **esptool** rather than espflash the normative image
 producer for releases (espflash stays the developer flashing tool). Recommend
 yes if the elf2image outputs ever differ: esptool is the reference
 implementation, ships inside the pinned IDF image, and removes one independently
@@ -392,7 +396,12 @@ and **fails if the lock file changed** during the build. A component update is a
 deliberate commit, never a build-time surprise.
 Check: `git diff --exit-code firmware/components_esp32p4.lock` inside the
 container after the build.
-OPEN: whether to vendor the managed components into the repo (or a submodule)
+RESOLVED 2026-08-17 (OPEN-QUESTIONS Q28): **do not vendor for 0.2.0** - the pinned hashes
+already make substitution detectable, which is the security property - **but publish
+`components-<tag>.tar.gz` alongside the release artifacts as an archival mirror, with its
+hash in the signed SHA256SUMS.txt.** Cheap insurance against registry rot.
+
+OPEN (resolved): whether to vendor the managed components into the repo (or a submodule)
 instead of relying on `components.espressif.com` being up and immutable years
 from now. Recommend: do not vendor for 0.2.0 (the hashes make substitution
 detectable, which is the security property), but publish a
@@ -619,7 +628,10 @@ the pinned nightly, the same env block) is publishable and *may* reproduce
 byte-identical output if every version in `toolchain.lock` matches. Document it
 as best-effort; when it diverges, the container wins by definition.
 
-OPEN: publish a Nix flake as a second, independent pinning mechanism? It would
+RESOLVED 2026-08-17 (OPEN-QUESTIONS Q29): **no for 0.2.0.** ESP-IDF under Nix is a real
+maintenance burden; revisit if a contributor owns it.
+
+OPEN (resolved): publish a Nix flake as a second, independent pinning mechanism? It would
 give a stronger pin than a Docker digest (full dependency closure, content
 addressed) and appeals to a subset of verifiers, but ESP-IDF under Nix is a
 maintenance burden. Recommend: no for 0.2.0; revisit if a contributor owns it.
@@ -631,13 +643,17 @@ define, so there is exactly one vocabulary for a board across the repo. Only the
 two hardware-verified boards get release artifacts; the eight untested scaffolds
 are compile-checked in CI and shipped as source only (BOARDS.md status table).
 
-For `<board>` in {`waveshare-4b`, `elecrow-5`}:
+For `<board>` in {`waveshare-4b`, `elecrow-5`}, **plus the camera VARIANT slug
+`waveshare-4b-camera` if m11 ships (OPEN-QUESTIONS Q47, ratified: camera is a build
+variant with its own separately hashed artifact set, not a runtime capability; the
+Elecrow board cannot take the module and has no camera variant)**. Every row below
+exists once per slug, and the m12 bit-identical rebuild matrix gains that slug:
 
 | Artifact | Notes |
 | --- | --- |
 | `notyas-<ver>-<board>-app.bin` | flashed at 0x10000; the one users verify |
 | `notyas-<ver>-<board>-bootloader.bin` | flashed at 0x2000; differs per board (flash size) |
-| `notyas-<ver>-<board>-partition-table.bin` | flashed at 0x8000; identical across boards |
+| `notyas-<ver>-<board>-partition-table.bin` | flashed at 0x8000; identical across boards AND across variants, and now permanently stable - the ratified Q7 declares the app partition at its collision bound 0xDF0000 precisely so this file never has to change |
 | `notyas-<ver>-<board>-merged.bin` | 0x2000..end, 0xFF padded; single-file flashing |
 | `notyas-<ver>-<board>.elf` | unstripped release ELF; enables real triage (section 4.5) |
 | `notyas-<ver>-<board>-sdkconfig.txt` | merged sdkconfig actually used |
@@ -831,6 +847,10 @@ that served the binary":
 VERIFYING.md must tell the user to compare the **full 40-hex-digit fingerprint**
 against at least two of those sources, and must never print a short key id.
 
+STILL OPEN - **OPEN-QUESTIONS Q30, and it is the project owner's**: it costs money and has
+lead time. Recommendation unchanged: yes, move the key to a hardware token before 0.2.0
+ships, generate a revocation certificate and hold it offline.
+
 OPEN: signing-key hygiene for 0.2.0 - is the release key on a hardware token
 (YubiKey/OpenPGP card), and is there a documented revocation path and a
 published revocation certificate? Recommend: yes to the token before 0.2.0 ships
@@ -838,11 +858,22 @@ published revocation certificate? Recommend: yes to the token before 0.2.0 ships
 the chain this document builds), plus a pre-generated revocation certificate
 held offline. Cheap, one-time, and it is the kind of thing users ask about.
 
+STILL OPEN - **OPEN-QUESTIONS Q31, and it is the project owner's**: it means recruiting a
+named outside person. Recommendation unchanged.
+
 OPEN: multi-party attestation. Reproducibility only pays off when someone else
 actually rebuilds. Recommend: for 0.2.0, recruit at least one independent builder
 to publish their own signed `SHA256SUMS.txt` for the same tag, and add a
 `attestations/` directory collecting them. Coldcard's credibility here comes
 from third parties publicly matching builds, not from Coinkite's own claim.
+
+STILL OPEN - **OPEN-QUESTIONS Q32, and it is the project owner's**: it decides whether an
+owner of this device can build and run their own firmware. Recommendation unchanged, (b).
+One addition since it was written: the ratified Q45 makes eFuse HMAC provisioning a host
+step, so under (b) a self-builder performs TWO independent one-way ceremonies and the
+ORDER matters - HMAC key before flash encryption and secure boot, because Release-mode
+flash encryption disables the UART download path `espefuse.py` uses. Answer Q32 and write
+that ordering into the same runbook.
 
 OPEN: secure boot key ownership. SECURITY.md invariant 6 says release hardware
 runs Secure Boot v2 RSA-3072 + XTS-AES flash encryption, but does not say whose
@@ -909,7 +940,13 @@ Already established as the cheap tier (docs/plan-0.2.0/MILESTONES.md, and
   which is what proves the `qr`/std feature does not leak into the UI graph;
 - `tools/build-graph-check.sh`, which walks every Cargo.lock and fails on a
   banned crate (rand/getrandom/ring/reqwest/hyper/tokio/...), enforcing
-  SECURITY.md invariants 1 and 3;
+  SECURITY.md invariants 1 and 3. **Extended 2026-08-17 by the ratified Q45: the check
+  is no longer a banned-crate walk only, it also asserts FEATURE STATE - that the
+  `provisioning` feature is off, that `unsafe-emulated-key` is off, and that the host
+  simulator is absent from the firmware graph, with `release.ps1` refusing to produce
+  an artefact otherwise. A crate walk cannot enforce a feature being off, and the whole
+  point of Q45 is that no eFuse-burn code reaches a release image.** ESP-SEAL.md already
+  described the right check; this document and MILESTONES described only the walk;
 - `cargo build --locked` everywhere, so lock drift is a CI failure;
 - documentation and hash-consistency lints (fingerprint string, board slug
   vocabulary, SHA256SUMS format).
@@ -1042,10 +1079,19 @@ publication.
     the esp-rs community docs. Gate: the example repo's CI reproduces its own
     binary; a link from this file.
 
-Not in scope for 0.2.0, recorded so it is not forgotten: secure-boot-signed
-release images and eFuse burning (blocked on the section 5.2 OPEN), OTA (there
-is none by design - ARCHITECTURE.md), and reproducibility for the eight untested
-board scaffolds (compile-checked only until hardware verification).
+Not in scope for 0.2.0, recorded so it is not forgotten: secure-boot-signed release
+images (blocked on the section 5.2 OPEN, which is OPEN-QUESTIONS Q32), OTA (there is none
+by design - ARCHITECTURE.md), and reproducibility for the eight untested board scaffolds
+(compile-checked only until hardware verification).
+
+**Conflict to close, flagged 2026-08-17 when Q45 was ratified:** this paragraph used to
+scope **eFuse burning** out of 0.2.0 as well, while MILESTONES m13 scopes it IN as part of
+the release-unit runbook. m13 wins - a release unit cannot ship without a provisioned HMAC
+key - so eFuse burning is removed from this out-of-scope list. What remains blocked on
+Q32 is only the secure-boot signing. The provisioning procedure itself needs writing into
+VERIFYING.md and into the build-from-source instructions, and no milestone currently owns
+the build-from-source half: M-REPRO-9's outline runs levels 1-4 with no provisioning step
+in it.
 
 ---
 

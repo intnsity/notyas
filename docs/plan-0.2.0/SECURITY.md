@@ -97,13 +97,24 @@ UX is the real security control.
    sealed blob. A device with no stored wallet retains the 0.1.0 stateless property
    verbatim: nothing is ever written to flash.
 
+   **Corollary on QR display, carried forward from 0.1.0 invariant 2 (restored here
+   2026-08-17: the split into 2a/2b had dropped it from both halves, which R19
+   specifically promised would not happen).** QR display covers PUBLIC values only -
+   receive addresses, account xpub/SLIP-132, descriptors, signed PSBTs and final
+   transactions - and never a mnemonic, xprv, seed or WIF. SeedQR display-out is
+   declined for 0.2.0 (OPEN-QUESTIONS Q17, ratified), so there is no exception to state
+   and no secret-QR screen class. Scan-IN of a SeedQR is unaffected: this rule is about
+   output. Enforced structurally in notyas-ui and test-asserted.
+
 2b. **What the device writes is enumerated and public.** Flash: the wallets
    partition (sealed records, sealed multisig registrations - ciphertext only) and
    the plaintext counters partition (attempt/guard bit logs, seal_seq high-water,
    wipe_epoch - no secret content; plaintext by necessity, because bit-clear
    counters are incompatible with XTS write granularity - ARCHITECTURE 2.5). SD:
    `*-signed.psbt`, `*-final.txn`, exported xpubs/descriptors [, encrypted backups
-   if Q8 is accepted - explicitly labeled ciphertext]. No key material, no PIN
+   if OPEN-QUESTIONS Q14 accepts them - explicitly labeled ciphertext. The reference
+   was written as "Q8" in the wave-1 numbering; the question is Q14, not the licensing
+   question]. No key material, no PIN
    material, no logs reach SD. Privacy note, stated honestly: exported xpubs and
    descriptors are not secrets but reveal the wallet's entire address history to
    whoever reads the card - the export screens say so. Every write to flash or SD
@@ -129,9 +140,14 @@ UX is the real security control.
    byte-identical signatures to PINNED VECTORS (BIP-340 official vectors,
    BIP-143/BIP-341 sighash vectors, pinned signing known-answer check in the boot
    self-test) plus signatures Bitcoin Core verifies and accepts (walletprocesspsbt
-   + testmempoolaccept differential in CI). Byte-equality against Core's own
-   emitted signatures is NOT claimed: Core randomizes Schnorr aux-rand and grinds
-   ECDSA low-R (see ARCHITECTURE 5.1, OPEN-QUESTIONS Q13).
+   + testmempoolaccept differential in CI). **Split by algorithm, now that
+   OPEN-QUESTIONS Q3 is ratified in favour of low-R grinding: for ECDSA, byte-equality
+   against Core's own emitted signatures IS claimed and IS tested, because notyas grinds
+   low-R exactly as Core does (`sign_ecdsa_low_r`), which also makes the 71-byte
+   signature size and therefore the displayed vsize and fee exact. For Schnorr it is NOT
+   claimed and never will be: Core randomizes BIP-341 aux-rand, so byte-equality is
+   impossible under any implementation choice; the claim there is the pinned BIP-340
+   vectors plus Core verifies and accepts.** (See ARCHITECTURE 5.1.)
 
 5. **Verifiable firmware.** Unchanged mechanism (reproducible build, signed
    SHA256SUMS, Verify screen). Verify screen additionally reports: storage state,
@@ -162,9 +178,18 @@ UX is the real security control.
 
 ## Duress and wipe stance
 
-- Wipe-on-N (default 10) destroys the sealed records and bumps a one-way epoch
-  marker. The user is told at setup that the mnemonic/dice backup is the recovery
-  path - the device never claims to be the only copy.
+- Wipe-on-N (default 10, range 3..=25 - OPEN-QUESTIONS Q5, ratified) destroys the
+  sealed records and bumps a one-way epoch marker. The user is told at setup that the
+  mnemonic/dice backup is the recovery path - the device never claims to be the only
+  copy. **Two honesty requirements on that copy, both from Q5's ratification.** First,
+  the mnemonic recovers the SEED and nothing else: multisig registrations, labels and
+  device settings are not re-derivable and a wipe destroys them permanently, so the
+  wipe screens must name what is lost rather than implying the seed covers it (the
+  deliberate-erase screen already does; the accidental one did not). Second, a power cut
+  taken between the attempt-cell program and the success-cell write CONSUMES an attempt
+  even when the PIN was correct - that is deliberate and fail-closed, because otherwise
+  power-cutting is a free oracle - so on a portable device the counter can advance with
+  no wrong PIN entered, and the wrong-PIN policy screen must say so.
 - Duress PIN (if Q2 accepted): opens a decoy wallet set; no stored marker says
   which PIN is which. Red-team correction: this alone is NOT "indistinguishable by
   construction" - slot occupancy is visible pre-PIN and the Verify screen's slot

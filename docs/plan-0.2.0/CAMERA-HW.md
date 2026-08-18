@@ -1207,7 +1207,16 @@ for a feature that only one board can have.
 
 ### 6.2 Recommendation
 
-**OPEN: what is the per-board policy for camera support in 0.2.0?**
+RESOLVED 2026-08-17 (OPEN-QUESTIONS Q47): **the recommendation below is ratified in
+full** - camera is a BUILD VARIANT with its own separately named and separately hashed
+artifact, enforced by `compile_error!`, with per-board-and-per-variant support statements
+and parity language that follows the artifact. The m11 gate correction is ratified with
+it: a link-map assertion that no camera symbol reaches the base image, plus a pinned hash
+per named artifact, with the release notes stating that this is verification of absence
+rather than absence. Two consequences now land with m11: REPRODUCIBLE.md 3.5 gains the
+`waveshare-4b-camera` slug, and BOARDS.md gains the per-variant column.
+
+OPEN (resolved): **what is the per-board policy for camera support in 0.2.0?**
 
 Recommendation, in three parts:
 
@@ -1235,7 +1244,16 @@ Recommendation, in three parts:
    become class b **on the camera variant** and stay class c on the base unit.
    No row is allowed to claim a capability the base artifact does not have.
 
-**OPEN: does 0.2.0 ship camera support at all, or does it slip to 0.3.0?**
+RESOLVED 2026-08-17 (OPEN-QUESTIONS Q6): **land it in 0.2.0, sequence it last, make it
+droppable** - this section's "(a) but droppable" refinement is ratified, including the
+m-camera-0..5 split, with m-camera-1 (the shared-I2C-bus refactor) pulled forward into
+m1's infrastructure work. One correction: the claim that the camera gates the m1 partition
+freeze is withdrawn as unsupported - no document contains a flash-size figure for
+`esp_video`, and the ratified Q7 declares the app partition at its collision bound so the
+size field is no longer a compatibility surface. The m1 spike gains a deliverable to fix
+the underlying gap: record `app.bin`'s byte count with the `camera` feature on.
+
+OPEN (resolved): **does 0.2.0 ship camera support at all, or does it slip to 0.3.0?**
 CAMERA.md put the CSI-versus-SD-only question to the user and it is still open.
 Recommendation: **land it in 0.2.0, but sequence it last and let it slip
 without blocking the release.** Reasoning:
@@ -1269,7 +1287,17 @@ indicative, not a claim on the milestone sequence.
 
 ### 6.4 Smaller opens
 
-- **OPEN: does the camera variant accept SeedQR (a private-key input path)?**
+- RESOLVED 2026-08-17 (OPEN-QUESTIONS Q48): **yes, behind the same friction as manual
+  mnemonic entry, and never default-visible on the general scan screen.** Two conditions
+  attached at ratification. (i) The autodetect table in 5.x cannot classify
+  CompactSeedQR - it is byte mode, 16 or 32 raw bytes including `0x00`, so it never
+  matches the all-digits SeedQR rule and falls into plain text, which the charset rule
+  rejects - and m11's own exit gate is a CompactSeedQR scan, so the classifier as written
+  cannot pass it. Fix at m-camera-3. (ii) The `seedqr` decoder must join the m-camera-4
+  FUZZ corpus, not only be validated against SeedSigner's vectors: it is new code doing
+  11-bit unpacking on attacker-supplied bytes, and conformance is not hostile-input
+  testing.
+- OPEN (resolved): **does the camera variant accept SeedQR (a private-key input path)?**
   Recommendation: yes, but gated behind the same friction as manual mnemonic
   entry, and never as a default-visible action on the scan screen. Scanning a
   seed is genuinely useful (it is what SeedSigner users have) and the risk is
@@ -1277,10 +1305,13 @@ indicative, not a claim on the milestone sequence.
   paper backup is a camera pointed at a paper backup. 0.1.0's structural rule -
   no private value ever leaves the device - is about output and is untouched by
   an input path.
-- **OPEN: default preview on or off?** Recommendation: on. It costs one PPA
+- RESOLVED 2026-08-17 (OPEN-QUESTIONS Q49): **on**, as recommended.
+- OPEN (resolved): **default preview on or off?** Recommendation: on. It costs one PPA
   pass, it is the only camera-activity indicator this hardware has (5.7), and a
   scan without a viewfinder is unattributable when it fails.
-- **OPEN: buy a Waveshare OV5647 reference module** (1.7). Recommendation: yes,
+- STILL OPEN - **OPEN-QUESTIONS Q50, and it is the project owner's**: it costs money and
+  has lead time. Recommendation unchanged.
+- OPEN: **buy a Waveshare OV5647 reference module** (1.7). Recommendation: yes,
   about 10 USD, before m-camera-0 if lead time allows.
 
 ---

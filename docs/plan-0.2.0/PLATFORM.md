@@ -7,10 +7,16 @@ PARITY.md maps which Coldcard-parity rows each crate serves; CAMERA.md covers
 the QR decode stack these crates plug into.
 
 notyas 0.2.0 will need lower-level platform pieces that do not exist in the
-Rust ecosystem today. Building them as standalone, published crates - rather
-than burying them in the firmware - serves the project's community goal and
-gives every ESP32/Rust wallet project reusable infrastructure. This document is
-the exists/gap/skip survey and the ranked contribution shortlist.
+Rust ecosystem today. This document is the exists/gap/skip survey and the ranked
+contribution shortlist.
+
+**Read section 6 first.** It was written on the premise that those pieces would be
+extracted as standalone, published crates. The project owner answered the licensing
+question on 2026-08-17 - GPL-3.0-or-later for everything - and under that answer nothing
+is extracted and nothing is published to crates.io. The gap analysis in sections 1-4 is
+unaffected and still correct; what changes is the FORM the contribution takes, and
+section 6 restates every shortlist item under the answer. The survey below still reads
+as though crates were the destination; that framing is superseded, not the findings.
 
 ## 1. Survey: security silicon (HMAC / DS / ECDSA / Key Manager / eFuse)
 
@@ -179,9 +185,56 @@ no_std, maintained); GT911 driver (`gt911`, `gt9x` exist - upstream quirks
 instead); DSI DrawTarget crate (`buoyant-esp32p4` exists - contribute patches);
 font atlas tool (`mplusfonts`/`embedded_font` cover the space).
 
-## 6. Licensing tradeoff (open question - presented, not decided)
+## 6. Licensing - DECIDED 2026-08-17 by the project owner (OPEN-QUESTIONS Q8)
 
-The firmware is GPL-3.0-or-later. For the extracted crates there are two
+**Answer: GPL-3.0-or-later, everywhere.** The firmware, every notyas crate, the
+tools, and anything that might otherwise have been extracted. For wallet firmware,
+copyleft prevents closed forks of code that handles user keys, and the adoption cost
+on the low-level pieces is accepted deliberately. Nothing is published to crates.io.
+
+**What follows, and it reshapes section 5 above.** ESP-SEAL.md 9.1 stated the
+consequence in advance and it now applies: under a GPL answer `esp-seal` should not be
+extracted at all, because a GPL3 "platform contribution" that the permissively licensed
+ESP32/Rust ecosystem will not depend on is worse than an honest internal module. So:
+
+- **Item 1 (esp-seal):** stays a module inside notyas-wallet (Q44). The contribution
+  becomes ESP-SEAL.md itself, published in-repo: the byte-exact on-flash format, the
+  state machine, the power-loss analysis and the attack analysis. Any project can read
+  it and reimplement freely. That is a real contribution and it is the honest
+  description of what 0.2.0 delivers.
+- **Item 2 (esp-idf-hmac / -ds / -key-mgr):** in-tree. The verified gap is still real,
+  but "candidate for upstreaming into esp-idf-hal" is withdrawn - esp-idf-hal is
+  MIT/Apache and will not take a GPL dependency. Residual value is ours: it is the
+  silicon leg under every storage row, and the `extra_components` / `bindings_header`
+  recipe is documentable independently of licence.
+- **Item 3 (seedqr):** in-tree. Still the only Rust implementation, still needed by
+  m11's scan-in; under the ratified Q17 its ENCODE half is test-vector-only, because
+  SeedQR display-out is declined.
+- **Item 4 (bsms):** in-tree if built at all (Q15). BDK's open request is no longer a
+  reason to build it, because BDK is permissive.
+- **Item 5 (no_std BBQr decode):** the only shortlist item that is an upstream PR to
+  someone else's permissive project rather than a crate of ours, so our patch would go
+  out under MIT. **That needs the owner's sign-off and is OPEN-QUESTIONS Q51.**
+- **Item 6 (reproducible Rust-on-ESP-IDF recipe):** unaffected, and now the strongest
+  remaining contribution. A document's licence is no barrier to anyone reading it, and
+  no published recipe exists for the Rust + esp-idf-sys + `-Zbuild-std` stack.
+
+**Two constraints survive unchanged.** Trezor's and Jade's code are copyleft, so only
+their published DESIGNS may inform a clean-room implementation - being GPL ourselves
+does not license a port. And font data is the one carve-out: IBM Plex and the generated
+atlases are SIL OFL 1.1 with the Reserved Font Name renaming, per LICENSE-fonts, and
+that distinction must survive any blanket "everything is GPL" statement.
+
+**One constraint is now moot:** R6's warning that `foundation-urtypes`
+(GPL-3.0-or-later) must never be pulled into a permissive crate binds nothing, because
+there is no permissive crate. The placement it produced - UR and transport encoding
+inside notyas-wallet - is still right and should not be undone.
+
+---
+
+### 6.1 The tradeoff as it was weighed (retained for the record, no longer open)
+
+The firmware is GPL-3.0-or-later. For the extracted crates there were two
 coherent options:
 
 - **(a) GPL3 crates.** Preserves reciprocity on the crates themselves.
@@ -198,9 +251,11 @@ coherent options:
 Constraint under either option: Trezor's storage code and Jade's code are
 copyleft, so neither can be ported into an MIT/Apache crate - only their
 published designs can inform a clean-room Rust implementation. A per-crate
-split is also possible (e.g. permissive for the interop formats seedqr/bsms
-where ecosystem uptake matters most, GPL3 for esp-seal). Decision deferred to
-this directory's OPEN-QUESTIONS.md / MILESTONES.md reconciliation.
+split was also possible (e.g. permissive for the interop formats seedqr/bsms
+where ecosystem uptake matters most, GPL3 for esp-seal); ESP-SEAL.md 9.1 argued that
+particular split was backwards, because esp-seal has the largest audience outside
+Bitcoin of anything on the shortlist. All of it is settled by the answer at the top of
+this section: (a), for everything.
 
 Repo files consulted: docs/ARCHITECTURE.md, docs/research/rust-esp32p4.md,
 firmware/src/display.rs, firmware/src/touch.rs.

@@ -11,12 +11,21 @@ Two files carry the reconciliation:
   this directory disagrees with it on scope, ordering, or dependency, MILESTONES.md
   wins as of the reconciliation date. Its section 8 (R1-R20) is the register of every
   contradiction found and how it was resolved, with reasoning.
-- **OPEN-QUESTIONS.md** - the single decision list. Wave-1's thirteen questions,
-  wave-2's three, and the red team's two escalations are merged, deduplicated and
-  renumbered, and the wave-3 documents' own open items are folded in behind them
-  (currently through Q46). Q1-Q8 block milestone 1, with one revision: **Q2 is
-  behaviour-only since the ESP-SEAL.md sweep** and its real deadline is m4b, though it
-  keeps its number and its place in the blocking set.
+- **OPEN-QUESTIONS.md** - the single decision list, **RATIFIED 2026-08-17**. Wave-1's
+  thirteen questions, wave-2's three, the red team's two escalations and the wave-3
+  documents' own open items are merged, deduplicated and renumbered through Q50, and
+  every question with a clear technical optimum has now been decided on the project
+  owner's instruction. **Forty-one are settled and are recorded, with their reasoning,
+  in that file's RATIFIED DECISIONS section, ordered by milestone.** The file opens with
+  an OWNER DECISIONS section carrying the **ten** that remain, and that section is
+  self-contained: nothing else in the file is needed to answer them.
+
+  **Nothing blocks m1 any more.** The old statement "Q1-Q8 block milestone 1" is
+  superseded. Q1, Q3, Q4, Q5, Q6 and Q7 are ratified; Q8 was answered directly by the
+  owner (GPL-3.0-or-later, everywhere); Q2's deadline is m4b, because ESP-SEAL.md 3.6
+  showed the duress package needs no format change. **No owner question gates m1 or the
+  m3 format freeze.** Two owner items have lead time rather than a milestone - Q43 and
+  Q50 are purchases - and Q50 de-risks m1's camera spike without gating it.
 
 Everything else is a normative input that MILESTONES.md and OPEN-QUESTIONS.md read.
 
@@ -24,8 +33,11 @@ Everything else is a normative input that MILESTONES.md and OPEN-QUESTIONS.md re
 
 ## Reading order
 
-1. **OPEN-QUESTIONS.md** - eight blocking decisions. Nothing starts until they are
-   answered; this is the file the user reads to unblock execution.
+1. **OPEN-QUESTIONS.md** - the decision list, ratified 2026-08-17. Its OWNER DECISIONS
+   section holds the ten questions still open and is the only part the project owner
+   needs to read; none of them blocks m1. Its RATIFIED DECISIONS section holds the
+   forty-one settled ones, ordered by milestone, and doubles as an implementation
+   reference and as the audit record for why the device behaves as it does.
 2. **MILESTONES.md** - what gets built, in what order, on which board, and what
    physical demonstration closes each milestone. Section 8 explains every place the
    waves disagreed.
@@ -88,13 +100,13 @@ per-board airgap statement), `docs/HARDWARE.md`, `docs/research/`.
 | UX.md | 1, red-teamed | screens and flows | current, with the camera-wording exception below |
 | PARITY.md | 2 | Coldcard feature matrix | reference; count erratum below; all rows assigned in MILESTONES section 7 |
 | CAMERA.md | 2 | camera paths, ranked | proposal, pending OPEN-QUESTIONS Q6 |
-| PLATFORM.md | 2 | contribution shortlist | current; its licensing question is now OPEN-QUESTIONS Q8 |
+| PLATFORM.md | 2 | contribution shortlist | current; its licensing question is ANSWERED - OPEN-QUESTIONS Q8, GPL-3.0-or-later everywhere. Section 6 is retained as the record of the tradeoff and marked decided; the shortlist is restated under that answer in Q46 |
 | WALLET-API.md | 3 | notyas-wallet API design (authoritative for the crate) | PRESENT at reconciliation (commit 7a67983); its OPEN: W1-W5 folded in as Q22-Q26 |
 | REPRODUCIBLE.md | 3 | reproducible-build recipe, release gate | PRESENT; its six OPEN items folded in as Q27-Q32 |
 | BACKUP-FEATURES.md | 3 | backup/restore/seed-lifecycle detail | PRESENT; OPEN-B1 folded into Q14, B2 -> Q33, B3 folded into Q17, B4 -> Q34 |
 | UX-SCREENS.md | 3 | per-screen build spec | PRESENT; its five open items -> Q35-Q38 and Q24; one gap to patch, below |
 | CORPUS.md | 3 | adversarial PSBT corpus, m6/m7 exit criteria | PRESENT; corpus-1..5 -> Q39-Q43 |
-| ESP-SEAL.md | 3 | firmware platform traits, sealed-storage layer; **authoritative for the sealed-storage layer and the on-flash format** | PRESENT (commit ed031c1); **SWEPT 2026-08-17** - four OPEN items: 2.4 -> Q44, 4.3 -> Q45, 9.1 licence folded into Q8, 9.1 publish timing -> Q46; three escalations applied to the plan texts, see below |
+| ESP-SEAL.md | 3 | firmware platform traits, sealed-storage layer; **authoritative for the sealed-storage layer and the on-flash format** | PRESENT (commit ed031c1); **SWEPT 2026-08-17** - four OPEN items: 2.4 -> Q44, 4.3 -> Q45, 9.1 licence folded into Q8, 9.1 publish timing -> Q46; three escalations applied to the plan texts, see below. **All four settled 2026-08-17**: the crate is NOT extracted, the layer is a notyas-wallet module, and this document stays authoritative for its design |
 | CAMERA-HW.md | 3 | camera hardware and software integration spec behind CAMERA.md's decision | PRESENT (commit f5aa401); **SWEPT 2026-08-17** - 6.2 per-board policy -> Q47, 6.2 ship-or-slip folded into Q6, 6.4 SeedQR scan-in -> Q48, 6.4 default preview -> Q49, 1.7/6.4 reference-module purchase (one item, stated twice) -> Q50 |
 
 **Sweep status (2026-08-17): COMPLETE. No document in this directory is owed a
@@ -103,7 +115,7 @@ not use the literal `OPEN:` prefix (BACKUP-FEATURES.md uses `OPEN-Bn`, CORPUS.md
 `OPEN: (corpus-n)`). Swept at reconciliation: WALLET-API.md, REPRODUCIBLE.md,
 BACKUP-FEATURES.md, UX-SCREENS.md, CORPUS.md. Swept afterwards, in the final
 integration pass: ESP-SEAL.md and CAMERA-HW.md, both of which landed after the
-reconciliation. The list now runs to **Q50**. If a further design document lands,
+reconciliation. The list now runs to **Q51** - Q51 was raised by the Q8 answer and asks whether we may contribute code and test data to outside projects under THEIR permissive licence. If a further design document lands,
 continue the numbering from there, attribute the source document, keep its
 recommendation, and give each item a blast radius and an owning milestone; apply
 correctness fixes to the plan texts directly rather than raising them as questions.
@@ -151,22 +163,29 @@ wallet is saved, and (v) the overridable `passphrase_check` mismatch warning at
 unlock. Patch UX-SCREENS.md with the copy; MILESTONES m4b already carries all five as
 acceptance criteria.
 
-**Recorded disagreements between documents, left for the user rather than silently
-settled:** Q14 (BACKUP-FEATURES.md recommends shipping seed-bearing encrypted backup
-in 0.2.0; this reconciliation recommends only the seedless profile) and Q17
-(BACKUP-FEATURES.md recommends SeedQR display behind a gated secret-QR screen class;
-this reconciliation recommends declining display-out). Both questions state both
-positions. Two more came out of the final integration sweep, and both are recorded
-inside the question that owns them rather than settled here:
+**Recorded disagreements between documents. Three of the four are now settled by the
+2026-08-17 ratification; the fourth is still the owner's.**
 
-- **ESP-SEAL.md 2.4 versus WALLET-API.md 1.2/2.3** - both claim the key ladder and the
-  record engine. Q44 states the overlap in detail (which constants move, what
-  WALLET-API's `seal` and `store` modules keep under each answer) so the ladder is not
-  implemented twice. Whichever document loses says so explicitly before m3 opens.
-- **CAMERA-HW.md 6.2 versus MILESTONES m11's exit gate** - m11 gates on the camera-off
-  image SHA256 being unchanged by the feature's presence in the tree; CAMERA-HW shows
-  that is not achievable, because esp-idf-sys metadata cannot be feature-gated and the
-  esp_video C sources are therefore in every build's component tree. Q47 carries the
+- **Q14** (BACKUP-FEATURES.md recommends shipping seed-bearing encrypted backup in
+  0.2.0; the reconciliation recommends only the seedless profile) - **still open, still
+  the owner's.** Both positions are stated in the question.
+- **Q17** (BACKUP-FEATURES.md recommends SeedQR display behind a gated secret-QR screen
+  class; the reconciliation recommends declining display-out) - **SETTLED: display-out
+  is declined.** BACKUP-FEATURES rows B22-B24 are dropped, B14's "and QR" clause is
+  struck, and the invariant-2 QR corollary that plan-0.2.0/SECURITY.md had silently
+  dropped is restored to invariant 2a.
+- **ESP-SEAL.md 2.4 versus WALLET-API.md 1.2/2.3** - both claimed the key ladder and the
+  record engine. **SETTLED in WALLET-API.md's favour by Q44**, as a consequence of the
+  owner's GPL-3.0-or-later answer to Q8: there is no extracted `esp-seal` crate, the
+  sealing layer is a module inside notyas-wallet, WALLET-API.md's `seal` and `store`
+  modules keep the ground they claim, and ESP-SEAL.md remains the authoritative DESIGN
+  document for that module (format, state machine, power-loss guarantees, attack
+  analysis). One implementation, one address.
+- **CAMERA-HW.md 6.2 versus MILESTONES m11's exit gate** - **SETTLED by Q47.** m11 gated on
+  the camera-off image SHA256 being unchanged by the feature's presence in the tree;
+  CAMERA-HW shows that is not achievable, because esp-idf-sys metadata cannot be
+  feature-gated and the esp_video C sources are therefore in every build's component
+  tree. Q47 carries the
   conflict and the proposed replacement gate (a link-map assertion plus a pinned hash
   per named artifact).
 
@@ -200,9 +219,13 @@ The rest of each document stands.
 **ARCHITECTURE.md**
 
 - 2.7 partition offsets (`wallets` at 0x410000 behind a 4 MB app) - superseded by
-  **R2**: factory grows to 8M and the data partitions move to fixed high offsets
-  (0xE00000 / 0xE40000) so app growth can never relocate a user's sealed records.
-  Everything else in 2.7 stands.
+  **R2** and by the ratified **Q7**: the data partitions move to fixed high offsets
+  (0xE00000 / 0xE40000) so app growth can never relocate a user's sealed records, and
+  `factory` is declared at its collision bound `0xDF0000` rather than at 8M, so the
+  frozen table never needs a future edit and `partition-table.bin` stays a stable
+  published artifact. App-size discipline moves to an explicit CI budget constant (fail
+  above 8 MiB, warn above 6 MiB), which is a policy number rather than a compatibility
+  surface. Everything else in 2.7 stands.
 - 5.2 / 5.4 "No camera: QR is out-only" - superseded by **R3**: the camera is an
   optional, board-A-only, compile-time-off milestone (m11) preceded by a spike inside
   m1. The wording becomes "no camera on this board/build".
@@ -211,12 +234,14 @@ The rest of each document stands.
 - Section 1's dependency table stands and is restated as the authoritative dependency
   ledger in MILESTONES section 6, extended with the wave-2 crates (`bbqr`, `rqrr`).
 - Section 1's CRATE table assigns "seal/unseal (PIN KDF ladder + AEAD), two-slot
-  storage record format" to notyas-wallet - contested by ESP-SEAL.md 2.4, which moves
-  it into `esp-seal`. Now **OPEN-QUESTIONS Q44**, which also flags the overlap with
-  WALLET-API.md's `seal` and `store` modules so the ladder is not implemented twice.
-- 2.2's "the HMAC key is burned at first save" - contested by ESP-SEAL.md 4.3, which
-  proposes host-side factory provisioning with `espefuse.py` and NO eFuse-burn code in
-  release firmware. Now **OPEN-QUESTIONS Q45**.
+  storage record format" to notyas-wallet - **this STANDS.** ESP-SEAL.md 2.4 contested
+  it and Q44 settled it in notyas-wallet's favour: under the owner's GPL-3.0-or-later
+  answer to Q8 there is no extracted `esp-seal` crate, so no crate row is added to the
+  table. ESP-SEAL.md remains the authoritative design of that module.
+- 2.2's "the HMAC key is burned at first save" - **superseded by the ratified Q45**:
+  host-side factory provisioning with `espefuse.py`, and NO eFuse-burn code in release
+  firmware. Amended in place 2026-08-17, along with section 4's firmware work list
+  ("eFuse burn/read-protect in the provisioning path" becomes state readout).
 - 2.4's `kdf_salt` including `slot_id` - refined by ESP-SEAL.md 4.1 (a DECISION, not a
   question): the salt drops `slot_id` and slot separation moves entirely into the HKDF
   info, so an unlock costs one Argon2id run rather than one per slot.
@@ -229,12 +254,20 @@ The rest of each document stands.
 **SECURITY.md (this directory)**
 
 - Tier 3's attempt-counter paragraph was **rewritten in place 2026-08-17** for the
-  same honesty fix as ARCHITECTURE 2.5 (escalation 1 above). Nothing else is
-  superseded. Two additions are required at m13, both recorded as
-  decisions: invariant 2's 0.1.0 corollary ("there is no private-key export path at
-  all") must be restated in 0.2.0 terms rather than dropped (**R19**), and invariant
-  1's per-board "the SDIO host is never configured on the C6 pins" survives the SD
-  subsystem verbatim, re-verified with pin numbers at m5 (**R16**).
+  same honesty fix as ARCHITECTURE 2.5 (escalation 1 above).
+- **Invariant 2's QR corollary was missing and is restored 2026-08-17.** 0.1.0's
+  invariant 2 carries "QR display covers public values only ... never a mnemonic, xprv,
+  seed or WIF"; this directory's split into 2a and 2b dropped it from both halves, which
+  is precisely what R19 promised would not happen. The ratified Q17 declines SeedQR
+  display-out, so the rule it depends on is now stated in 2a.
+- **Invariant 4 no longer needs its conditional** - the ratified Q3 adopts low-R
+  grinding, so ECDSA byte-equality with Bitcoin Core is claimed and tested; Schnorr
+  equality against Core's own output remains impossible and is never claimed.
+- **Invariant 2b's "encrypted backups if Q8 is accepted"** used the wave-1 numbering; the
+  question is Q14, not the licensing question. Corrected in place.
+- Still required at m13: invariant 1's per-board "the SDIO host is never configured on
+  the C6 pins" survives the SD subsystem verbatim, re-verified with pin numbers at m5
+  (**R16**).
 
 **UX.md**
 
@@ -265,21 +298,33 @@ The rest of each document stands.
 - Section 6's recommendation of the `ur` crate - superseded by **R5**: one UR
   implementation, `foundation-ur` + `foundation-urtypes`, both with default features
   off (the `ur` crate is std by default).
-- SeedQR is scan-in only; display-out is not shipped (**R19**, OPEN-QUESTIONS Q17).
+- SeedQR is scan-in only; display-out is not shipped (**R19**, OPEN-QUESTIONS Q17, ratified 2026-08-17).
 
 **PLATFORM.md**
 
-- Item 1's framing of `esp-seal` as the crate the storage layer is built on -
-  refined by **R4**: the sealing LAYER is written first and in-tree (m3,
-  extraction-ready, no ESP-IDF types at its boundary); the crate is PUBLISHED after
-  hardware proves it (m12). The real prerequisite is item 2, the HMAC wrapper (m3h).
-- Section 6's licensing question is now OPEN-QUESTIONS Q8, with the added constraint
-  that `foundation-urtypes` is GPL-3.0-or-later, so UR/transport code can never live
-  in a permissive crate (**R6**). Section 6's floated split - "permissive for the
-  interop formats, GPL3 for esp-seal" - is argued backwards by ESP-SEAL.md 9.1 and
-  that argument is merged into Q8 rather than raised separately: esp-seal has the
-  largest audience outside Bitcoin of anything on the shortlist. Q8 also now carries
-  ESP-SEAL's consequence - under a GPL3 answer the crate is not extracted at all.
+- **Section 6's licensing question is ANSWERED (Q8, by the owner, 2026-08-17):
+  GPL-3.0-or-later for everything this project produces.** Section 6 is retained as the
+  record of the tradeoff that was weighed and is marked decided in place. Consequences,
+  all now settled rather than conditional: no crate is extracted (Q44), nothing is
+  published to crates.io (Q46), and R6's GPL-contagion constraint through
+  `foundation-urtypes` is moot because there is no permissive crate to contaminate.
+- **Item 1 (`esp-seal`) is no longer a published crate.** R4's sequencing (written first
+  and in-tree, published after hardware proves it) is overtaken: the layer stays a
+  module in notyas-wallet permanently. The contribution becomes ESP-SEAL.md itself,
+  published in-repo under GPL-3.0-or-later so any project can read the format, the
+  power-loss analysis and the attack analysis and reimplement freely.
+- **The rest of the shortlist is restated under GPL-3.0-or-later in Q46's entry**, not
+  silently dropped: item 2 (`esp-idf-hmac`) stays in-tree and loses its
+  upstream-into-esp-idf-hal claim; item 3 (`seedqr`) stays in-tree and, under the
+  ratified Q17, its encode half is test-vector-only; item 4 (`bsms`) loses BDK as a
+  named consumer; item 5 (the no_std BBQr decode) is an upstream PR to someone else's
+  permissive project and therefore needs the owner's sign-off - it is now **Q51**; item 6
+  (the reproducible Rust-on-ESP-IDF recipe) is unaffected and is now the strongest
+  remaining contribution, because a document's licence is no barrier to reading it.
+- **The font carve-out is unaffected and must stay stated separately:** IBM Plex TTFs and
+  the generated atlases are SIL OFL 1.1, with the Reserved Font Name renaming to "notyas
+  Sans" / "notyas Mono" recorded in LICENSE-fonts. "Everything is GPL-3.0-or-later" is
+  about code, not fonts.
 - Item 1's "attempt-counter rollback resistance ultimately rests on secure boot +
   XTS-AES flash encryption + the eFuse-bound HMAC key" - **rewritten in place
   2026-08-17**. The counters partition is plaintext, so flash encryption contributes
@@ -316,7 +361,7 @@ OPEN-QUESTIONS.md carries the same map.
 | Q13 | **Q3** | ECDSA low-R grinding / equivalence scope |
 | - | Q6 | Camera in 0.2.0 (wave 2) |
 | - | Q7 | Storage geometry freeze (reconciliation) |
-| - | Q8 | Extracted-crate licensing (wave 2) |
+| - | Q8 | Licensing (wave 2) - **ANSWERED by the owner: GPL-3.0-or-later, everywhere** |
 | - | Q10, Q11 | Class-d reject list, class-c equivalent tier (wave 2) |
 | - | Q17 | SeedQR display-out (reconciliation) |
 | - | Q18, Q19 | BBQr output, login extras |
@@ -333,10 +378,11 @@ OPEN-QUESTIONS.md carries the same map.
 | - | Q35-Q38 | PIN pad shuffle domain, deliver escape hatch, wrong-PIN visibility, address truncation (UX-SCREENS.md) |
 | - | folded into Q24 | Expert overrides - the warning-versus-refusal line (UX-SCREENS.md) |
 | corpus-1..5 | Q39-Q43 | Corpus licensing, bitcoind in CI, HIL console, lookalike warning, HIL hardware (CORPUS.md) |
-| ESP-SEAL 2.4 | Q44 | esp-seal vs notyas-wallet crate boundary; also flags the WALLET-API `seal`/`store` overlap |
-| ESP-SEAL 4.3 | Q45 | In-app eFuse provisioning versus host-side factory provisioning |
-| ESP-SEAL 9.1 (licence) | folded into Q8 | esp-seal's licence, with the "if GPL3, do not extract at all" consequence |
-| ESP-SEAL 9.1 (publish) | Q46 | Where esp-seal lives and when it is published |
+| ESP-SEAL 2.4 | Q44 | esp-seal vs notyas-wallet crate boundary - **settled: notyas-wallet module, no crate; the WALLET-API `seal`/`store` overlap resolves in WALLET-API's favour** |
+| ESP-SEAL 4.3 | Q45 | In-app eFuse provisioning versus host-side factory provisioning - **settled: host-side factory, no burn code in release firmware** |
+| Q8's consequence | Q51 | **NEW 2026-08-17.** May we contribute the no_std BBQr decode upstream, and the adversarial PSBT vectors to HWI / psbt_faker, under those projects' permissive licences? |
+| ESP-SEAL 9.1 (licence) | folded into Q8 | esp-seal's licence - **GPL-3.0-or-later, and its own stated consequence therefore applies: do not extract at all** |
+| ESP-SEAL 9.1 (publish) | Q46 | Where esp-seal lives and when it is published - **settled: in-tree for the life of 0.2.0, never published; the contribution becomes the design document** |
 | CAMERA-HW 6.2 (policy) | Q47 | Per-board camera policy: separate build variant and artifact |
 | CAMERA-HW 6.2 (ship) | folded into Q6 | Ship camera in 0.2.0 or slip; refines Q6 to "land it, sequence last, droppable" |
 | CAMERA-HW 6.4 (SeedQR) | Q48 | SeedQR scan-in friction and placement; does NOT reopen Q17 |
@@ -360,5 +406,9 @@ WALLET-API.md's internal decisions D1-D11 are its own and are not re-opened here
   a real wallet library - but no hand-rolled crypto, ever.
 - **The smallest board is the binding constraint.** Anything that must fit, fits in
   16 MB of flash and runs on both verified boards.
-- **GPL-3.0-or-later** for the firmware and the notyas crates; the extracted platform
-  crates are OPEN-QUESTIONS Q8.
+- **GPL-3.0-or-later, everywhere** (Q8, decided by the owner 2026-08-17): the firmware,
+  every notyas crate, the tools, and anything that might otherwise have been extracted.
+  Nothing is published to crates.io. For wallet firmware, copyleft prevents closed forks
+  of code that handles user keys, and the adoption cost on the low-level pieces is
+  accepted deliberately. The one carve-out is font data: IBM Plex and the generated
+  atlases are SIL OFL 1.1, per LICENSE-fonts.
