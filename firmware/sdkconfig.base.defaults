@@ -19,8 +19,14 @@ CONFIG_ESP32P4_REV_MIN_100=y
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
 # --- FreeRTOS / std runtime --------------------------------------------------
-# Rust needs a bigger main task stack than the C default (3.5 KB).
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8000
+# Rust needs a bigger main task stack than the C default (3.5 KB). 8000 proved
+# MARGINAL: the boot self-test (PBKDF2-HMAC-SHA512 x 2048) runs deep on the
+# main stack and, with interrupt frames landing on top, about half of all
+# Elecrow-5 boots died with a hardware stack-protection fault (Guru
+# Meditation, task "main", mid-selftest) before ever reaching the display.
+# 20 KB buys the same code an ample margin; internal SRAM has hundreds of KB
+# free and the cost is invisible next to the 32 MB PSRAM heap.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=20480
 # 1 ms tick so std::thread::sleep has 1 ms granularity (default is 100 Hz).
 CONFIG_FREERTOS_HZ=1000
 
