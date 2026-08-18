@@ -37,3 +37,6 @@ zeroize = { version = "1.9.0", default-features = false, features = ["alloc", "d
 # way cargo lets a test enable a feature of the package under test without that feature
 # leaking into a firmware build through unification.
 notyas-wallet = { path = ".", features = ["testkit"] }
+# The known-answer vectors digest whole flash images, so the test harness needs a hash.
+# Not a dependency of the crate itself.
+sha2 = { version = "0.11.0", default-features = false }
