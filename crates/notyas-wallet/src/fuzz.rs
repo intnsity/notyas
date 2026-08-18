@@ -48,7 +48,7 @@ use alloc::vec::Vec;
 
 use crate::config::{Config, KdfParams, Layout, Occupancy, Policy, PolicyRequest};
 use crate::hal::{Geometry, KeyProvenance};
-use crate::probe::{DerivationLog, SealRecord};
+use crate::probe::{observed_seals, DerivationLog, SealRecord};
 use crate::session::Session;
 use crate::sim::{CutMode, SimFlash, SimImage, SoftMac, VecScratch};
 use crate::slot::{Identity, Side, SlotClass, SlotId};
@@ -164,6 +164,16 @@ pub enum Op {
     SealNew,
     /// SEAL over an existing record, which is the A/B swap plus the stale-side erase.
     SealOverwrite,
+    /// Three seals of ONE slot inside a single cut window.
+    ///
+    /// This is the case that makes I6 sharp. A nonce is a function of the slot, the SIDE
+    /// and the sequence number, so two seals of one slot land on opposite sides and differ
+    /// on the side alone even if the sequence were repeated. It takes a third write,
+    /// returning to the side the first one used, before a broken reserve-ahead shows up as
+    /// a repeated pair. Without this operation the whole I6 check passes on a store whose
+    /// sequence cursor never advances, which was verified by mutation and is exactly the
+    /// kind of hole a fuzzer is supposed to not have.
+    SealRepeated,
     /// CLEAR, which under AlwaysFilled is a filler write rather than an erase.
     Clear,
     /// A successful unlock: attempt cell, four opens, catch-up.
@@ -201,6 +211,7 @@ impl Op {
         Op::Reformat,
         Op::SealNew,
         Op::SealOverwrite,
+        Op::SealRepeated,
         Op::Clear,
         Op::UnlockGood,
         Op::UnlockBad,
@@ -235,6 +246,20 @@ impl Op {
                 | Op::Rotation
                 | Op::RotationOnFailure
         )
+    }
+
+    /// Values a slot may legitimately hold part-way through a COMPOUND operation.
+    ///
+    /// I2's rule is "the pre-operation record or the post-operation record, never a
+    /// mixture". For an operation that writes one slot more than once, the intermediate
+    /// values are neither, and they are perfectly correct: the cut simply landed between
+    /// two writes. Listing them here keeps I2 sharp - it still rejects a mixture or a
+    /// truncation - without turning a multi-write operation into a false positive.
+    fn intermediates(self) -> Vec<Option<Vec<u8>>> {
+        match self {
+            Op::SealRepeated => vec![Some(vec![0u8; 48]), Some(vec![1u8; 48])],
+            _ => Vec::new(),
+        }
     }
 
     /// Is this operation allowed to reduce the failure count? Only a successful unlock and
@@ -304,6 +329,38 @@ impl Report {
         self.findings.is_empty()
     }
 
+    /// Findings collapsed to one line per (operation, invariant) pair with a count and the
+    /// lowest step boundary that reproduces it.
+    ///
+    /// A single defect usually fires for hundreds of consecutive boundaries, and a report
+    /// that printed all of them would bury the second defect under the first.
+    pub fn grouped(&self) -> Vec<String> {
+        let mut keys: Vec<(String, &'static str)> = Vec::new();
+        for f in &self.findings {
+            let k = (f.op.clone(), f.invariant);
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
+        keys.into_iter()
+            .map(|(op, inv)| {
+                let hits: Vec<&Finding> = self
+                    .findings
+                    .iter()
+                    .filter(|f| f.op == op && f.invariant == inv)
+                    .collect();
+                let first = hits.first();
+                format!(
+                    "{op} {inv}: {} case(s), first at cut_after={} mode={:?}: {}",
+                    hits.len(),
+                    first.map_or(0, |f| f.cut_after),
+                    first.map_or(CutMode::Clean, |f| f.mode),
+                    first.map_or(String::new(), |f| f.detail.clone())
+                )
+            })
+            .collect()
+    }
+
     /// A one-line summary for a test's output.
     pub fn summary(&self) -> String {
         format!(
@@ -352,6 +409,22 @@ fn run_one(cfg: &Config, op: Op, modes: &[CutMode], report: &mut Report) {
     };
     let baseline: Vec<SealRecord> = baseline_log.seals();
     drop(baseline_log);
+    // The setup is a linear timeline too, and it seals more records than any single
+    // operation does. Checking it against itself is not redundant with the per-case check:
+    // a defect that repeats a nonce inside one operation would otherwise sit entirely
+    // inside the baseline, where the per-case comparison never looks.
+    if let Some(dup) = first_duplicate(&[], &baseline) {
+        report.findings.push(Finding {
+            op: op.name(),
+            cut_after: 0,
+            mode: CutMode::Clean,
+            invariant: "I6",
+            detail: format!(
+                "building the pre-state already used a (key, nonce) pair twice: nonce {:02x?}",
+                dup.nonce
+            ),
+        });
+    }
 
     let pre = observe(cfg, &image, &pins);
 
@@ -473,7 +546,7 @@ fn build_pre_state(cfg: &Config, op: Op, pins: &Pins) -> Option<SimImage> {
 
     match op {
         Op::SealNew | Op::Clear | Op::UnlockGood | Op::UnlockBad | Op::Wipe => {}
-        Op::SealOverwrite => {
+        Op::SealOverwrite | Op::SealRepeated => {
             let session = unlock(&mut v, &pins.old, cfg)?;
             v.write(&session, user_slot(cfg, 0)?, b"the record being replaced")
                 .ok()?;
@@ -587,6 +660,7 @@ fn prepare(v: &mut V, cfg: &Config, op: Op, pins: &Pins) -> Option<Session> {
     match op {
         Op::SealNew
         | Op::SealOverwrite
+        | Op::SealRepeated
         | Op::Clear
         | Op::ChangePin { .. }
         | Op::PolicyTighten
@@ -611,6 +685,15 @@ fn execute(v: &mut V, cfg: &Config, op: Op, session: Option<Session>, pins: &Pin
         Op::SealOverwrite => {
             if let (Some(sess), Some(slot)) = (session.as_ref(), user_slot(cfg, 0)) {
                 let _ = v.write(sess, slot, b"the replacement record, longer than before");
+            }
+        }
+        Op::SealRepeated => {
+            if let (Some(sess), Some(slot)) = (session.as_ref(), user_slot(cfg, 0)) {
+                for round in 0u8..3 {
+                    if v.write(sess, slot, &[round; 48]).is_err() {
+                        break;
+                    }
+                }
             }
         }
         Op::Clear => {
@@ -765,7 +848,6 @@ fn observe_image(cfg: &Config, image: &SimImage, pins: &Pins) -> View {
 /// belong to that single canonical mount. Everything after the split point is a probe on a
 /// throwaway clone and legitimately repeats work.
 fn observe_split(cfg: &Config, image: &SimImage, pins: &Pins) -> (View, usize) {
-    let probe = DerivationLog::start();
     let mut view = View {
         state: StoreState::Blank,
         failures: 0,
@@ -783,8 +865,7 @@ fn observe_split(cfg: &Config, image: &SimImage, pins: &Pins) -> (View, usize) {
     // The canonical mount. This is the one that has to be clean, and it is the one whose
     // seals count toward I6.
     let Some(v) = mount(cfg, image) else {
-        drop(probe);
-        return (view, 0);
+        return (view, observed_seals());
     };
     view.mounted = true;
     view.state = v.state();
@@ -794,8 +875,10 @@ fn observe_split(cfg: &Config, image: &SimImage, pins: &Pins) -> (View, usize) {
     view.pin_gen = v.pin_gen(Identity(0));
     view.tamper = v.tamper_flags();
     let settled = unmount(v);
-    let split = probe.len();
-    drop(probe);
+    // Everything after this point is a probe on a throwaway clone. Probes legitimately
+    // re-derive what the canonical mount already derived, so they must not count toward
+    // the no-repeated-nonce check.
+    let split = observed_seals();
 
     // Probes, each on its own copy of the settled image so one probe cannot perturb the
     // next. An unlock costs an attempt, which is exactly why they cannot share.
@@ -960,11 +1043,12 @@ fn check(
     }
 
     // I2: no torn record ever opens, and no slot is ever a mixture.
+    let allowed = op.intermediates();
     if after.old_pin_opens || after.new_pin_opens {
         for (i, content) in after.slots.iter().enumerate() {
             let a = pre.slots.get(i).cloned().flatten();
             let b = post.slots.get(i).cloned().flatten();
-            if *content != a && *content != b {
+            if *content != a && *content != b && !allowed.contains(content) {
                 fail(
                     "I2",
                     format!(

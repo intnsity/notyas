@@ -53,6 +53,22 @@ pub(crate) fn note_seal(key: &[u8; 32], nonce: &[u8; 12]) {
     });
 }
 
+/// How many seals the live log has recorded, or zero if there is no live log.
+///
+/// A free function rather than a method because the caller that needs it - the fuzzer,
+/// marking the boundary between the canonical post-cut timeline and the throwaway probes
+/// that follow - does not own the guard. Starting a nested guard to ask the question would
+/// destroy the outer log, which is a mistake that costs nothing at compile time and
+/// silently turns the whole I6 check into a no-op.
+pub fn observed_seals() -> usize {
+    SEALS.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Vec::len))
+            .unwrap_or(0)
+    })
+}
+
 /// Records every AEAD encryption performed on this thread while it is alive.
 ///
 /// One guard is one simulated device's lifetime. The fuzzer creates it before it builds

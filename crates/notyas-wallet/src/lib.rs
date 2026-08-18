@@ -122,4 +122,4 @@ pub const SEQ_RESERVE: u64 = format::SEQ_RESERVE;
 /// `(key, nonce)` pair is ever used twice. Re-exported for the harness and for embedder
 /// tests; it does not exist without the `testkit` feature.
 #[cfg(feature = "testkit")]
-pub use probe::{DerivationLog, SealRecord};
+pub use probe::{observed_seals, DerivationLog, SealRecord};

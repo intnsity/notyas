@@ -42,6 +42,23 @@ use crate::records::{self, Elected, SlotTable};
 use crate::session::Session;
 use crate::slot::{Identity, Side, SlotClass, SlotId, SlotMap, SlotState};
 
+/// When the losing side of an A/B pair is erased.
+///
+/// For a single-record operation the answer is "immediately after the commit", and that
+/// erase is what closes the window in which the previous ciphertext still exists. For a
+/// BATCH it is not: a PIN change re-seals every record before its commit cell is
+/// programmed, and erasing each old side as it goes would demolish the rollback path one
+/// record at a time. The old PIN has to keep working right up to the commit, and by the
+/// time the canary had been re-sealed there would be nothing left for it to open.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StaleSide {
+    /// Erase as soon as the new side is verified. SEAL's S9.
+    EraseNow,
+    /// Leave it committed and let the operation's own commit point decide which side
+    /// wins. CHANGE-PIN's C6 erases them all once, after C5.
+    DeferToCommit,
+}
+
 /// Shorthand for the error every internal step produces.
 type SErr<F, M> =
     StorageError<<F as Flash>::Error, <M as DeviceMac>::Error>;
@@ -811,7 +828,7 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
             label: fixed_label(label),
             policy,
         };
-        self.write_canary(identity, &canary, &bound, pin_gen)?;
+        self.write_canary(identity, &canary, &bound, pin_gen, StaleSide::EraseNow)?;
         if existing_gen != pin_gen {
             // The generation cell is the commit point when the generation is new: until it
             // lands, the canary just written is not a candidate, mount reports an
@@ -1208,7 +1225,14 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
             )?;
             if as_filler.is_ok() {
                 if identity.0 == 0 {
-                    self.reseal(slot, &filler_root, generation, &[], epoch)?;
+                    self.reseal(
+                        slot,
+                        &filler_root,
+                        generation,
+                        &[],
+                        epoch,
+                        StaleSide::DeferToCommit,
+                    )?;
                 }
                 continue;
             }
@@ -1227,7 +1251,14 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
             };
             let payload = Zeroizing::new(plain.to_vec());
             let new_key = Zeroizing::new(*bound_new.as_bytes());
-            self.reseal(slot, &new_key, generation, payload.as_slice(), epoch)?;
+            self.reseal(
+                slot,
+                &new_key,
+                generation,
+                payload.as_slice(),
+                epoch,
+                StaleSide::DeferToCommit,
+            )?;
         }
 
         // C4. The canary carries the policy witness forward unchanged: a PIN change is not
@@ -1243,7 +1274,13 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
             policy: self.policy,
             ..canary
         };
-        self.write_canary(identity, &canary_new, &bound_new, generation)?;
+        self.write_canary(
+            identity,
+            &canary_new,
+            &bound_new,
+            generation,
+            StaleSide::DeferToCommit,
+        )?;
 
         // C5. THE COMMIT POINT. A value is never in the current set until its own cell is
         // programmed, so everything written above is invisible to mount until this lands.
@@ -1302,7 +1339,7 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
             label: [0u8; 16],
             policy: self.policy,
         };
-        self.write_canary(identity, &canary, &bound, generation)?;
+        self.write_canary(identity, &canary, &bound, generation, StaleSide::DeferToCommit)?;
         {
             let keys = self.keys.as_ref().ok_or(StorageError::WrongState)?;
             let ledger = self.ledger.as_mut().ok_or(StorageError::NotFormatted)?;
@@ -1400,7 +1437,13 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
             policy: next,
             ..canary
         };
-        self.write_canary(identity, &updated, session.bound(), session.pin_gen())?;
+        self.write_canary(
+            identity,
+            &updated,
+            session.bound(),
+            session.pin_gen(),
+            StaleSide::EraseNow,
+        )?;
 
         // Y6, Y7.
         self.refresh()?;
@@ -1644,7 +1687,7 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
                 ..*canary
             };
             let gen = self.pin_gen(identity);
-            self.write_canary(identity, &repaired, bound, gen)?;
+            self.write_canary(identity, &repaired, bound, gen, StaleSide::EraseNow)?;
             self.refresh()?;
             self.cleanup()?;
             return Ok(());
@@ -1763,7 +1806,7 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
         payload: &[u8],
     ) -> Result<(), SErr<F, M>> {
         let epoch = self.wipe_epoch();
-        self.reseal(slot, key_source, pin_gen, payload, epoch)
+        self.reseal(slot, key_source, pin_gen, payload, epoch, StaleSide::EraseNow)
     }
 
     fn reseal(
@@ -1773,6 +1816,7 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
         pin_gen: u32,
         payload: &[u8],
         epoch: u64,
+        stale: StaleSide,
     ) -> Result<(), SErr<F, M>> {
         let cfg = self.cfg;
         let target = self
@@ -1797,9 +1841,11 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
         // cleanup finishes it if a cut lands in the window. That window is the only place
         // an old-PIN ciphertext can survive a completed change, and it is closed
         // unconditionally before any unlock is possible.
-        let stale = target.other();
-        if !records::side_is_erased::<F, M>(&mut self.flash, &cfg, slot, stale)? {
-            records::erase_side::<F, M>(&mut self.flash, &cfg, slot, stale)?;
+        if stale == StaleSide::EraseNow {
+            let loser = target.other();
+            if !records::side_is_erased::<F, M>(&mut self.flash, &cfg, slot, loser)? {
+                records::erase_side::<F, M>(&mut self.flash, &cfg, slot, loser)?;
+            }
         }
         self.table.set(
             slot,
@@ -1818,13 +1864,14 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
         canary: &Canary,
         bound: &Bound,
         pin_gen: u32,
+        stale: StaleSide,
     ) -> Result<(), SErr<F, M>> {
         let cfg = self.cfg;
         let slot = SlotId::new(SlotClass::Canary, identity.0, &cfg.layout)
             .ok_or(StorageError::WrongState)?;
         let body = canary.encode();
         let epoch = self.wipe_epoch();
-        self.reseal(slot, bound.as_bytes(), pin_gen, &body, epoch)
+        self.reseal(slot, bound.as_bytes(), pin_gen, &body, epoch, stale)
     }
 
     fn write_superblock(&mut self, sb: &Superblock) -> Result<(), SErr<F, M>> {
@@ -1876,7 +1923,7 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
         let key = Zeroizing::new(*keys.filler_root);
         let epoch = self.wipe_epoch();
         let pin_gen = self.pin_gen(Identity(0));
-        self.reseal(slot, &key, pin_gen, &[], epoch)
+        self.reseal(slot, &key, pin_gen, &[], epoch, StaleSide::EraseNow)
     }
 
     /// F6: filler into every unoccupied slot, and into every canary slot with no identity.
