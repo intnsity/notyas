@@ -4,8 +4,9 @@
 //! Butter Paper tokens as `Rgb565` constants, plus the masking and strength conventions
 //! the desktop GUI established.
 //!
-//! Token source of truth: `\\172.16.0.9\bear\code\YellowBGs.md` (the house style guide),
-//! which is also what desktop BigDice's `gui/theme.rs` transcribes. The hex values below
+//! Token source of truth: the Butter Paper house style guide (`YellowBGs.md`, kept
+//! outside this repository), which is also what desktop BigDice's `gui/theme.rs`
+//! transcribes - see <https://github.com/intnsity/BigDice>. The hex values below
 //! are the guide's CSS custom properties quantized to RGB565; nothing here invents a
 //! color. Depth is communicated by paper tint (lighter = closer), separation by warm
 //! hairline borders - no shadows on the device, exactly as the guide's elevation rule

@@ -158,8 +158,8 @@ this bench does today that would break a byte-comparison.
 **1. The source tree lives on a UNC share, the target dir is machine-local.
 [live problem]**
 `tools/build.ps1` sets `CARGO_TARGET_DIR` to `C:\nyt-ws` (Waveshare) or
-`C:\nyt-e5` (Elecrow) while the sources sit at
-`\\172.16.0.9\bear\code\btc\notyas`. So a single build mixes two unrelated
+`C:\nyt-e5` (Elecrow) while the sources sit on a UNC network share
+(`\\<host>\<share>\...\notyas`). So a single build mixes two unrelated
 absolute path roots, one of them a host name and a share name. Both reach the
 binary: the source root through `file!()` in panic locations and DWARF, the
 target root through `OUT_DIR` (item 5) and through the ESP-IDF CMake build,

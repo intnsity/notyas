@@ -1,6 +1,6 @@
 # Research: desktop BigDice codebase survey (2026-08-17)
 
-Agent-produced survey of \\172.16.0.9\bear\code\btc\dice_generator (crate `bigdice`
+Agent-produced survey of the desktop BigDice working tree (crate `bigdice`
 v0.3.0, GPL-3.0-or-later, github.com/intnsity/BigDice). This is the porting map for
 crates/notyas-core.
 

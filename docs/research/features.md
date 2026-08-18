@@ -99,7 +99,8 @@ WONT (v0.1): camera anything; USB data; seed storage/PIN; secure-element claims;
 altcoins; BBQr; legacy UR.
 
 NOTE (orchestrator): PSBT items moved to 0.2.x for this project - 0.1.0 scope is the
-BigDice feature set + verification, per plan.md ("implementation of BigDice" whose only
+BigDice feature set + verification, per the original project brief ("implementation of
+BigDice" whose only
 apps beyond it are device-security verification). The SD/QR format decisions above are
 recorded so 0.1.0 designs don't foreclose them.
 

@@ -3,10 +3,11 @@
 # Run this from Windows (where the GPG key is) after all code fixes are committed.
 #
 # Prerequisites:
-#   - net use B: \\172.16.0.9\bear (or the share is otherwise accessible)
+#   - the working tree is reachable (if it lives on a network share, mount it first)
 #   - GitHub credentials configured (gh auth login or git credential helper)
 #
-cd /mnt/bear/code/btc/notyas || cd 'B:\code\btc\notyas'
+set -euo pipefail
+cd "$(dirname "$0")/.."
 
 # Tag the release
 git tag -s v0.1.0 -m "notyas 0.1.0

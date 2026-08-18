@@ -1,0 +1,107 @@
+# notyas CI - host-only.
+#
+# There is deliberately no firmware build here. Building the ESP32-P4 image needs
+# ESP-IDF v5.5.4, a pinned nightly, -Zbuild-std and a multi-GB toolchain download;
+# reproducing that in CI would be slow, fragile, and would still not prove anything
+# the hardware bring-up log does not already record. What CI *can* prove cheaply is
+# that the portable half of the tree is correct: the crypto core and the UI pass
+# their vector suites, both stay lint-clean, both still compile for a bare-metal
+# no_std target, and no banned crate has crept into the dependency graph.
+#
+# Toolchain: the runner's preinstalled stable Rust. The crates declare
+# rust-version = 1.85; the firmware's nightly pin (firmware/README.md) is a
+# device-build concern and does not apply to anything here.
+
+name: CI
+
+on:
+  # Naming `branches` also means a tag push does not re-run what the branch push
+  # already ran: the release tag points at a commit CI has seen.
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the in-flight run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test + clippy (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          rustc --version
+          cargo --version
+          cargo clippy --version
+
+      # --locked: the committed Cargo.lock is the graph that was audited and
+      # hardware-verified. A CI run that silently resolves a different one is
+      # testing something other than the release.
+      - name: Test notyas-core and notyas-ui
+        run: cargo test --locked -p notyas-core -p notyas-ui
+
+      # `-- -D warnings` rather than a global RUSTFLAGS: a warning in a third-party
+      # dependency is not ours to fix, and making one fail the build would leave CI
+      # hostage to any upstream release.
+      - name: Clippy notyas-core
+        run: cargo clippy --locked -p notyas-core --all-targets --all-features -- -D warnings
+
+      - name: Clippy notyas-ui
+        run: cargo clippy --locked -p notyas-ui --all-targets --all-features -- -D warnings
+
+  no_std:
+    name: bare-metal no_std check (riscv32imac)
+    runs-on: ubuntu-latest
+    # secp256k1-sys cross-compiles a C library, so this job needs a RISC-V C
+    # toolchain. Everything else in the graph is pure Rust.
+    env:
+      CC_riscv32imac_unknown_none_elf: riscv64-unknown-elf-gcc
+      AR_riscv32imac_unknown_none_elf: riscv64-unknown-elf-ar
+      CFLAGS_riscv32imac_unknown_none_elf: -march=rv32imac_zicsr -mabi=ilp32
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install RISC-V bare-metal C toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-riscv64-unknown-elf
+          riscv64-unknown-elf-gcc --version
+
+      - name: Add target
+        run: rustup target add riscv32imac-unknown-none-elf
+
+      # The proof behind SECURITY.md invariant 3 and the crate-level no_std claim:
+      # the crypto core builds for a target that has no std at all. The `qr`
+      # feature is off because qrcode 0.14 imports std unconditionally - the
+      # firmware enables it on the std side, notyas-ui never does.
+      - name: Check notyas-core (no_std, no default features)
+        run: cargo check --locked -p notyas-core --no-default-features --target riscv32imac-unknown-none-elf
+
+      # notyas-ui pins notyas-core with default-features = false, so this also
+      # proves the qr/std feature cannot leak into the UI graph.
+      - name: Check notyas-ui (no_std)
+        run: cargo check --locked -p notyas-ui --target riscv32imac-unknown-none-elf
+
+  invariants:
+    name: build-graph invariants (SECURITY.md 1 and 3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No RNG source, no network stack, no closed crypto blob anywhere in the
+      # dependency graph - and secp256k1 present, so the derivation path cannot
+      # have been stubbed out. tools/build-graph-check.sh is the executable form
+      # of those claims.
+      - name: Run build-graph check
+        run: bash tools/build-graph-check.sh

@@ -1,7 +1,8 @@
 //! Butter Paper design tokens, RGB565-quantized.
 //!
-//! Source of truth: \\172.16.0.9\bear\code\YellowBGs.md (the house style
-//! guide). Token names match the CSS custom properties there. RGB565 loses
+//! Source of truth: the Butter Paper house style guide (`YellowBGs.md`, kept
+//! outside this repository; desktop BigDice's `gui/theme.rs` transcribes the
+//! same tokens). Token names match its CSS custom properties. RGB565 loses
 //! the low bits (5/6/5), which is invisible at these pastel deltas; the
 //! constants keep the 24-bit reference value in a comment for auditing.
 

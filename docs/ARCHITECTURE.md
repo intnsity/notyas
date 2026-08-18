@@ -61,7 +61,7 @@ notyas/
 
 ## Porting rules for notyas-core
 
-The desktop crate (\\172.16.0.9\bear\code\btc\dice_generator) is the normative source;
+The desktop crate (https://github.com/intnsity/BigDice) is the normative source;
 its docs/SPEC.md governs. The port changes exactly:
 
 1. `std::` imports -> `core::`/`alloc::`.
@@ -88,7 +88,8 @@ Hand-rolled screens on `embedded-graphics`, drawing into the esp_lcd DSI framebu
 heavier audit surface) - a wallet UI is a dozen static screens and a keypad; a small
 bespoke renderer is simpler and fully reviewable.
 
-Theme: Butter Paper (\\172.16.0.9\bear\code\YellowBGs.md), same tokens as desktop
+Theme: Butter Paper (the house style guide `YellowBGs.md`, kept outside this
+repository), same tokens as desktop
 BigDice's gui/theme.rs - warm paper ramp, warm ink, cobalt accent, depth by tint. Fonts:
 IBM Plex Sans + IBM Plex Mono (OFL 1.1), pre-rasterized to bitmap glyph atlases at build
 time by a host-side tool (no runtime font parsing). Licensing: OFL permits embedding and

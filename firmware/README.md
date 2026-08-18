@@ -92,16 +92,17 @@ git and python must be on PATH; esp-idf-sys downloads and manages ESP-IDF
 v5.5.4 plus cmake/ninja/toolchains itself on first build (multi-GB, one-time,
 into C:\Users\<user>\.espressif because ESP_IDF_TOOLS_INSTALL_DIR=global).
 
-Then, from anywhere:
+Then, from the repository root (the scripts resolve every path relative to
+themselves, so an absolute path to them works from any working directory):
 
 ```powershell
 # Waveshare 4B (COM3):
-\\172.16.0.9\bear\code\btc\notyas\tools\build.ps1 -Board waveshare-4b
-\\172.16.0.9\bear\code\btc\notyas\tools\flash.ps1 -Board waveshare-4b -Monitor
+tools\build.ps1 -Board waveshare-4b
+tools\flash.ps1 -Board waveshare-4b -Monitor
 
 # Elecrow CrowPanel Advanced 5inch (COM6):
-\\172.16.0.9\bear\code\btc\notyas\tools\build.ps1 -Board elecrow-5
-\\172.16.0.9\bear\code\btc\notyas\tools\flash.ps1 -Board elecrow-5 -Monitor
+tools\build.ps1 -Board elecrow-5
+tools\flash.ps1 -Board elecrow-5 -Monitor
 ```
 
 `-Board` drives the cargo feature, the sdkconfig pair, the per-board

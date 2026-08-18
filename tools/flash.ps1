@@ -44,7 +44,8 @@ if (-not $Port) {
 $firmwareDir = Join-Path (Split-Path -Parent $PSScriptRoot) "firmware"
 if (-not (Test-Path (Join-Path $firmwareDir "Cargo.toml"))) {
     Write-Error ("Firmware directory not reachable: $firmwareDir`n" +
-        "The NAS share (\\172.16.0.9\bear) may be offline. Fix the share, then retry.")
+        "If the repository lives on a network share, that share may be offline. " +
+        "Restore it, then retry.")
     exit 1
 }
 
