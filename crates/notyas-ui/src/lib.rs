@@ -58,7 +58,10 @@ use embedded_graphics::primitives::Rectangle;
 use zeroize::{Zeroize, Zeroizing};
 
 use layout::{Metrics, Rect};
+// `bitcoin` through the core's re-export: the UI names the pipeline's own exact pin
+// (it only needs `Network::Bitcoin`), never a second dependency that could drift.
 use notyas_core::bip39::{self, Mnemonic, MnemonicMode, WordCount, MIN_SECURE_BITS};
+use notyas_core::bitcoin;
 use notyas_core::derive::{ChildIndex, Scheme};
 use notyas_core::entropy::{parse_dice, DiceEntropy};
 use notyas_core::report::{self, Parameters, Report};

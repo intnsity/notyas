@@ -24,9 +24,8 @@ embedded-graphics = "0.8"
 notyas-core = { path = "../notyas-core", default-features = false }
 # Committed notyas Sans / notyas Mono glyph atlases and the text renderer.
 notyas-fonts = { path = "../notyas-fonts" }
-# Named only for `Network::Bitcoin` in the pipeline parameters. Same exact pin and
-# feature set as notyas-core, so the dependency graph gains nothing new.
-bitcoin = { version = "=0.32.102", default-features = false }
+# `bitcoin` (needed only for `Network::Bitcoin`) comes through notyas-core's re-export,
+# so this crate can never pin a different version or feature set than the pipeline runs.
 # Same discipline as notyas-core: every buffer that held rolls, words or a passphrase is
 # wiped when its screen is left, not merely dropped.
 zeroize = "1"
