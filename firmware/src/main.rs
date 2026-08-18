@@ -11,15 +11,16 @@
 //!    screen, not a silent brick), then the device refuses to operate.
 //! 4. The notyas-ui screens, fed with a VerifyInfo built entirely from
 //!    values read at boot (src/verify.rs).
-//! 5. Main loop: GT911 poll -> Down/Move/Up synthesis -> Ui::touch -> and,
-//!    only when input arrived, full-screen Ui::draw into the back buffer ->
-//!    whole-frame publish. Repaints are event-driven: the Ui's pixels are a
-//!    pure function of its state, and this loop is the only thing that
-//!    mutates that state (touch events; set_verify_info before the first
-//!    frame), so "an event was fed" is a complete change signal - an idle
-//!    device performs ZERO repaints (provable from the heartbeat's repaint
-//!    counter) and the scan-out buffer never shows a partial frame (see
-//!    display.rs). The full draw+publish time is measured and logged once.
+//! 5. Main loop: Ui::tick (deferred work) -> GT911 poll -> Down/Move/Up
+//!    synthesis -> Ui::touch -> and, only when input arrived, full-screen
+//!    Ui::draw into the back buffer -> whole-frame publish. Repaints are
+//!    event-driven: the Ui's pixels are a pure function of its state, and
+//!    this loop is the only thing that mutates that state (touch events,
+//!    Ui::tick; set_verify_info before the first frame), so "an event was
+//!    fed or tick did work" is a complete change signal - an idle device
+//!    performs ZERO repaints (provable from the heartbeat's repaint counter)
+//!    and the scan-out buffer never shows a partial frame (see display.rs).
+//!    The full draw+publish time is measured and logged once.
 //!
 //! Everything hardware-specific lives in src/board/<name>.rs behind the flat
 //! surface re-exported by `board`; this file is board-agnostic.
@@ -158,12 +159,29 @@ fn main() {
     // provable form of "static screens repaint zero times".
     let mut repaints: u64 = 0;
     loop {
+        // Deferred work the UI parked for us, at the TOP of the iteration and
+        // therefore strictly AFTER the frame that entered the parked state was
+        // published. That ordering is the whole point: `Ui::touch` answers a
+        // commit (keyboard Done) by switching to the Deriving interstitial and
+        // returning immediately, so this loop paints "Deriving" first and only
+        // then spends the ~830 ms of PBKDF2 + per-scheme derivation here.
+        // Running tick in the same iteration as the touch would paint the
+        // result only, leaving the panel frozen on the passphrase screen for
+        // the whole computation - the m4 glitch this ordering fixes.
+        let t_tick = Instant::now();
+        let mut dirty = ui.tick();
+        if dirty {
+            // Duration only - no seed, phrase or passphrase material. Worth a
+            // line: this is the one operation slow enough for a user to call
+            // the device hung, so a regression here is a user-visible freeze.
+            log::info!("derivation: finished in {} ms", t_tick.elapsed().as_millis());
+        }
+
         let point = touch.poll();
         // Event-driven dirty flag (see the module docs): any synthesized
         // event marks the frame dirty, except a Move that goes nowhere (a
         // resting finger re-reports the same point every poll - repainting
         // an identical frame 40x/s would be flicker-free but pointless).
-        let mut dirty = false;
         let request = match (last_point, point) {
             (None, Some((x, y))) => {
                 log::info!("touch down x={x} y={y}");
@@ -171,7 +189,7 @@ fn main() {
                 ui.touch(TouchEvent::Down { x: x as i32, y: y as i32 })
             }
             (Some(prev), Some((x, y))) => {
-                dirty = prev != (x, y);
+                dirty |= prev != (x, y);
                 ui.touch(TouchEvent::Move { x: x as i32, y: y as i32 })
             }
             (Some((x, y)), None) => {
