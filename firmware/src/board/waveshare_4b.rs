@@ -20,7 +20,9 @@ pub const UNTESTED: bool = false;
 pub const RADIO_KILL_GPIO: i32 = 54;
 pub const RADIO_KILL_DOC: &str = "GPIO54 -> ESP32-C6 CHIP_PU (EN), driven low first thing in \
      app_main and never released: the only radio is hardware-held in reset for the whole power \
-     cycle. No WiFi stack in the build; C6 SDIO host pins (GPIO14-19) never configured.";
+     cycle. C6 EN carries NO pullup (1 uF to GND only, schematic-verified), so the radio is \
+     also held down from power-on - no boot window exists. No WiFi stack in the build; C6 SDIO \
+     host pins (GPIO14-19) never configured.";
 
 // Display pins (board schematic, HARDWARE.md GPIO map).
 const GPIO_LCD_RESET: i32 = 27;
@@ -47,7 +49,13 @@ const GPIO_TOUCH_RESET: i32 = 23;
 /// the build; layer 3: the C6 SDIO GPIOs are never configured as SDIO host).
 pub fn radio_lockdown() {
     claim_output(RADIO_KILL_GPIO, 0);
-    log::info!("C6 radio held in reset (GPIO54 low)");
+    // No power-on window on this board: C6 EN has no pullup (1 uF to GND only), so the
+    // radio was already held down between power-on and this line - the drive here makes
+    // the hold active instead of relying on the pin's default state. See
+    // docs/research/waveshare-family.md and BOARDS.md "The airgap invariant, per board".
+    log::info!(
+        "C6 radio held in reset (GPIO54 low; no EN pullup - C6 held down from power-on)"
+    );
 }
 
 /// Full display pipeline bring-up. The backlight stays OFF (enable pin low)

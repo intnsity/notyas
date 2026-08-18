@@ -224,10 +224,14 @@ guarantee on the Verify screen.
 - Kill: **GPIO54 -> C6 CHIP_PU (EN)**, driven low first thing in app_main, never
   released. Hardware-held reset; no esp_hosted/esp_wifi_remote in the build; SDIO
   host never configured on GPIO14-19. (SECURITY.md invariant 1, unchanged.)
-- Power-on window: TODO-verify-schematic - whether C6 EN carries a pullup (i.e.
-  whether the C6 boots during the interval between power-on and app_main). The
-  schematic shows R34 0R from GPIO54 but the default EN level before the P4 drives it
-  is not established in our notes. Document the answer in RADIO_KILL_DOC.
+- **No power-on window (schematic-verified 2026-08-17):** the 4B schematic's C6 sheet
+  shows CHIP_PU carrying only a 1 uF cap (C10) to GND - NO pullup; the nearby 10K
+  (R11) is on C6 IO2, not EN, and the ESP32-C6 has no internal EN pullup. The radio is
+  therefore held down from power-on and could only ever run if the P4 drove GPIO54
+  high, which this firmware never does. Strictly better than the Elecrow board's
+  verified power-on window. Source: docs/research/waveshare-family.md (the no-pullup
+  EN circuit is common to every Waveshare P4 board carrying a C6 module).
+  RADIO_KILL_DOC states it; the boot log says "held down from power-on".
 
 ### board-elecrow-5
 
@@ -325,10 +329,12 @@ Release packaging (tools, later): build both boards, emit
    then verified live: 800x480 RGB timings drive the panel and GT911 reports at
    the expected wiring. (The 7/9/10.1 turned out NOT to share the electronics -
    see the correction at the top and research doc section 7.)
-2. **OPEN - TODO-verify-schematic: Waveshare C6 EN default state** (pullup or
-   floating) - determines whether the Waveshare board has the same power-on radio
-   window the Elecrow board verifiably has. Re-read the 4B schematic around
-   U1 EN / R34. Until resolved, assume the same window exists there.
+2. **RESOLVED (2026-08-17) - Waveshare C6 EN has NO pullup: radio off from
+   power-on.** The 4B schematic C6 sheet, re-read for the family survey
+   (docs/research/waveshare-family.md), shows CHIP_PU with only C10 1 uF to GND;
+   the 10K (R11) is on C6 IO2. No power-on window exists on this board - the
+   Elecrow-style window is a bare-C6FH8-chip design trait (Waveshare 3.5 /
+   WIFI6-DEV-KIT), not a 4B one. See "The airgap invariant, per board".
 3. **RESOLVED - Elecrow GT911 address.** The factory sequence is used: the
    esp_lcd_touch_gt911 driver owns RST (GPIO36) and INT (GPIO42) and straps INT
    low during the reset pulse, making the address deterministically 0x5D

@@ -103,7 +103,10 @@ https://github.com/Elecrow-RD/-CrowPanel-Advanced-5inch-ESP32-P4-HMI-AI-Display-
   control line, and it is exactly what esp-hosted uses
   (`CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=20`, 4-bit, 40 MHz, slot 1). Note:
   espboards.dev claims "reset IO32" - that is wrong (IO32 is the wireless-socket RST);
-  schematic and sdkconfig agree on GPIO20.
+  schematic and sdkconfig agree on GPIO20. Contrast (resolved 2026-08-17): the
+  Waveshare P4 boards with a C6 *module* have NO pullup on C6 EN (1 uF to GND only),
+  so they carry no power-on window at all - this board's C6-defaults-ON behavior is
+  the weaker of the two designs. See docs/research/waveshare-family.md.
 - C6 UART0 is broken out only to test pads (TXD0/RXD0/IO9-boot pads P25/P21/P36) -
   reflashing the C6 directly requires pad soldering; the supported path is OTA from
   the P4 (`host_performs_slave_ota.zip`, upgrade guide PDFs in `example/`).
