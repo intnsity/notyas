@@ -37,6 +37,11 @@ BANNED_ALL="$BANNED_RNG $BANNED_NET"
 # Their Cargo.lock entries are expected; we do not flag them.
 BUILD_DEP_EXEMPT="embuild tempfile getrandom"
 
+# The crates that link into the device image and are no_std by contract. Their
+# dependency SUBTREES admit no exemption at all - see the strict section at the
+# bottom of this script for why the rule lives there rather than here.
+STRICT_PACKAGES="notyas-core notyas-ui notyas-fonts"
+
 # Find all Cargo.lock files (workspace + any stragglers).
 LOCKS=$(find . -name Cargo.lock -not -path './.git/*' -not -path '*/target/*')
 
@@ -47,31 +52,29 @@ fi
 
 VIOLATIONS=0
 
-# The no_std crates (notyas-core, notyas-ui) have no build-deps: ANY banned
-# crate in their lockfiles is a real violation. The firmware lockfile contains
-# build-time deps from esp-idf-sys/embuild that run on the host only - those
-# are exempt (getrandom via tempfile via embuild, never in the device image).
+# Lockfile-wide rules. A lockfile covers the WHOLE resolution, host build tools
+# included, so it cannot on its own distinguish "in the device image" from "runs
+# on the maintainer's machine during a build": networking and closed-crypto
+# crates are banned outright, and RNG crates are banned unless the only thing
+# pulling them is one of the host-side build tools. The per-crate strict rules,
+# which admit no exemption, are at the bottom of this script.
+#
+# (Until 0.1.0 this loop had a second arm that applied the strict rules to
+# crates/notyas-*/Cargo.lock. The workspace unification - commit dd374cb - left
+# exactly one lockfile at the root, so that arm's path test stopped matching
+# anything and the strict rules silently stopped running. They were rewritten
+# against the resolved dependency subtrees instead, where there is no path to go
+# stale; see the strict section below.)
 for lock in $LOCKS; do
-    # Strict check for no_std crate lockfiles.
-    if echo "$lock" | grep -q 'notyas-core\|notyas-ui\|notyas-fonts'; then
-        for crate in $BANNED_ALL; do
-            if grep -q "^name = \"${crate}\"$" "$lock"; then
-                echo "VIOLATION: banned crate '${crate}' found in ${lock} (no_std crate - no exemptions)"
-                VIOLATIONS=$((VIOLATIONS + 1))
-            fi
-        done
-    else
-        # Firmware lockfile: exempt build-time deps (embuild -> tempfile -> getrandom).
-        # Check for networking/RING crates (these would be in the device image).
         for crate in $BANNED_NET; do
             if grep -q "^name = \"${crate}\"$" "$lock"; then
                 echo "VIOLATION: banned crate '${crate}' found in ${lock}"
                 VIOLATIONS=$((VIOLATIONS + 1))
             fi
         done
-        # RNG crates in firmware: check if getrandom appears as a dep of anything
-        # OTHER than tempfile/embuild (which are build-time only). We approximate
-        # this by checking if any non-exempt package depends on it.
+        # RNG crates: flag them unless the only packages depending on them are
+        # the host-side build tools (embuild -> tempfile -> getrandom, which
+        # never reaches the device image).
         #
         # Implemented in awk, not python: this check must run identically on a CI
         # runner, a maintainer's Windows shell and a minimal container. A silently
@@ -105,8 +108,42 @@ for lock in $LOCKS; do
                 fi
             fi
         done
-    fi
 done
+
+# --- strict: the crates that link into the device image ----------------------
+#
+# notyas-core, notyas-ui and notyas-fonts are no_std by contract and carry no
+# build dependencies, so nothing in their subtrees has a host-only excuse: ANY
+# banned crate anywhere under them is a violation, full stop. The subtree is
+# read from cargo rather than from the lockfile because the lockfile is one flat
+# resolution of the whole workspace - it cannot tell which package pulled what,
+# which is precisely how a `rand` reaching the crypto core would hide behind a
+# host tool's exemption above.
+#
+# The default feature set is used deliberately: it is the set the firmware links
+# (notyas-core's `qr`, for instance), so it is the set the invariant is about.
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "VIOLATION: cargo not found - the per-crate strict check cannot run, and a"
+    echo "           security gate that skips silently is worse than no gate at all"
+    VIOLATIONS=$((VIOLATIONS + 1))
+else
+    for pkg in $STRICT_PACKAGES; do
+        if ! TREE=$(cargo tree --locked --package "$pkg" --edges normal --prefix none 2>&1); then
+            echo "VIOLATION: cannot resolve ${pkg}'s dependency tree:"
+            echo "$TREE" | sed 's/^/           /'
+            VIOLATIONS=$((VIOLATIONS + 1))
+            continue
+        fi
+        for crate in $BANNED_ALL; do
+            if printf '%s\n' "$TREE" | grep -q "^${crate} v"; then
+                echo "VIOLATION: banned crate '${crate}' in ${pkg}'s dependency tree"
+                echo "           (no_std crate that links into the device image - no exemptions)"
+                printf '%s\n' "$TREE" | grep -n "^${crate} v" | sed 's/^/           /'
+                VIOLATIONS=$((VIOLATIONS + 1))
+            fi
+        done
+    done
+fi
 
 # Also check that secp256k1 IS present (invariant 4: equivalence requires the
 # same crypto as desktop BigDice). This is a positive check - its absence would
