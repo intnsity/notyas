@@ -61,9 +61,9 @@ if (-not (Test-Path $elf)) {
     exit 1
 }
 
-# Take the newest bootloader/partition-table under the esp-idf-sys out dirs.
-# Do NOT use the convenience copies at <profile>\build\bootloader.bin - embuild
-# does not always refresh them after a sdkconfig change, and flashing a stale
+# Take the newest bootloader under the esp-idf-sys out dirs.
+# Do NOT use the convenience copy at <profile>\build\bootloader.bin - embuild
+# does not always refresh it after a sdkconfig change, and flashing a stale
 # (wrong-revision-family) bootloader bricks the boot with an illegal
 # instruction at its entry point. The per-board target dir guarantees the
 # newest one here was built for THIS board's sdkconfig.
@@ -71,27 +71,50 @@ $buildDir = Join-Path $outDir "build"
 $bootloader = Get-ChildItem -Path $buildDir -Recurse -Filter "bootloader.bin" |
     Where-Object { $_.FullName -match "esp-idf-sys" } |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
-$partTable = Get-ChildItem -Path $buildDir -Recurse -Filter "partition-table.bin" |
-    Where-Object { $_.FullName -match "esp-idf-sys" } |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $bootloader -or -not $partTable) {
-    Write-Error "bootloader.bin / partition-table.bin not found under $buildDir - rebuild first."
+if (-not $bootloader) {
+    Write-Error "bootloader.bin not found under $buildDir - rebuild first."
     exit 1
+}
+
+# The partition table comes from the repo CSV, not the IDF build: espflash
+# consumes the IDF CSV format directly, and the flashed table is then pinned
+# in-repo and identical for every board (BOARDS.md "Flash size and partition
+# table"; a single 4 MB factory app, nothing else).
+$partTable = Join-Path $firmwareDir "partitions.csv"
+if (-not (Test-Path $partTable)) {
+    Write-Error "Partition table not found: $partTable"
+    exit 1
+}
+
+# espflash `flash` uses --partition-table only to lay out and validate the app
+# image; it does NOT rewrite the table region on the device (verified by flash
+# readback: 0x8000 kept its stale table after a successful flash). Write the
+# table explicitly first, then flash the app.
+# espflash logs to stderr; under EAP=Stop a stream-redirecting caller would
+# turn that into a terminating NativeCommandError. Judge by exit code.
+$ErrorActionPreference = "Continue"
+$ptBin = Join-Path $env:TEMP "notyas-ptable.bin"
+espflash partition-table --to-binary -o $ptBin $partTable
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "espflash partition-table (CSV -> bin) failed with exit code $LASTEXITCODE"
+    exit $LASTEXITCODE
+}
+espflash write-bin --port $Port 0x8000 $ptBin
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "espflash write-bin (partition table at 0x8000) failed with exit code $LASTEXITCODE"
+    exit $LASTEXITCODE
 }
 
 $flashArgs = @(
     "flash", $elf,
     "--port", $Port, "--baud", "921600",
     "--bootloader", $bootloader.FullName,
-    "--partition-table", $partTable.FullName,
+    "--partition-table", $partTable,
     "--flash-size", $b.FlashSize
 )
 if ($Monitor) { $flashArgs += "--monitor" }
 
 Write-Host "espflash $($flashArgs -join ' ')"
-# espflash logs to stderr; under EAP=Stop a stream-redirecting caller would
-# turn that into a terminating NativeCommandError. Judge by exit code.
-$ErrorActionPreference = "Continue"
 espflash @flashArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Error "espflash failed with exit code $LASTEXITCODE"

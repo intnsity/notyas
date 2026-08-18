@@ -1,0 +1,13 @@
+# notyas shared partition table - BOTH boards flash this exact table
+# (BOARDS.md "Flash size and partition table": one layout, sized within the
+# smallest board's 16 MB, identical app offset everywhere so the Verify
+# screen's running-partition SHA256 procedure is board-independent).
+#
+# Stateless device: a single 4 MB factory app partition and NOTHING else -
+# no NVS, no otadata, no phy_init, no data partitions of any kind
+# (SECURITY.md invariant 2: nothing is ever written to flash at runtime).
+# tools/flash.ps1 hands this CSV to espflash directly, so the flashed table
+# is repo-pinned, not an IDF build artifact.
+#
+# Name,  Type, SubType, Offset,  Size
+factory, app,  factory, 0x10000, 4M
