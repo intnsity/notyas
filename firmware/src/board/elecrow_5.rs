@@ -46,6 +46,8 @@ const PIN_DATA: [i32; 16] = [8, 7, 6, 5, 4, 14, 13, 12, 11, 10, 9, 19, 18, 17, 1
 // HSYNC pw 4 / HBP 8 / HFP 8, VSYNC pw 4 / VBP 16 / VFP 16, DE mode,
 // pclk_active_neg + pclk_idle_high. (The Arduino lessons use 18 MHz; the
 // factory IDF value is tried first per BOARDS.md TODO 4.)
+// HBP reduced from 8 to 5: the factory value shifts the visible area a few
+// pixels right, clipping the right edge of the UI on this panel.
 const PCLK_HZ: u32 = 25_000_000;
 
 // Touch + STC8 share I2C1 (factory bsp_i2c Kconfig: SDA 45 / SCL 46, 400 kHz;
@@ -119,7 +121,7 @@ fn try_display_init() -> Result<Display, DisplayError> {
             h_res: DISPLAY_WIDTH,
             v_res: DISPLAY_HEIGHT,
             hsync_pulse_width: 4,
-            hsync_back_porch: 8,
+            hsync_back_porch: 5,
             hsync_front_porch: 8,
             vsync_pulse_width: 4,
             vsync_back_porch: 16,

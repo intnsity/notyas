@@ -766,17 +766,19 @@ fn keyboard(area: Rect, page: Page) -> Vec<Key> {
         }
     }
 
-    // Control row: [page A][page B][space][backspace][done], weighted 3:3:7:3:4.
+    // Control row: [page A][page B][space][backspace][done], weighted 2:2:6:4:4.
+    // Backspace gets a larger share (4/18 vs the old 3/20) so the correction key is
+    // an easy target; "Bksp" labels it unambiguously (the font atlas has no ⌫ glyph).
     let y = top + 3 * (row_h + rg);
     let unit = area.w - 4 * kg;
-    let widths = [unit * 3 / 20, unit * 3 / 20, unit * 7 / 20, unit * 3 / 20, 0];
+    let widths = [unit * 2 / 18, unit * 2 / 18, unit * 6 / 18, unit * 4 / 18, 0];
     let (a, b): ((RegionId, &str), (RegionId, &str)) = match page {
         Page::Lower | Page::Upper => ((RegionId::Shift, "Shift"), (RegionId::PageDigits, "?123")),
         Page::Digits => ((RegionId::PageLetters, "abc"), (RegionId::PageSymbols, "#+=")),
         Page::Symbols => ((RegionId::PageLetters, "abc"), (RegionId::PageDigits, "123")),
     };
     let ids = [a.0, b.0, RegionId::Space, RegionId::KeyBackspace, RegionId::KeyDone];
-    let labels = [a.1, b.1, "", "Del", "Done"];
+    let labels = [a.1, b.1, "", "Bksp", "Done"];
     let mut x = area.x;
     for i in 0..5 {
         let w = if i == 4 { area.right() - x } else { widths[i] };
