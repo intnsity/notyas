@@ -25,7 +25,7 @@
 
 use std::path::{Path, PathBuf};
 
-use notyas_ui::{Region, RegionId, TouchEvent, Ui, VerifyInfo};
+use notyas_ui::{QrData, Region, RegionId, TouchEvent, Ui, UiRequest, VerifyInfo};
 
 /// Primary panel geometry (Waveshare ESP32-P4 4B: 720x720, 229 PPI).
 const W: u32 = 720;
@@ -107,11 +107,11 @@ fn region(ui: &Ui, id: RegionId) -> Region {
         .unwrap_or_else(|| panic!("no region {id:?} on {:?}", ui.screen()))
 }
 
-fn tap(ui: &mut Ui, id: RegionId) {
+fn tap(ui: &mut Ui, id: RegionId) -> Option<UiRequest> {
     let r = region(ui, id).rect;
     let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
     ui.touch(TouchEvent::Down { x, y });
-    ui.touch(TouchEvent::Up { x, y });
+    ui.touch(TouchEvent::Up { x, y })
 }
 
 fn type_dice(ui: &mut Ui, digits: &str) {
@@ -184,6 +184,8 @@ fn main() {
     let mut ui = Ui::new(W, H);
     ui.set_verify_info(VerifyInfo {
         firmware_version: "0.1.0-DUMMY".into(),
+        board: "DUMMY simulator (no hardware)".into(),
+        platform: "DUMMY host render".into(),
         app_sha256: "DUMMY0000000000000000000000000000000000000000000000000000000000".into(),
         source_id: "DUMMY0000000000000000000000000000000000000000000000000000000000".into(),
         self_test: "DUMMY - BIP vectors pass".into(),
@@ -224,16 +226,27 @@ fn main() {
     tap(&mut ui, RegionId::Tab(2));
     shot(&out_dir, "08-schemes-bip84", &ui);
 
+    // QR modal: the account-xpub button raises a request; the simulator answers it
+    // with the core's encoder, exactly as the firmware does (public value only).
+    let Some(UiRequest::Qr(target)) = tap(&mut ui, RegionId::QrXpub) else {
+        panic!("xpub QR tap must raise a request");
+    };
+    let matrix = notyas_core::qr::matrix(&target.payload).expect("encode xpub");
+    let data = QrData::from_matrix(&matrix).expect("square matrix");
+    ui.show_qr(target, data);
+    shot(&out_dir, "09-schemes-qr", &ui);
+    tap(&mut ui, RegionId::ModalClose);
+
     // Verify device (DUMMY values installed above).
     tap(&mut ui, RegionId::Back);
     tap(&mut ui, RegionId::HomeVerifyDevice);
-    shot(&out_dir, "09-verify-device", &ui);
+    shot(&out_dir, "10-verify-device", &ui);
 
     // Verify existing seed: the desktop's well-known bad-checksum example, typed in.
     tap(&mut ui, RegionId::Back);
     tap(&mut ui, RegionId::HomeVerifySeed);
     type_keys(&mut ui, "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong");
-    shot(&out_dir, "10-phrase-entry", &ui);
+    shot(&out_dir, "11-phrase-entry", &ui);
 
-    println!("done: 10 screens, deterministic (each frame rendered twice, byte-identical)");
+    println!("done: 11 screens, deterministic (each frame rendered twice, byte-identical)");
 }

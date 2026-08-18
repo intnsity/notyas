@@ -18,13 +18,14 @@ Sample data - all of it public test-vector material, none of it a real seed:
 
 | File | Screen |
 |------|--------|
-| 01-home.png | Home menu |
-| 02-dice-entry.png | Dice entry, RAW mode, 128 bits collected |
+| 01-home.png | Home menu + mainnet/testnet toggle |
+| 02-dice-entry.png | Dice entry: roll history tail (unmasked typed input), RAW/12/15/18/21/24 mode control, 128 bits collected |
 | 03-mnemonic-masked.png | Mnemonic display, masked (fixed 6-bullet runs) |
 | 04-reveal-confirm.png | Two-step reveal confirm modal |
 | 05-mnemonic-revealed.png | Mnemonic display, revealed |
-| 06-passphrase.png | Passphrase entry, both fields masked (fixed 24-bullet run) |
-| 07-schemes-bip44.png | Schemes, BIP44 tab (xpub + receive addresses) |
-| 08-schemes-bip84.png | Schemes, BIP84 tab |
-| 09-verify-device.png | Verify device (DUMMY values) |
-| 10-phrase-entry.png | Verify existing seed, typed phrase + checksum advisory |
+| 06-passphrase.png | Passphrase entry, both fields masked (fixed 24-bullet run), NFKD byte counter |
+| 07-schemes-bip44.png | Schemes, BIP44 tab (xpub + receive addresses, QR buttons) |
+| 08-schemes-bip84.png | Schemes, BIP84 tab (incl. SLIP-132 zpub + QR buttons) |
+| 09-schemes-qr.png | QR modal (account xpub - public values only; no private-key QR exists) |
+| 10-verify-device.png | Verify device (DUMMY values) |
+| 11-phrase-entry.png | Verify existing seed, typed phrase + checksum advisory |

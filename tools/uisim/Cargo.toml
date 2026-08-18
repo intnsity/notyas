@@ -14,6 +14,11 @@ publish = false
 
 [dependencies]
 notyas-ui = { path = "../../crates/notyas-ui" }
+# The simulator plays the firmware's role in the QR round trip: notyas-ui only ever
+# renders a precomputed matrix (it stays no_std), so the QR request returned by
+# `Ui::touch` is answered here with the core's std-side encoder - default features
+# keep the `qr` feature on, exactly as the firmware does.
+notyas-core = { path = "../../crates/notyas-core" }
 # Same trait version notyas-ui draws to; the simulator's framebuffer implements it.
 embedded-graphics = "0.8"
 # PNG encoding only. `png` over `image`: image is a facade over a dozen codecs of which
