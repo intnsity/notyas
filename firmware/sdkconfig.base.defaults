@@ -24,9 +24,19 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # main stack and, with interrupt frames landing on top, about half of all
 # Elecrow-5 boots died with a hardware stack-protection fault (Guru
 # Meditation, task "main", mid-selftest) before ever reaching the display.
-# 20 KB buys the same code an ample margin; internal SRAM has hundreds of KB
-# free and the cost is invisible next to the 32 MB PSRAM heap.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=20480
+# 20 KB bought that code an ample margin.
+#
+# 0.2.0-m4a raised it again, and this one was found the same way: on hardware,
+# as a stack-protection fault. The sealing engine's mount and format run the
+# whole key ladder - HKDF over HMAC-SHA256 over the generic RustCrypto stack,
+# then Argon2id, then ChaCha20-Poly1305 - and at the dev profile's opt-level
+# "z" that chain nests deeply with large frames. It died 108 bytes past the
+# guard inside hmac::utils::get_der_key, i.e. it needed only slightly more than
+# 20 KB but it needed it. Guessing a new number would have been the same mistake
+# twice, so the value below is set from the MEASURED high-water mark that the
+# firmware now prints at every boot ("main task stack: N bytes free of M");
+# see docs/plan-0.2.0/MEASUREMENTS.md for the reading this was taken from.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=49152
 # 1 ms tick so std::thread::sleep has 1 ms granularity (default is 100 Hz).
 CONFIG_FREERTOS_HZ=1000
 

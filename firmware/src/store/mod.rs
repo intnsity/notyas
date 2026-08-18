@@ -381,6 +381,21 @@ pub fn free_internal() -> usize {
     unsafe { sys::heap_caps_get_free_size(sys::MALLOC_CAP_INTERNAL) }
 }
 
+/// Bytes of this task's stack that have never been used, i.e. the smallest headroom
+/// since it started. ESP-IDF's port returns bytes, not words.
+///
+/// Reported rather than assumed because m4a found the previous value the hard way: the
+/// key ladder overran the 20 KB main task by 108 bytes and the board took a stack
+/// protection fault. A number that is printed every boot is a number that cannot drift
+/// silently under a future change to the crypto stack.
+pub fn stack_headroom() -> u32 {
+    // SAFETY: a read-only FreeRTOS query; a null handle means "the calling task".
+    unsafe { sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) }
+}
+
+/// The configured main-task stack, from the sdkconfig the image was built with.
+pub const MAIN_STACK_BYTES: u32 = sys::CONFIG_ESP_MAIN_TASK_STACK_SIZE;
+
 /// One-line rendering of a [`StoreState`] for the boot log and the Verify screen.
 ///
 /// Deliberately says "blank" and "not provisioned" as different things, and never

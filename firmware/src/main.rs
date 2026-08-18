@@ -27,6 +27,11 @@
 
 mod board;
 mod display;
+/// 0.2.0-m4a hardware-in-the-loop test console. `--features hil-console` is the only
+/// thing that compiles it in, build.rs refuses that feature in a release profile, and
+/// the release symbol check asserts its absence from a shipped binary (Q41).
+#[cfg(feature = "hil-console")]
+mod hil;
 /// 0.2.0-m3h development instrument: the esp-idf-hmac exercise against VIRTUAL
 /// eFuses. Not part of the product image - `--features hmac-virtual-check` is
 /// the only thing that compiles it in, and that feature refuses to build
@@ -213,11 +218,31 @@ fn main() {
 
     let mut touch = board::touch_init();
 
+    // Measured, not assumed. m4a found the previous main-task stack size by taking a
+    // stack protection fault inside the key ladder; a headroom number printed at every
+    // boot is the form of that lesson that cannot rot (see sdkconfig.base.defaults).
+    log::info!(
+        "main task stack: {} bytes free of {} (low-water mark since boot)",
+        store::stack_headroom(),
+        store::MAIN_STACK_BYTES
+    );
+
     let idf_version = unsafe { CStr::from_ptr(sys::esp_get_idf_version()) }
         .to_str()
         .unwrap_or("<invalid>");
 
     log::info!("notyas {VERSION} ui up on {}", board::BOARD_NAME);
+
+    // The test console comes up last, so the boot log above it is the ordinary one and a
+    // capture can be split at the banner. Its first act is to print the mount verdict:
+    // after a power cut taken mid-seal, that line is the evidence, and it must appear
+    // before anything the operator does can change the state it describes.
+    #[cfg(feature = "hil-console")]
+    let mut console = {
+        let mut c = hil::Console::install();
+        c.boot_banner(&mut store);
+        c
+    };
 
     // The GT911 reports the current point or nothing; Down/Move/Up are
     // synthesized from consecutive polls: point after none = Down, point
@@ -257,6 +282,11 @@ fn main() {
         if store.as_mut().is_some_and(store::Store::tick) {
             dirty = true;
         }
+
+        // One non-blocking UART read per pass. Zero-tick timeout, so an idle console
+        // cannot perturb the idle-repaint or heap invariants the heartbeat proves.
+        #[cfg(feature = "hil-console")]
+        console.poll(&mut store);
 
         let point = touch.poll();
         // Event-driven dirty flag (see the module docs): any synthesized

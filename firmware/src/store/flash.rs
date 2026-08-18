@@ -216,6 +216,55 @@ impl PartitionFlash {
         }
         Ok(())
     }
+
+    /// Read the region's RAW bytes - the undecrypted, uninterpreted view.
+    ///
+    /// This is what `SimFlash::raw` returns on the host, and it is therefore the only
+    /// view a device-versus-host image comparison may use. On a dev unit with flash
+    /// encryption off it is identical to [`Flash::read`]; on a release unit it is not,
+    /// and a comparison built on the logical view would silently compare plaintexts
+    /// while claiming to compare images.
+    pub fn read_raw(
+        &mut self,
+        region: Region,
+        offset: u32,
+        buf: &mut [u8],
+    ) -> Result<(), FlashError> {
+        let len = buf.len() as u32;
+        let mut written = 0usize;
+        self.read_chunked(region, offset, len, true, |chunk| {
+            buf[written..written + chunk.len()].copy_from_slice(chunk);
+            written += chunk.len();
+        })
+    }
+
+    /// Stream the region's RAW bytes to `f` a sector at a time, so a caller can hash or
+    /// scan 256 KiB without a 256 KiB buffer.
+    pub fn scan_raw(
+        &mut self,
+        region: Region,
+        f: impl FnMut(&[u8]),
+    ) -> Result<(), FlashError> {
+        let len = match region {
+            Region::Records => self.geometry.records_sectors,
+            Region::Ledger => self.geometry.ledger_sectors,
+        } * SECTOR;
+        self.read_chunked(region, 0, len, true, f)
+    }
+
+    /// Erase the whole region. Not part of the engine's `Flash` contract - the engine
+    /// only ever erases one sector at a time and only ones it owns - and used by nothing
+    /// but the test console, which needs to return a board to factory-blank.
+    pub fn erase_all(&mut self, region: Region) -> Result<(), FlashError> {
+        let sectors = match region {
+            Region::Records => self.geometry.records_sectors,
+            Region::Ledger => self.geometry.ledger_sectors,
+        };
+        for s in 0..sectors {
+            self.erase_sector(region, s)?;
+        }
+        Ok(())
+    }
 }
 
 impl Drop for PartitionFlash {
