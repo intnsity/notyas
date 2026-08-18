@@ -48,6 +48,12 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+/// The `bitcoin` crate this core is built against, re-exported so front ends (notyas-ui,
+/// the firmware) name the pipeline's own exact pin for the few types they need
+/// (`Network`), instead of carrying a second `bitcoin` dependency whose version or
+/// feature set could drift from the one the derivation path actually runs on.
+pub use bitcoin;
+
 pub mod bip39;
 pub mod derive;
 pub mod entropy;
