@@ -1,13 +1,20 @@
 # notyas 0.2.0 - Decision list
 
-Status: **RATIFIED 2026-08-17.** Fifty numbered questions were merged here from wave 1,
+Status: **RATIFIED 2026-08-17.** Sixty-one numbered questions are merged here from wave 1,
 wave 2, the red team and the wave-3 design documents. On 2026-08-17 the project owner
 instructed that every question with a clear technical optimum be decided for them,
 leaving only the ones that turn on money, law, doctrine or risk appetite. That pass is
-applied. **Forty-one are now settled** (thirty-nine ratified in this pass, Q8 answered
-directly by the owner during it, Q22 answered earlier). **Ten remain open**, and they
-are the only thing the owner needs to read: they are in the OWNER DECISIONS section
-directly below, and nothing else in this file is required to answer them.
+applied. **Fifty-one are now settled** (thirty-nine ratified in the main pass, Q8 answered
+directly by the owner during it, Q22 answered earlier, and Q52-Q61 ratified in the
+VERIFY.md sweep below). **Ten remain open**, and they are the only thing the owner needs
+to read: they are in the OWNER DECISIONS section directly below, and nothing else in this
+file is required to answer them.
+
+**The VERIFY.md sweep (2026-08-17) added ten questions and no owner decisions.** That
+document landed after the ratification pass; its section 14 raised ten open items, every
+one of which turns on a technical optimum, a measurement, or a consequence of a decision
+already taken. They are ratified in place as Q52-Q61 under the milestones that consume
+them. The owner's list is unchanged at ten.
 
 No question was deleted. Every settled question keeps its full reasoning in the
 RATIFIED DECISIONS section, ordered by milestone so that section doubles as an
@@ -489,6 +496,30 @@ not take a GPL dependency.
 what "platform contribution" means for this project. Relicensing after publication would
 require every contributor's consent, so it is effectively irreversible.
 
+### Q60. The flash unique-ID row ships only if the bench says it works [VERIFY.md 4.6 / 14]
+**DECISION: measurement-gated. Ship the row if m1's new V3 bench run returns a plausible,
+stable, non-zero unique ID on both fitted parts; otherwise render `not supported`.**
+*Ratified 2026-08-17 in the VERIFY.md sweep, on the standing instruction to settle
+questions with a clear technical optimum.*
+
+**Reasoning.** This is not a judgement call, it is an experiment whose result nobody has
+yet, and VERIFY.md 4.6 documents four independent ways it can come back useless: the vendor
+driver may be off by default on P4, GigaDevice's 128-bit IDs may be truncated to 64, the
+GD25Q128C shares a JEDEC ID with the E die while lacking the `4Bh` command, and 32 MB parts
+in 4-byte address mode probably byte-shift the response. A row that prints a
+plausible-looking constant on a part that does not really support the command is worse than
+no row: it is exactly the kind of value a reader would compare between two units and draw a
+conclusion from. V3 runs on the bench at the same moment as m1's existing M6 JEDEC-ID read,
+so finding out costs nothing extra.
+
+**What `not supported` costs, stated so the fallback is not silently weaker than it looks:**
+flash-substitution detection then rests on the JEDEC ID and the detected size alone, which
+does not catch a swap for the same model of part. That sentence goes in VERIFYING.md, not on
+the screen - the screen does not opine (VERIFY.md rule 2).
+
+**Blast radius.** One row in VERIFY.md's identity section, one line in VERIFYING.md, and one
+measurement added to m1's harness. No format impact.
+
 ---
 
 ## m2 - notyas-core signing API
@@ -649,6 +680,60 @@ list; amends MILESTONES R20, the m4a first-save path and the m4a "runs on board 
 assertion at m3h; adds a provisioning step to m13's release runbook and to the
 build-from-source instructions. No record-format impact.
 
+### Q53. The boot log takes reserved ledger space, and its cell count is sized by M6 [VERIFY.md 6.2 / 14]
+**DECISION: the boot counter's cell array comes from the ledger sector's reserved region
+and the second reserved sector pair - not from shrinking an existing log - and the array is
+sized against m1's measured M6 partial-page-program limit. This is inside the m3 format
+freeze and cannot be deferred past it.**
+*Ratified 2026-08-17 in the VERIFY.md sweep, on the standing instruction to settle
+questions with a clear technical optimum.*
+
+**Reasoning.** The boot counter is a bit-clear cell array in the same plaintext `counters`
+partition as the attempt log, so it consumes the same scarce resource under the same
+physical limit, and adding it after the format is frozen would be a format change under
+existing users. That is why VERIFY.md specifies it now and implements it at m4a. Taking the
+cells from the reserved region rather than from `attempt_entry`, `attempt_success` or
+`pin_gen_log` is the only option that does not weaken a security-relevant budget: the
+attempt log's tail reserve is what makes the ratified Q5 ceiling of 25 a frozen constant,
+and shrinking it to buy a convenience row would trade a security parameter for a
+nice-to-have. Two head words are added (`acknowledged_at` and the boot log's `log_id`).
+
+**Ownership, stated so the edit lands in one place.** ESP-SEAL.md 3.7 owns the sector map;
+this decision instructs that document to allocate the array there, and ESP-SEAL.md stays
+authoritative for the resulting byte layout. VERIFY.md flagged it rather than deciding it,
+which was correct.
+
+**The dependency runs the other way too, and it is an m1 exit-gate consequence:** if M6
+comes back below the design's 32 cells per 256-byte page, both the attempt ledger AND this
+boot log are re-laid-out together, before m3 writes a line of the format.
+
+**Blast radius.** The `counters` on-flash format for the life of the product; ESP-SEAL.md
+3.7's sector map; m1's M6 measurement gains a second consumer; m4a's implementation.
+
+### Q58. The Verify screen prints all three secure-boot key digest slots [VERIFY.md 5.1 / 14]
+**DECISION: print all three slots unconditionally, `not burned` for empty ones, with the
+revocation bit shown per slot.**
+*Ratified 2026-08-17 in the VERIFY.md sweep, on the standing instruction to settle
+questions with a clear technical optimum.*
+
+**Reasoning.** The alternative - show only the first burned digest - hides precisely the
+case that makes the row worth having: a second signing key enrolled without the owner's
+knowledge. Printing three rows where two say `not burned` costs three lines on a scrolling
+screen and makes the absence of a second key a *readable value* rather than an inference
+from silence, which is the same principle as rendering `not read` instead of a plausible
+default.
+
+**Interaction with the owner's Q32, which this does not pre-empt.** Q32 decides WHOSE key is
+burned - ours, the user's, or both as separate channels. Under Q32(b), where an owner
+generates and burns their own key, a device may legitimately carry a user digest alongside
+or instead of a project digest, and the screen showing all three slots is what lets that
+owner confirm their own ceremony worked. This decision is about what is displayed and holds
+under every Q32 outcome; Q32 remains the owner's.
+
+**Blast radius.** Three rows in VERIFY.md's eFuse section, read through the m3h eFuse
+readout surface (`esp_secure_boot_read_key_digests()`), and one line of m13's release-unit
+validation. No format impact.
+
 ---
 
 ## m4a - storage on hardware and PIN unlock
@@ -699,6 +784,35 @@ camera and a checklist.
 
 **Blast radius.** Firmware build features and one m13 release gate.
 
+### Q61. The boot counter counts failed boots, and does not exist on a blank device [VERIFY.md 6 / 14]
+**DECISION, in two halves. (i) The counter increments before the boot self-test runs, so a
+boot that ends at S-02 is still counted. (ii) It does not exist, and NOTHING is written,
+while the store is `Unprovisioned` or `Blank`; the row renders `not counted`.**
+*Ratified 2026-08-17 in the VERIFY.md sweep. Half (i) is VERIFY.md's own recommendation;
+half (ii) is a correctness fix the sweep found and is not optional.*
+
+**Reasoning for (i).** A boot that failed still happened, and a counter that skips failed
+boots is a counter an attacker can advance for free by causing failures. Incrementing first
+costs one bit-clear program into an already-erased cell, early in boot, before the UI exists.
+
+**Reasoning for (ii), which is an invariant question rather than a design preference.**
+SECURITY.md invariant 2a says of a device with no stored wallet that "nothing is ever
+written to flash" - the 0.1.0 stateless property, retained verbatim and mechanically
+enforced. A counter that incremented on every power-up would falsify that sentence on every
+blank device, and the project's governing rule is that a claim is mechanically enforced or
+it is not made. Weakening a headline invariant to buy a convenience row is the wrong side of
+that trade, so counting begins when the ledger is formatted - the same moment the device
+stops being stateless for every other reason. The row renders `not counted` rather than `0`,
+because `0` would be a value the device did not read.
+
+**The honest cost, documented in VERIFYING.md and not on the screen:** the counter answers
+"has anyone powered this on since I set it up", not "since it left the factory". The second
+question is not answerable on this hardware by any means, so nothing available was lost.
+
+**Blast radius.** m4a's boot path and one row's rendering; VERIFY.md section 6; one sentence
+in VERIFYING.md. It removes a conflict with invariant 2a rather than creating one, so
+SECURITY.md needs no amendment.
+
 ---
 
 ## m4b - wallet management UI
@@ -724,6 +838,85 @@ verification consumes an attempt.
 
 **Blast radius.** Three screens and SECURITY invariant 5's wording, all of which move
 with Q2 rather than with Q37.
+
+### Q54. Three new `RegionId` values for S-46 [VERIFY.md 11.5 / 14]
+**DECISION: accept `VerifyQr`, `VerifyScanFlash` and `VerifyAckBoots`.**
+*Ratified 2026-08-17 in the VERIFY.md sweep, on the standing instruction to settle
+questions with a clear technical optimum.*
+
+**Reasoning.** They follow UX-SCREENS.md section 4's naming rule and no existing variant
+carries the meaning. The alternative - moving the reserved-space scan and the acknowledgement
+mark onto a settings screen - separates an action from the value it changes, which is what
+makes both legible: `[ Scan ]` sits beside the span list it fills in, and `[ Mark as seen ]`
+sits beside the `Since acknowledged` number it resets.
+
+**Blast radius.** Three enum variants in notyas-ui and three rows in UX-SCREENS.md section 4.
+
+### Q55. S-46 is exempt from reflow rule 1 at 800x480 [VERIFY.md 11.4 / 14]
+**DECISION: accept the exemption. The body keeps full width on board B rather than moving
+actions into a landscape rail, so hex line breaks are identical on both panels.**
+*Ratified 2026-08-17 in the VERIFY.md sweep, on the standing instruction to settle
+questions with a clear technical optimum.*
+
+**Reasoning.** Reflow rule 3 - "verification data gets the width" - is the governing rule for
+a screen made of nothing but verification data, so this is less an exemption than the correct
+rule winning where two collide. The property it buys is the one the screen exists for: two
+units with different panels, side by side, break their digests at the same character, so a
+reader compares blocks rather than re-reading. An exemption argued from an existing rule and
+recorded at the point of use is the acceptable kind.
+
+**Blast radius.** One screen's reflow behaviour and one entry in UX-SCREENS.md's reflow table,
+which must record the exemption rather than leave it to be discovered.
+
+### Q56. The `wallets` raw digest is post-PIN unless Q2 ships always-filled slots [VERIFY.md 7.4 / 14]
+**DECISION, in the form that holds under every Q2 outcome: post-PIN only under Q2(b) or
+Q2(c); permitted pre-PIN under Q2(a).**
+*Ratified 2026-08-17 in the VERIFY.md sweep. Like Q37, this is a mechanical consequence of
+Q2 rather than an independent question, and is closed here so it is not left pending.*
+
+**Reasoning.** Under `Occupancy::Sparse` a blank encrypted partition raw-reads as all `0xff`,
+so its digest is a constant anyone can compute in advance; showing it before the PIN
+announces blank-versus-not to whoever is holding the device, which is exactly the leak Q2
+exists to close. Under `Occupancy::AlwaysFilled` there is no recognisable constant, so the
+digest reveals nothing and may sit pre-PIN with the other identity values. There is no third
+case, so nothing is left for the owner to decide beyond Q2 itself.
+
+**Blast radius.** One row's pre-PIN eligibility and the CI golden list for the pre-PIN field
+set (VERIFY.md 7.4). Moves with Q2; adds nothing to Q2's own cost.
+
+### Q57. The reserved-space scan stays on demand, never at boot [VERIFY.md 3.3, 3.4 / 14]
+**DECISION: on demand behind `[ Scan ]`, with a C3 determinate Busy screen.**
+*Ratified 2026-08-17 in the VERIFY.md sweep, on the standing instruction to settle
+questions with a clear technical optimum.*
+
+**Reasoning.** Under the frozen geometry the scan reads roughly 14 MiB on board B and 30 MiB
+on board A - order of a second - to check a value that changes only when someone has written
+to flash outside the partitions. Paying that on every boot, for every user, forever, is the
+wrong trade, and the C3 law would force a Busy screen into the boot path to do it. The
+rejected alternative is recorded: making the boot self-test a complete integrity pass is a
+coherent position, but then it belongs on S-01 with its own progress unit rather than
+arriving as a Verify-row default.
+
+**Blast radius.** One button, one Busy screen, and the boot budget - which VERIFY.md 2.5
+shows is otherwise unchanged from 0.1.0 by everything that document adds.
+
+### Q59. No mask-ROM digest; report the ROM version fields only [VERIFY.md 4.3 / 14]
+**DECISION: print `_rom_eco_version` and `_rom_chip_id`; do not hash the mask ROM.**
+*Ratified 2026-08-17 in the VERIFY.md sweep, on the standing instruction to settle
+questions with a clear technical optimum.*
+
+**Reasoning.** Two independent reasons, either sufficient. A ROM digest can only ever detect
+a *different chip*, never a modified one, because mask ROM is silicon (VERIFY.md section 8
+R7) - so it duplicates what the chip-identity rows already say. And no offline reference
+exists to compare it against: Espressif published two P4 ROM ELFs covering 97.5% and 99.4% of
+the region and neither is the ROM these boards run, so the row would be 64 hex characters
+with no comparand, which contract rule 5 exists to prevent. Revisit only if the project ever
+runs the per-revision reference enrolment the owner's Q31 contemplates, at which point the
+digest becomes comparable and earns a row.
+
+**Blast radius.** Two rows instead of three in VERIFY.md's identity section. The ROM is
+readable and hashing it is milliseconds, so the reason not to is not cost - it is that the
+number would mean nothing.
 
 ---
 
@@ -1257,6 +1450,29 @@ document publications; MILESTONES section 9's "done" definition loses "the publi
 crates build from crates.io for someone who has never seen this repository"; measurement
 M9 (crate-name availability on crates.io) is no longer needed.
 
+### Q52. Publish a per-board verification manifest artifact [VERIFY.md 7.3 / 14]
+**DECISION: accept. `notyas-<ver>-<board>-VERIFY.json` joins REPRODUCIBLE.md 3.5's artifact
+set, is emitted by the container build, and is listed in the signed SHA256SUMS.txt. Its
+field set is frozen at m1 because m12's artifact set depends on it.**
+*Ratified 2026-08-17 in the VERIFY.md sweep, on the standing instruction to settle
+questions with a clear technical optimum.*
+
+**Reasoning.** Without it, the device's digests have no published comparand and the whole
+Verify screen degrades to decoration - values a user can read and cannot check. It also
+closes the confusion REPRODUCIBLE.md 4.3 calls the single most likely support question, the
+difference between the digest of an image's CONTENT and the digest of the FILE, by publishing
+both with their offsets and lengths. The rejected alternative - folding the fields into
+`BUILDINFO.txt` - fails on a real property: that artifact's format is deliberately loose for
+human triage, and an off-device checker needs a stable parse.
+
+**Two consequences that must be applied, not assumed.** REPRODUCIBLE.md 3.5's artifact table
+gains the row (and it already owes one for the ratified Q47's camera variant, so both land
+together); and m12's bit-identical rebuild matrix gains the manifest, because an artifact
+that is published but not reproduced is a gap in exactly the chain this project sells.
+
+**Blast radius.** REPRODUCIBLE.md's artifact set and rebuild matrix, one build-script
+deliverable, one VERIFYING.md section, and an m1 freeze of the field set. No firmware change.
+
 ---
 
 ## m13 - hardening closeout and release
@@ -1363,6 +1579,27 @@ the shape.
   reference-module purchase -> Q50. Its DECISION items (the shared-I2C-bus refactor, the
   25 MHz clock-mismatch triage rule, the abort criteria, USB-UVC rejection) are its own and
   were not re-litigated.
-- Sweep status: complete. Every open item present in docs/plan-0.2.0/ is folded in,
-  including the ones that do not use the literal `OPEN:` prefix. No document in this
-  directory is owed a sweep.
+- **VERIFY.md sweep, 2026-08-17 (Q52-Q61).** That document landed after the ratification
+  pass and raised ten items in its section 14. All ten are ratified, none reaches the owner,
+  and the owner's list stays at ten. Map: 7.3 manifest artifact -> **Q52** (m12, field set
+  frozen at m1); 6.2 boot-log cell budget -> **Q53** (m3, inside the format freeze); 11.5
+  RegionId values -> **Q54** (m4b); 11.4 reflow exemption -> **Q55** (m4b); 7.4 `wallets`
+  digest pre-PIN -> **Q56** (m4b, mechanical consequence of Q2, like Q37); 3.3/3.4 scan at
+  boot -> **Q57** (m4b); 5.1 secure-boot digest slots -> **Q58** (m3h readout, m13
+  validation; does not pre-empt the owner's Q32); 4.3 mask-ROM digest -> **Q59** (m4b,
+  declined); 4.6 flash unique ID -> **Q60** (m1, measurement-gated on the new V3 run); 6/14
+  boot counter on a failed self-test -> **Q61** (m4a, with a correctness fix attached).
+- **Three correctness fixes were applied to the plan texts during the VERIFY.md sweep rather
+  than raised as questions**, per the standing rule. (1) VERIFY.md was drafted against the
+  SUPERSEDED partition geometry - `wallets` at 0x410000, `counters` at 0x450000, a 4 MiB app,
+  an 11.7 MiB tail - in sixteen places including its flash map, its scan example, its cost
+  table and both wireframes; all are corrected to the frozen Q7 offsets, and the analysis
+  that moved with them is restated honestly (MILESTONES R23). (2) Its scan example also
+  omitted each image's base offset when computing where that image's tail began; fixed with
+  the arithmetic shown. (3) A boot counter incrementing on every power-up would have
+  falsified SECURITY invariant 2a on blank devices; the precondition is now stated in
+  VERIFY.md section 6 and ratified as Q61(ii) (MILESTONES R24).
+- Sweep status: complete through VERIFY.md. Every open item present in docs/plan-0.2.0/ is
+  folded in, including the ones that do not use the literal `OPEN:` prefix. No document in
+  this directory is owed a sweep. The list runs to **Q61**; a further design document
+  continues from Q62.

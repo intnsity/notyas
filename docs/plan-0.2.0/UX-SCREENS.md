@@ -2691,6 +2691,15 @@ here. Save it first."
 
 #### S-46 Verify device (E, 0.1.0 VerifyDevice)
 
+**SUPERSEDED IN DETAIL 2026-08-17 by `VERIFY.md`, which is the owner document for this
+screen.** This entry keeps S-46 in the inventory and keeps its component vocabulary; the
+row set, the six frozen sections, the frozen field order, the row kinds, the geometry and
+the CI assertions are `VERIFY.md` sections 10-11. The sketch below is retained as the
+0.1.0-plus-storage baseline it was, not as the build spec. Read `VERIFY.md` before
+implementing anything here. (Authority rule, `MILESTONES.md` 1.1: the companion wins on
+WHAT is built inside its domain; this file still owns the inventory, the component library
+and the copy vocabulary that document uses.)
+
 **Purpose.** 0.1.0's screen, extended with storage and eFuse truth.
 
 **Wireframe.** 0.1.0's scrolling key/value list, plus rows:
@@ -2707,10 +2716,25 @@ here. Save it first."
 **Copy.** Values are what the firmware actually read - never a constant, never a
 reassuring default. Absent readings render "not read" (0.1.0's honest placeholder).
 
-**Edge states.** Dev board with flash encryption off: the row is `WARNING` with
-"disabled - a stored wallet on this board is protected by the PIN only."
-Q2 (duress) accepted: the storage row degrades to "present" / "blank" and a footnote
-states why the count is not shown.
+**Edge states.** Q2 (duress) accepted: the storage row degrades to "present" / "blank" and
+a footnote states why the count is not shown.
+
+**Struck 2026-08-17, and the reason is worth keeping.** This entry previously said: "Dev
+board with flash encryption off: the row is `WARNING` with 'disabled - a stored wallet on
+this board is protected by the PIN only.'" `VERIFY.md`'s design contract rule 2 forbids
+exactly that - no verdicts, no risk language, no advice sentence beside a value; `Flash
+encryption   disabled` is the whole row, and the only semantic colour that survives on this
+screen is the self-test `FAIL` row and the radio-kill row, where the word carries the
+meaning. The contract wins, because a screen whose purpose is to let an owner read raw
+values loses that purpose the moment it starts interpreting them, and because the field
+order and colour rules are CI-asserted while a prose caveat is not.
+
+The caveat itself is real and is not dropped - it moves to where it is actionable. A dev
+board's stored wallet IS protected by the PIN ladder alone (`SECURITY.md` invariant 6), and
+the place to say so is the moment the user chooses to store one: the "Save (PIN-protected)"
+fork in the create and restore flows, and the wipe-policy sub-screen. A warning at the point
+of decision changes behaviour; a warning on an instrument panel the user opened to read
+hex does not.
 
 ---
 

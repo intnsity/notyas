@@ -370,7 +370,7 @@ are computed sequentially.
 | Composite `firmware_digest` | 104 B | **microseconds** | boot |
 | eFuse section, entire | - | **microseconds** (memory-mapped register reads, section 5) | boot |
 | Identity section, entire | - | **microseconds**, except the flash IDs which are two short SPI transactions | boot |
-| Reserved-space scan | up to ~27.9 MiB | **~0.5-0.9 s at 16 MB, ~1.0-1.7 s at 32 MB** at 80 MHz with double-buffered read-and-hash; flash read dominates SHA by 1.5x to 4.5x | **on demand** |
+| Reserved-space scan | ~14.0 MiB (16 MB board) / ~30.0 MiB (32 MB board), for a 1.8 MiB app image | **~0.6-1.1 s at 16 MB, ~1.1-1.8 s at 32 MB** at 80 MHz with double-buffered read-and-hash; flash read dominates SHA by 1.5x to 4.5x | **on demand** |
 | `wallets` / `counters` raw digests | 272 KiB | tens of ms | on demand |
 
 **The boot budget is therefore essentially unchanged from 0.1.0.** Everything new that runs at
@@ -390,26 +390,37 @@ design.
 
 ### 3.1 The flash map, classified
 
-One shared partition table across both boards (`ARCHITECTURE.md` 2.7, `docs/BOARDS.md` -
-sized within the smaller 16 MB part; the Waveshare's extra 16 MB is unmapped by design):
+One shared partition table across both boards - the **frozen** geometry of the ratified
+`OPEN-QUESTIONS` Q7 / `MILESTONES` R2, restated in `ARCHITECTURE.md` 2.7, sized within the
+smaller 16 MB part (`docs/BOARDS.md`); the Waveshare's extra 16 MB is unmapped by design:
 
 ```
   0x000000 .. 0x002000       8 KiB   pre-bootloader reserved
   0x002000 .. 0x008000      24 KiB   second-stage bootloader image, then padding
   0x008000 .. 0x009000       4 KiB   partition table (<= 0xC00 used), then padding
   0x009000 .. 0x010000      28 KiB   gap - no partition covers this
-  0x010000 .. 0x410000       4 MiB   factory app: image, then padding
-  0x410000 .. 0x450000     256 KiB   wallets   (encrypted)
-  0x450000 .. 0x454000      16 KiB   counters  (plaintext)
-  0x454000 .. flash_end             unmapped tail: 11.7 MiB (16 MB) / 27.7 MiB (32 MB)
+  0x010000 .. 0xE00000   13.94 MiB   factory app: image, then padding
+  0xE00000 .. 0xE40000     256 KiB   wallets   (encrypted)
+  0xE40000 .. 0xE44000      16 KiB   counters  (plaintext)
+  0xE44000 .. flash_end             unmapped tail: 1.73 MiB (16 MB) / 17.73 MiB (32 MB)
 ```
+
+**This document was drafted against the superseded 4 MiB-app layout (`wallets` at
+`0x410000`, `counters` at `0x450000`, an 11.7 MiB tail) and is corrected in place
+2026-08-17.** The correction is not cosmetic for section 3, because it moves where the
+blank space *is*: the app partition is declared at its collision bound, so almost all of
+the must-be-blank space is now the **app tail** rather than the unmapped tail, and on
+board B the unmapped tail shrinks from 11.7 MiB to 1.73 MiB. That matters because the app
+tail is exactly the region the merged-image caveat below covers, and the tail is the
+region it does not. The honest consequence is stated where the argument is made, at the
+end of 3.3.
 
 Three classes, and the class decides the treatment:
 
 | Class | Regions | Expected value | Comparable against |
 |---|---|---|---|
 | **Immutable code** | bootloader image, partition table, app image | fixed per release+board | the published manifest (7.3) |
-| **Must be blank** | `0x000000-0x002000`, bootloader tail, partition-table tail, `0x009000-0x010000`, app tail, `0x454000-end` | erased flash, raw `0xff` | a **universal constant**, no manifest needed |
+| **Must be blank** | `0x000000-0x002000`, bootloader tail, partition-table tail, `0x009000-0x010000`, app tail, `0xE44000-end` | erased flash, raw `0xff` | a **universal constant**, no manifest needed |
 | **Mutable by design** | `wallets`, `counters` | changes as the device is used | nothing; reported as-is |
 
 ### 3.2 Why one whole-flash digest cannot work
@@ -423,7 +434,10 @@ Four independent reasons, each fatal on its own:
    nobody looks at.
 2. **`wallets` is XTS-encrypted with a per-device key.** Its ciphertext is device-unique by
    construction, so even two identical devices with identical wallets produce different bytes.
-   There is no publishable value.
+   There is no publishable value. (On a dev board the `encrypted` flag is inert because no
+   XTS key is burned - `MILESTONES` R17 - so the raw view is the AEAD record itself. The
+   conclusion is unchanged either way: an AEAD record sealed under a device-bound ladder is
+   just as device-unique as its XTS wrapper, so there is still nothing to publish.)
 3. **Erased flash inside an encrypted partition does not read back as `0xff`.**
    `esp_partition_read()` decrypts, so an erased sector in the `wallets` partition decrypts to
    **pseudorandom bytes**. This is documented in `ESP-SEAL.md` (the `Flash::is_erased` trait
@@ -431,7 +445,10 @@ Four independent reasons, each fatal on its own:
    RAW (undecrypted) view ... `read()` can never be used to test for erasure", and `SimFlash`
    is configurable to reproduce it so the mistake fails in host tests rather than on release
    silicon). Any emptiness test written against the decrypting view is not merely inaccurate,
-   it is inverted: it sees noise where there is nothing.
+   it is inverted: it sees noise where there is nothing. This trap is live on release units
+   only - a dev board with no XTS key burned decrypts nothing - which is precisely why the
+   rule is applied uniformly rather than conditionally: code that is correct only on the
+   hardware it was tested on is code that fails on the hardware that matters.
 4. **The flash sizes differ between boards.** 16 MB versus 32 MB, same partition table, so a
    whole-chip digest is not even the same length of input on the two shipped units.
 
@@ -455,18 +472,29 @@ that 0.1.0 already pays.
 in a spare sector". Raw read of every must-be-blank span, reported **per span** rather than as
 one digest:
 
+Illustrative, on a 32 MB board, for a build whose bootloader is 22 352 B and whose app
+image is 1 842 176 B. **Only the four fixed boundaries are constants; every span that
+begins at the end of an image moves with the build**, which is why the manifest (7.3)
+publishes the image lengths and the screen prints the spans it actually scanned rather
+than a compiled-in list:
+
 ```
   Reserved space
     0x000000-0x002000        8 192 B   all 0xff
-    0x006790-0x008000        6 256 B   all 0xff
-    0x008c00-0x010000       29 696 B   all 0xff
-    0x1c1f00-0x410000    2 482 432 B   all 0xff
-    0x454000-0x2000000  27 967 488 B   all 0xff
+    0x007750-0x008000        2 224 B   all 0xff
+    0x008080-0x010000       32 640 B   all 0xff
+    0x1d1c00-0xe00000   12 772 352 B   all 0xff
+    0xe44000-0x2000000  18 595 840 B   all 0xff
     digest  < K2 block, 64 hex over the concatenated spans >
 ```
 
+(Spans are listed and hashed in address order, which is also the order the digest
+concatenates them in. The earlier draft of this block omitted each image's base offset
+when computing where its tail began - a tail starts at `base + length`, not at `length` -
+and that arithmetic is corrected here along with the geometry.)
+
 A span that is not blank reports the count and the first offset:
-`0x454000-0x2000000   27 967 488 B   4 096 set, first 0x0a12000`.
+`0xe44000-0x2000000   18 595 840 B   4 096 set, first 0x0a12000`.
 
 Per-span rather than aggregate for a reason that is entirely about being useful: an aggregate
 "not blank" tells the owner nothing they can act on, whereas an offset tells them, and anyone
@@ -488,8 +516,21 @@ from anywhere.
   not**: esptool encrypts what it writes, so written-`0xff` becomes ciphertext and the spans
   between `0x2000` and the end of the app read as non-blank. That is a flashing-method
   artefact, not a finding. Consequence: the scan's strongest region is the **unmapped tail
-  above `0x454000`**, which no image ever covers - and which is also 11.7 MiB or 27.7 MiB,
-  i.e. precisely where a payload would be hidden.
+  above `0xE44000`**, which no image ever covers.
+- **The frozen geometry makes that strongest region small on board B, and this is the one
+  place the Q7 freeze costs this feature something.** The tail is 1.73 MiB on the 16 MB
+  board and 17.73 MiB on the 32 MB board; the bulk of the blank space - about 12.8 MiB on
+  a 1.8 MiB image - is now the **app tail**, inside the app partition, which is exactly the
+  span a merged-image flash writes. So on a release board B flashed from `merged.bin`, the
+  span that a payload would most plausibly occupy is also the span the scan cannot
+  distinguish from a normal flashing method, and only 1.73 MiB is scanned with full
+  confidence. Three things keep this honest rather than fatal, and all three go in
+  `VERIFYING.md`: flashing the artifacts separately rather than as `merged.bin` leaves the
+  app tail genuinely erased and restores the scan's reach; on an UNencrypted unit the
+  written padding is still raw `0xff`, so the scan is unaffected regardless of method; and
+  the per-span report makes which case the owner is in visible rather than hidden inside an
+  aggregate. What must NOT happen is the scan quietly excluding the app tail to avoid false
+  positives - that would trade a legible caveat for an invisible blind spot.
 - The scan reports raw bytes and does not interpret them. `all 0xff` means those sectors are
   erased. Anything else means bytes are present, which may be a merged-image flash, a previous
   firmware's data partition, factory test residue, or a payload. The screen prints which; the
@@ -506,7 +547,9 @@ governed by section 7.4 and interacts with `OPEN-QUESTIONS` Q2.
 
 ### 3.4 Cost
 
-The reserved-space scan reads and hashes up to 30 MB. That is on-demand behind `[ Scan ]`
+The reserved-space scan reads and hashes roughly 14 MiB on board B and 30 MiB on board A -
+the app tail dominates on both, because the frozen geometry declares the app at its
+collision bound (3.1). That is on-demand behind `[ Scan ]`
 with a C3 determinate Busy screen ("Reading flash", "span 3 of 5", byte progress), never at
 boot: the C3 law requires a painted frame for anything over 150 ms, and adding seconds to
 every boot for a value that changes only when someone has written outside the partitions is
@@ -982,9 +1025,27 @@ plaintext `counters` partition, which makes exactly one new class of statement p
 Designing it honestly means being precise about what it survives, because a counter that
 quietly resets is worse than no counter.
 
+**One hard precondition, found during the 2026-08-17 reconciliation and binding on the
+implementation: the counter does not exist, and nothing is written, until the ledger has
+been formatted.** `SECURITY.md` invariant 2a says of a device with no stored wallet that
+"nothing is ever written to flash" - the 0.1.0 stateless property, retained verbatim. A boot
+counter that incremented on every power-up would falsify that sentence on every blank and
+every unprovisioned device, which is not a trade this project makes: an invariant that is
+mechanically enforced everywhere else does not acquire an exception for a convenience row.
+So the rule is: while `StoreState` is `Unprovisioned` or `Blank` the row renders
+`not counted` (never `0`, which would be a value the device did not read), no cell is
+programmed, and the device is byte-for-byte as stateless as 0.1.0. Counting begins when the
+ledger is formatted, which is the same moment the device stops being stateless for every
+other reason. The honest cost, and it goes in `VERIFYING.md` rather than on the screen: the
+counter cannot report boots that happened before the owner set the device up, so it answers
+"has anyone powered this on since I configured it" and not "since it left the factory". The
+second question is not answerable on this hardware by any means, so nothing is lost that was
+ever available.
+
 ### 6.1 Where it lives, and what that implies
 
-`counters` is a 16 KiB plaintext partition at `0x450000` (`ARCHITECTURE.md` 2.7), holding the
+`counters` is a 16 KiB plaintext partition at `0xE40000` (the frozen geometry of the ratified
+Q7; `ARCHITECTURE.md` 2.7), holding the
 `ESP-SEAL.md` 3.7 ledger: two A/B rotation sectors plus two reserved, one live sector at a
 time, a 128-byte head with a `rotation_ctr` and a `head_mac` keyed by the device guard key,
 and guarded bit-clear cell arrays. Plaintext by necessity - XTS's 16-byte write granularity
@@ -1070,7 +1131,7 @@ Three events, and the documentation names all three:
    and S-48b already says the device is blank.
 2. **A full-flash restore.** Undetectable and unpreventable, per 6.1 and `SECURITY.md` tier 3.
 3. **Re-flashing the firmware.** `espflash`/`esptool` writing the whole flash, or an erase
-   that covers `0x450000`, resets it. A user who reflashes their own device and finds the
+   that covers `0xE40000`, resets it. A user who reflashes their own device and finds the
    count back at 1 has not been attacked; they have flashed their device. This is the most
    likely real-world encounter with the reset and it is the first line of the
    `VERIFYING.md` paragraph.
@@ -1484,8 +1545,8 @@ numbers, no invented values".
 | Flash unique ID | `esp_flash_read_unique_chip_id(NULL, &u64)`; `ESP_ERR_NOT_SUPPORTED` if absent | boot | us | a factory serial number for the flash part - a swapped chip changes it | anything if the part does not implement `4Bh`; and it is the top 64 of 128 bits on GD parts (section 4.6) |
 | Partitions (map) | `esp_partition_find` / iterator | boot | us | the live table, row by row, comparable to `firmware/partitions.csv` | that a partition's contents match its declared purpose |
 | Reserved space | raw read of the must-be-blank spans, section 3.3 | **on demand** | *(V2)*, seconds | no bytes are present outside the partitions and images | that a payload is absent from a *mutable* partition, or that the scan itself is honest |
-| `wallets` digest (raw) | raw read of `0x410000..0x450000` | on demand | ~ms | whether the sealed region changed since the owner last looked | anything about content - it is a digest of ciphertext |
-| `counters` digest (raw) | raw read of `0x450000..0x454000` | on demand | ~ms | the ledger changed (it changes every boot) | anything - it is expected to change |
+| `wallets` digest (raw) | raw read of `0xE00000..0xE40000` | on demand | ~ms | whether the sealed region changed since the owner last looked | anything about content - it is a digest of ciphertext |
+| `counters` digest (raw) | raw read of `0xE40000..0xE44000` | on demand | ~ms | the ledger changed (it changes every boot) | anything - it is expected to change |
 
 ### 10.4 efuse
 
@@ -1605,10 +1666,13 @@ Three tables ship, and their budgets are fixed here rather than left to the impl
 `firmware/partitions.csv` so the two are compared directly:
 
 ```
-    factory   app/fact  0x010000   4096K
-    wallets   data/0x40 0x410000    256K  enc
-    counters  data/0x41 0x450000     16K
+    factory   app/fact  0x010000  14272K
+    wallets   data/0x40 0xE00000    256K  enc
+    counters  data/0x41 0xE40000     16K
 ```
+
+(`14272K` is `0xDF0000`, the app declared at its collision bound by the ratified Q7. The
+six-character size column was sized for `4096K` and still fits; nothing in the layout moves.)
 
 *eFuse key blocks* - **two lines per block**, because P4's longest key-purpose enumerator is
 `HMAC_DOWN_DIGITAL_SIGNATURE` at 27 characters and truncating an enumerator name would break
@@ -1630,10 +1694,10 @@ values, not words. `<unused>` is the rendering for a block where
 line that can carry an offset):
 
 ```
-    0x454000-0x2000000     27 967 488 B
+    0xe44000-0x2000000     18 595 840 B
       all 0xff
-    0x1c1f00-0x410000       2 482 432 B
-      4 096 set, first 0x01c2000
+    0x1d1c00-0xe00000      12 772 352 B
+      4 096 set, first 0x01d2000
 ```
 
 ### 11.2 Sections
@@ -1698,7 +1762,7 @@ viewports shown; the sheet is longer and scrolls.
 |    00  3f9a 27c1 b40e 55d2 8a11 6ffe                                  |
 |    24  0c93 4471 e2ab 1d05 77c8 39b6                                  |
 |    48  aa41 0e2f 9c73 5b18                                            |
-|  Bootloader image (0x002000, 26 512 B)                                |
+|  Bootloader image (0x002000, 22 352 B)                                |
 |    00  ...                                                            |
 |                                                    ------ more below  |
 +----------------------------------------------------------------------+
@@ -1720,9 +1784,9 @@ Later viewports, same shapes:
 |  JEDEC ID                        c8 40 19                             |
 |  Flash unique ID (64 of 128)     4d81 2f60 aa39 07c5                  |
 |  Partitions                                                           |
-|    factory   app/fact  0x010000   4096K                               |
-|    wallets   data/0x40 0x410000    256K  enc                          |
-|    counters  data/0x41 0x450000     16K                               |
+|    factory   app/fact  0x010000  14272K                               |
+|    wallets   data/0x40 0xE00000    256K  enc                          |
+|    counters  data/0x41 0xE40000     16K                               |
 |  Reserved space                  not scanned      [ Scan ]            |
 |                                                                       |
 |  efuse                                                                |
@@ -1987,4 +2051,7 @@ catch a swap for the same model.*
 *Recommendation: yes, and increment before the self-test runs.* A boot that ended at S-02
 still happened, and a counter that skips failed boots is a counter an attacker can advance for
 free by causing failures. Cost: the counter write happens early in boot, before the UI exists,
-which is fine - it is one bit-clear program into an already-erased cell.
+which is fine - it is one bit-clear program into an already-erased cell. **Bounded by the
+precondition in section 6: early in boot means early in boot on a device whose ledger is
+formatted. On an unprovisioned or blank device there is no write at all, because invariant 2a
+forbids one.**

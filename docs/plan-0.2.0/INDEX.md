@@ -1,6 +1,6 @@
 # notyas 0.2.0 planning set - index and status
 
-**Reconciled 2026-08-17.** These documents were written in three waves and then
+**Reconciled 2026-08-17.** These documents were written in four waves and then
 reconciled into one execution-ready plan. A later reviewer should treat them as
 reconciled and NOT re-derive them: the contradictions between waves have been found,
 decided, and recorded, and re-opening them without new information will just churn.
@@ -12,13 +12,14 @@ Two files carry the reconciliation:
   wins as of the reconciliation date. Its section 8 (R1-R20) is the register of every
   contradiction found and how it was resolved, with reasoning.
 - **OPEN-QUESTIONS.md** - the single decision list, **RATIFIED 2026-08-17**. Wave-1's
-  thirteen questions, wave-2's three, the red team's two escalations and the wave-3
-  documents' own open items are merged, deduplicated and renumbered through Q50, and
+  thirteen questions, wave-2's three, the red team's two escalations and the wave-3 and
+  wave-4 documents' own open items are merged, deduplicated and renumbered through Q61, and
   every question with a clear technical optimum has now been decided on the project
-  owner's instruction. **Forty-one are settled and are recorded, with their reasoning,
+  owner's instruction. **Fifty-one are settled and are recorded, with their reasoning,
   in that file's RATIFIED DECISIONS section, ordered by milestone.** The file opens with
   an OWNER DECISIONS section carrying the **ten** that remain, and that section is
-  self-contained: nothing else in the file is needed to answer them.
+  self-contained: nothing else in the file is needed to answer them. The VERIFY.md sweep
+  added ten questions (Q52-Q61) and no owner decisions, so the owner's list is unchanged.
 
   **Nothing blocks m1 any more.** The old statement "Q1-Q8 block milestone 1" is
   superseded. Q1, Q3, Q4, Q5, Q6 and Q7 are ratified; Q8 was answered directly by the
@@ -64,17 +65,24 @@ Everything else is a normative input that MILESTONES.md and OPEN-QUESTIONS.md re
    rendered text. **Defines m6's and m7's exit criteria.**
 10. **REPRODUCIBLE.md** - the reproducible-build recipe and verification procedure.
     **Gates the release milestones (m12, m13).**
-11. **CAMERA-HW.md** - camera hardware and software integration spec: the J1 CSI
+11. **VERIFY.md** - the "Verify device" capability: everything the device can honestly
+    report about itself, and the boundary past which no amount of reporting helps because
+    the report is produced by the software under suspicion. Owns screen S-46's row set,
+    frozen field order and CI assertions, the firmware-chain and reserved-space digests,
+    the eFuse posture, and the boot counter. **Authoritative for S-46 and for the
+    device-verification readout.** Read after UX-SCREENS.md, which still owns the screen
+    inventory and the component vocabulary this document uses.
+12. **CAMERA-HW.md** - camera hardware and software integration spec: the J1 CSI
     connector and the replug experiment that answers m1's spike, the esp_video /
     esp_cam_sensor / PPA / rqrr pipeline, the ingress validator, the per-board
     support split, and the staged m-camera-0..5 ordering. **Authoritative for camera
-    bring-up.** Read after CAMERA.md (14), which is the ranking it takes as settled.
-12. **BACKUP-FEATURES.md** - backup, restore and device-lifecycle feature detail
+    bring-up.** Read after CAMERA.md (15), which is the ranking it takes as settled.
+13. **BACKUP-FEATURES.md** - backup, restore and device-lifecycle feature detail
     (m9, and the scope of OPEN-QUESTIONS Q14).
-13. **PARITY.md** - the Coldcard Mk4/Q feature matrix. Reference, not a plan; read it
+14. **PARITY.md** - the Coldcard Mk4/Q feature matrix. Reference, not a plan; read it
     when you need to know why a feature is or is not in a milestone.
-14. **CAMERA.md** - camera input paths, ranked. Feeds OPEN-QUESTIONS Q6.
-15. **PLATFORM.md** - the ESP32-P4 Rust ecosystem survey and the contribution
+15. **CAMERA.md** - camera input paths, ranked. Feeds OPEN-QUESTIONS Q6.
+16. **PLATFORM.md** - the ESP32-P4 Rust ecosystem survey and the contribution
     shortlist. Feeds milestones m3h, m9 and m12.
 
 Authority rule between this set and MILESTONES.md: where a companion document and
@@ -108,17 +116,21 @@ per-board airgap statement), `docs/HARDWARE.md`, `docs/research/`.
 | CORPUS.md | 3 | adversarial PSBT corpus, m6/m7 exit criteria | PRESENT; corpus-1..5 -> Q39-Q43 |
 | ESP-SEAL.md | 3 | firmware platform traits, sealed-storage layer; **authoritative for the sealed-storage layer and the on-flash format** | PRESENT (commit ed031c1); **SWEPT 2026-08-17** - four OPEN items: 2.4 -> Q44, 4.3 -> Q45, 9.1 licence folded into Q8, 9.1 publish timing -> Q46; three escalations applied to the plan texts, see below. **All four settled 2026-08-17**: the crate is NOT extracted, the layer is a notyas-wallet module, and this document stays authoritative for its design |
 | CAMERA-HW.md | 3 | camera hardware and software integration spec behind CAMERA.md's decision | PRESENT (commit f5aa401); **SWEPT 2026-08-17** - 6.2 per-board policy -> Q47, 6.2 ship-or-slip folded into Q6, 6.4 SeedQR scan-in -> Q48, 6.4 default preview -> Q49, 1.7/6.4 reference-module purchase (one item, stated twice) -> Q50 |
+| VERIFY.md | 4 | the Verify-device capability; **authoritative for screen S-46 and the device-verification readout** | PRESENT; **SWEPT 2026-08-17** - its ten section-14 items -> Q52-Q61, all ratified, none reaching the owner. Three correctness fixes applied in place rather than raised as questions: the superseded partition geometry throughout (R23), the image-tail arithmetic in its scan example, and a boot counter that would have falsified SECURITY invariant 2a on blank devices (R24). Its overlap with UX-SCREENS' own S-46 entry is settled in VERIFY.md's favour for content (R25) |
 
-**Sweep status (2026-08-17): COMPLETE. No document in this directory is owed a
-sweep.** Every open item present here is in OPEN-QUESTIONS.md, including those that do
-not use the literal `OPEN:` prefix (BACKUP-FEATURES.md uses `OPEN-Bn`, CORPUS.md uses
+**Sweep status (2026-08-17): COMPLETE through VERIFY.md. No document in this directory is
+owed a sweep.** Every open item present here is in OPEN-QUESTIONS.md, including those that
+do not use the literal `OPEN:` prefix (BACKUP-FEATURES.md uses `OPEN-Bn`, CORPUS.md uses
 `OPEN: (corpus-n)`). Swept at reconciliation: WALLET-API.md, REPRODUCIBLE.md,
 BACKUP-FEATURES.md, UX-SCREENS.md, CORPUS.md. Swept afterwards, in the final
 integration pass: ESP-SEAL.md and CAMERA-HW.md, both of which landed after the
-reconciliation. The list now runs to **Q51** - Q51 was raised by the Q8 answer and asks whether we may contribute code and test data to outside projects under THEIR permissive licence. If a further design document lands,
-continue the numbering from there, attribute the source document, keep its
-recommendation, and give each item a blast radius and an owning milestone; apply
-correctness fixes to the plan texts directly rather than raising them as questions.
+reconciliation. Swept last: VERIFY.md, which landed after that. The list now runs to
+**Q61**. Q51 was raised by the Q8 answer and asks whether we may contribute code and test
+data to outside projects under THEIR permissive licence; Q52-Q61 are VERIFY.md's ten items,
+all ratified. If a further design document lands, continue the numbering from **Q62**,
+attribute the source document, keep its recommendation, and give each item a blast radius
+and an owning milestone; apply correctness fixes to the plan texts directly rather than
+raising them as questions.
 
 **ESP-SEAL.md's three escalations were correctness fixes, not questions, and are
 applied in place (2026-08-17):**
@@ -181,6 +193,15 @@ acceptance criteria.
   modules keep the ground they claim, and ESP-SEAL.md remains the authoritative DESIGN
   document for that module (format, state machine, power-loss guarantees, attack
   analysis). One implementation, one address.
+- **VERIFY.md versus UX-SCREENS.md on screen S-46** - both specified it, and they
+  disagreed on more than detail: UX-SCREENS rendered the flash-encryption row as a
+  `WARNING` carrying an advice sentence, which VERIFY.md's design contract rule 2 forbids
+  outright. **SETTLED in VERIFY.md's favour for content (R25).** VERIFY.md owns S-46's row
+  set, frozen field order, geometry and CI assertions; UX-SCREENS keeps the screen
+  inventory, the component library and the copy vocabulary, and its S-46 sketch is marked
+  superseded in detail. The dev-board caveat the struck WARNING carried is real and moves
+  to the "Save (PIN-protected)" fork and the wipe-policy sub-screen, where a warning can
+  still change a decision.
 - **CAMERA-HW.md 6.2 versus MILESTONES m11's exit gate** - **SETTLED by Q47.** m11 gated on
   the camera-off image SHA256 being unchanged by the feature's presence in the tree;
   CAMERA-HW shows that is not achievable, because esp-idf-sys metadata cannot be
@@ -202,7 +223,8 @@ duress" and "byte-identical signatures to Bitcoin Core". Those two became decisi
 and are now OPEN-QUESTIONS Q2 and Q3.
 
 Wave 2 added PARITY.md, CAMERA.md and PLATFORM.md. Wave 3 is this reconciliation plus
-the API-level documents.
+the API-level documents (WALLET-API, ESP-SEAL, UX-SCREENS, CORPUS, REPRODUCIBLE,
+BACKUP-FEATURES, CAMERA-HW). Wave 4 is VERIFY.md, swept the same day it landed.
 
 If a file listed above is missing from the directory, it has not landed yet. The
 reconciliation itself does not depend on its contents, but the milestone it governs
@@ -330,6 +352,33 @@ The rest of each document stands.
   2026-08-17**. The counters partition is plaintext, so flash encryption contributes
   nothing to rollback resistance (escalation 1 above).
 
+**VERIFY.md**
+
+- The partition offsets throughout - `wallets` at 0x410000, `counters` at 0x450000, a 4 MiB
+  app, an 11.7 MiB unmapped tail - were the SUPERSEDED ARCHITECTURE 2.7 layout. **Corrected
+  in place 2026-08-17 to the frozen Q7 geometry, in sixteen places** (flash map, scan
+  example, cost table, `counters` location, raw-digest ranges, both wireframes). See
+  MILESTONES **R23** for the part that is not a find-and-replace: the freeze moves almost
+  all of the must-be-blank space into the app tail, which is the region the merged-image
+  caveat covers, so board B's fully trustworthy scan region is 1.73 MiB rather than
+  11.7 MiB. The document now says so.
+- The reserved-space scan example computed each image's tail from the image LENGTH rather
+  than from `base + length`. Corrected with the arithmetic shown.
+- Section 6's boot counter would have written to flash on every power-up, falsifying
+  SECURITY invariant 2a for blank devices. **Corrected in place**: no write and a
+  `not counted` row until the ledger is formatted (MILESTONES **R24**, ratified Q61).
+- Section 13's milestone mapping is adopted as written and is folded into MILESTONES'
+  milestone bodies; the V1-V3 measurements join m1's harness.
+
+**UX-SCREENS.md**
+
+- S-46's entry is **superseded in detail by VERIFY.md** and marked so in place; its
+  `WARNING`-with-advice edge state for flash encryption is struck (**R25**). The rest of the
+  document stands, including its ownership of the screen inventory, the component library
+  and the copy vocabulary.
+- Still owed, from the earlier sweep and unchanged: the Q22 passphrase-not-stored copy at
+  the five placements listed above.
+
 **Wave-1 milestone draft**
 
 - Old m9 (hardening closeout) is now m13. Ids m1, m2, m3, m4a, m4b, m5, m6, m7 and m8
@@ -388,6 +437,16 @@ OPEN-QUESTIONS.md carries the same map.
 | CAMERA-HW 6.4 (SeedQR) | Q48 | SeedQR scan-in friction and placement; does NOT reopen Q17 |
 | CAMERA-HW 6.4 (preview) | Q49 | Viewfinder preview on by default |
 | CAMERA-HW 1.7 / 6.4 | Q50 | Buy a known-good OV5647 reference module |
+| VERIFY 7.3 | Q52 | Publish a per-board verification manifest artifact - **ratified: accept**; field set frozen at m1, artifact at m12 |
+| VERIFY 6.2 | Q53 | Boot-log cell budget and placement - **ratified: reserved region, sized by M6**; inside the m3 format freeze |
+| VERIFY 11.5 | Q54 | Three new `RegionId` values - **ratified: accept** |
+| VERIFY 11.4 | Q55 | S-46's exemption from reflow rule 1 - **ratified: accept** |
+| VERIFY 7.4 | Q56 | `wallets` raw digest pre-PIN - **ratified conditionally**: pre-PIN only under Q2(a); a mechanical consequence of Q2, like Q37 |
+| VERIFY 3.3 / 3.4 | Q57 | Reserved-space scan at boot? - **ratified: on demand** |
+| VERIFY 5.1 | Q58 | Print all three secure-boot key digest slots - **ratified: yes, unconditionally**; does not pre-empt the owner's Q32 |
+| VERIFY 4.3 | Q59 | A mask-ROM digest - **ratified: no**; report the ROM version fields only |
+| VERIFY 4.6 | Q60 | Ship the flash unique-ID row? - **ratified: measurement-gated on m1's new V3 run** |
+| VERIFY 6 / 14 | Q61 | Boot counter on a failed self-test - **ratified: yes, and it does not exist on a blank device** (R24) |
 
 WALLET-API.md's internal decisions D1-D11 are its own and are not re-opened here.
 

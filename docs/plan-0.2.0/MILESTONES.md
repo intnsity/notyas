@@ -1,10 +1,15 @@
 # notyas 0.2.0 - Milestones (THE roadmap)
 
-Status: RECONCILED 2026-08-17. This file supersedes the wave-1 milestone draft and
-folds in wave 2 (PARITY.md, CAMERA.md, PLATFORM.md). Where any other document in
+Status: RECONCILED 2026-08-17, and swept again the same day for VERIFY.md. This file
+supersedes the wave-1 milestone draft and folds in wave 2 (PARITY.md, CAMERA.md,
+PLATFORM.md) and the wave-3 design documents. Where any other document in
 docs/plan-0.2.0/ disagrees with this file on scope, ordering, or dependency, this
 file wins as of the reconciliation date; the resolutions and their reasoning are
-recorded in section 8. docs/SECURITY.md (0.1.0) stays normative for invariants
+recorded in section 8 (R1-R25). The VERIFY.md sweep added no milestone and moved no
+dependency: it added measurements V1-V3 and two freezes to m1, a cell array to m3's format
+freeze, the eFuse readout surface to m3h, the boot counter to m4a, screen S-46 to m4b, a QR
+export to m8, one artifact to m12, and the self-reporting wording to m13 - plus findings
+R23, R24 and R25. docs/SECURITY.md (0.1.0) stays normative for invariants
 until plan-0.2.0/SECURITY.md lands at m13.
 
 Release framing (user directive, encoded here so no milestone re-litigates it):
@@ -56,6 +61,7 @@ in the wave-3 documents, and each one is the authority inside its milestone:
 | REPRODUCIBLE.md | the reproducible-build recipe and its verification procedure - the release gate | m12, m13 |
 | CAMERA-HW.md | camera hardware bring-up detail behind CAMERA.md's decision | m1 spike, m11 |
 | BACKUP-FEATURES.md | backup, restore and device-lifecycle feature detail | m9, and Q14's scope |
+| VERIFY.md | the "Verify device" capability: what the device reads about itself, the firmware-chain and reserved-space digests, the eFuse posture, the boot counter, and screen S-46's row set, frozen field order and CI assertions | m1 (decisions and the V1-V3 measurements), m3h, m4a, m4b, m8, m12, m13 |
 
 Rule: where a companion document and this file disagree on WHAT is built, the
 companion wins; where they disagree on WHEN or on what closes a milestone, this file
@@ -246,6 +252,25 @@ Hard serialization on hardware resources, stated so two agents do not collide:
     the ratified Q8/Q44/Q46 there is no crate to name. M1 and M2 are the
     Argon2id and PSRAM-bandwidth runs above. Only M6 is an exit gate; the rest are
     "committed numbers, no invented values".
+  - **Three more measurements from VERIFY.md 13, on the same harness and the same bench
+    session.** **V1** - app, bootloader and partition-table hash times at boot on both
+    boards (0.1.0 already logs the app number; this commits it). **V2** - raw
+    read-and-hash throughput over the whole part on both fitted flash chips, which sizes
+    the reserved-space scan. **V3** - whether `esp_flash_read_unique_chip_id()` returns a
+    plausible, stable, non-zero value on each fitted part, taken at the same moment as the
+    M6 JEDEC-ID read because it is the same bench operation. V3 is a gate on one screen row
+    only, not on the milestone: the ratified Q60 ships the flash unique-ID row if V3 passes
+    on both boards and renders `not supported` otherwise.
+  - **Two freezes VERIFY.md needs taken here, both because m12's artifact set depends on
+    them and neither because of UI work:** the composite `firmware_digest` construction
+    (VERIFY.md 2.4) and the field set of the per-board verification manifest
+    `notyas-<ver>-<board>-VERIFY.json` (VERIFY.md 7.3, ratified Q52). No Verify-screen UI is
+    built at m1 - that is m4b - but a manifest whose fields are decided after the release
+    recipe is written is a manifest that arrives too late to be reproduced.
+  - **M6 gains a second consumer, which raises what it decides.** The boot counter is a
+    bit-clear cell array in the same `counters` partition and under the same partial-page
+    limit as the attempt ledger (ratified Q53), so M6's measured number now sizes both. If
+    it comes back below 32, both arrays are re-laid-out together before m3 opens.
   - Camera decision spike (board A, half a day, CAMERA.md section 5): plug the
     user's SeedSigner OV5647 module into J1, run the esp-video `capture_stream`
     example, record pass/fail. This is the cheapest possible answer to Q6. **Two
@@ -272,9 +297,12 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   including the encryption-on run; **M6 answered on both boards - JEDEC ID read off
   each fitted part, the matching datasheet's partial-page-program limit cited, and a
   soak test showing 32 cell programs into one 256-byte page read back intact; if the
-  limit is below 32, the ledger cell layout is re-designed and the geometry freeze
-  re-taken before m1 closes**; the camera spike result committed as pass or fail with
-  the module part number; CI red on a planted `rand` dependency.
+  limit is below 32, the ledger cell layout AND the boot-log cell layout are re-designed
+  together and the geometry freeze re-taken before m1 closes**; the camera spike result
+  committed as pass or fail with the module part number; V1, V2 and V3 committed beside the
+  Argon2 numbers, with V3's verdict recorded as ship-or-`not supported` for the flash
+  unique-ID row; the `firmware_digest` construction and the VERIFY.json field set frozen in
+  the plan texts; CI red on a planted `rand` dependency.
 - **Parity rows closed:** none directly (foundation). Unblocks every storage row.
 - **Implements:** audit repo hygiene; storage research 3.2 ("never ship a guessed
   KDF cost"); red-team counter-partition finding (ARCH 2.5/2.7); CAMERA.md decision
@@ -325,6 +353,16 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   feature being off; ESP-SEAL.md already describes the right check and REPRODUCIBLE.md
   and this document did not.** Key Manager support is compiled out on rev < v3.0
   silicon and is not designed around (Q9).
+  **Also here, because this is the module whose whole purpose is safe Rust over these
+  peripherals: the eFuse posture READOUT surface VERIFY.md section 5 needs** - key-block
+  purposes, `RD_DIS`/`WR_DIS`, `esp_secure_boot_read_key_digests()` (all three slots and
+  their revocation bits, ratified Q58), the download-mode and JTAG field group, and the
+  anti-rollback pair. `KeyProvenance` (ESP-SEAL.md 4.x) is the same readout in miniature, so
+  building the two separately would be two implementations of one thing. Extending
+  `firmware/bindings/verify.h` is the only mechanism available for any of it (VERIFY.md 1),
+  and the `ESP_EFUSE_*` symbols are revision-family dependent: they must be re-checked
+  against the post-v3 table if Q9 moves production silicon, which is a standing requirement
+  rather than a one-off.
 - **Crates / areas:** in-tree workspace member (Q46: never extracted, never published),
   firmware (consumer).
 - **Exit gate (hardware):** on board B, `esp_hmac_calculate()` over a known key in a
@@ -359,7 +397,13 @@ Hard serialization on hardware resources, stated so two agents do not collide:
     firmware-implemented later.
   - Two-slot A/B record format; separate plaintext counter region with Trezor-style
     paired one-way bit-clear logs interleaved with guard bits derived from a
-    device-bound guard key. Counters CANNOT live in the encrypted partition:
+    device-bound guard key. **The boot log is one of those cell arrays and is allocated
+    HERE, not at m4a** (ratified Q53): it takes its cells from the ledger sector's reserved
+    region and the second reserved sector pair rather than shrinking `attempt_entry`,
+    `attempt_success` or `pin_gen_log`, adds two head words (`acknowledged_at` and its own
+    `log_id`), and is sized against m1's measured M6 limit. Adding it after the freeze would
+    be a format change under existing users, and shrinking the attempt log to make room
+    would weaken the tail reserve that makes Q5's ceiling of 25 a frozen constant. Counters CANNOT live in the encrypted partition:
     XTS-encrypted partitions require 16-byte-aligned, 16-byte-minimum writes and
     cannot re-program individual bits, which is exactly what the bit-clear scheme
     needs (red-team correction, ARCH 2.5).
@@ -430,8 +474,19 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   Note: anti-phishing words derive from the eFuse key, so they exist only after
   provisioning. A blank stateless device has none, and no screen may imply otherwise
   (R20).
+  **Also here (VERIFY.md 6, ratified Q61): the boot counter and the owner-set
+  acknowledgement mark**, written into the ledger cells m3 allocated. Two rules are
+  acceptance criteria, not implementation detail. The counter increments BEFORE the boot
+  self-test runs, so a boot that ends at S-02 is still counted and failures are not a free
+  way to advance it. And nothing is written at all while `StoreState` is `Unprovisioned` or
+  `Blank` - the row renders `not counted`, never `0` - because SECURITY invariant 2a keeps
+  the 0.1.0 stateless property verbatim for a device with no stored wallet, and a
+  convenience row does not get to falsify it (R24). Pressing `[ Mark as seen ]` is a flash
+  write and carries a `C12 WriteNotice` band; it is post-PIN only, because a coercer who can
+  press it erases the gap the counter exists to show.
 - **Build specs:** UX-SCREENS.md for screens 2 and 16; ESP-SEAL.md for the driver and
-  the provisioning path; CORPUS.md for the hardware-in-the-loop procedure.
+  the provisioning path; VERIFY.md section 6 for the boot counter and the acknowledgement
+  mark, and 7.4 for the pre-PIN field set; CORPUS.md for the hardware-in-the-loop procedure.
 - **Test rig (lead time, order at m1):** the power-cut gate below needs a
   USB-controlled relay or FET; it cannot be faked (Q43). The HIL test-mode console
   ships build-feature-gated and off by default, with a release gate asserting its
@@ -465,8 +520,20 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   "Save (PIN-protected)" vs "Use once, keep nothing" fork; delete with typed-name
   confirmation; capacity line ("3 of 8 slots"), subject to Q2's Verify-readout
   decision.
-- **Build specs:** UX-SCREENS.md is the per-screen build spec; UX.md remains the
-  design rationale behind it.
+- **Also in scope: the S-46 Verify-device rebuild**, which is the largest single screen
+  0.2.0 adds and is specified end to end in VERIFY.md sections 10-11: the three row kinds,
+  the six frozen sections, the frozen field order, the viewport pager, the identity /
+  firmware / flash rows, the on-demand reserved-space scan with its C3 Busy screen (Q57),
+  and the CI assertions in 11.7. Its design contract is binding and is what makes the screen
+  worth having: raw values shown in full, no verdicts or advice beside a value, and a field
+  order that does not move between builds so two units can be compared side by side rather
+  than read. Storage-row granularity follows whichever Q2 package is ratified; the `wallets`
+  raw digest is pre-PIN only under Q2(a) (Q56); S-46 keeps full body width at 800x480 (Q55);
+  three new `RegionId` values land (Q54).
+- **Build specs:** UX-SCREENS.md is the per-screen build spec and owns the screen inventory,
+  the component library and the copy vocabulary; **VERIFY.md is authoritative for S-46's
+  content, row set, field order and CI assertions**, and UX-SCREENS' own S-46 sketch is
+  superseded in detail (R25). UX.md remains the design rationale behind both.
 - **Acceptance criteria carried from Q22 (RESOLVED):** the "your passphrase is not
   stored" warning appears at all three placements - passphrase entry during creation
   (before the wallet is saved), the post-creation backup screen, and every restore or
@@ -483,7 +550,10 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   delete walk on BOTH boards; UI flow tests driven through touch+tick at both
   geometries; masking pixel tests extended to PIN and session screens (two different
   mnemonics must render byte-identical masked frames); uisim tour renders every new
-  screen.
+  screen; S-46 renders its frozen field order at both geometries with identical hex line
+  breaks, every value read from the running system (a planted compiled-in constant fails
+  CI), and the reserved-space scan completing on both boards within VERIFY.md 2.5's
+  expectation or the discrepancy explained.
 - **Parity rows closed:** Seed Vault (b - as PIN-ladder-sealed slots, see R9),
   device nickname / home XFP / idle timeout (a), calculator login (a, if kept),
   View Identity (a), Destroy Seed (a), Selftest and maintenance menu (a/b).
@@ -595,6 +665,10 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   ledger (section 6). The final network transaction is also offered as a QR so a
   phone can broadcast it - this is the honest equivalent of Coldcard's NFC PushTX.
   One UR implementation only: `foundation-ur`, not `ur` (R5).
+  Once the QR player exists, S-46's `[ Show as QR ]` rides it: the complete Verify readout
+  as a `notyas-verify/1` payload, so the values can be captured and compared off-device
+  instead of transcribed (VERIFY.md 7.2). It is an export affordance, not a new capability -
+  the screen still presents and never judges.
 - **Crates / areas:** notyas-wallet (chunking parameters), notyas-ui, firmware.
 - **Exit gate (hardware):** host round-trip against reference decoder vectors;
   Sparrow webcam-scans a signed multisig PSBT off BOTH boards at default and lowest
@@ -748,6 +822,15 @@ Hard serialization on hardware resources, stated so two agents do not collide:
     Jade's REPRODUCIBLE.md - the first public one for the Rust + esp-idf-sys stack.
     This directory's REPRODUCIBLE.md is the authoritative recipe and verification
     procedure; m12 and m13 cannot close while it is absent.
+  - **The per-board verification manifest** `notyas-<ver>-<board>-VERIFY.json` (ratified
+    Q52): emitted by the container build, listed in the signed SHA256SUMS.txt, and itself
+    rebuilt bit-identically on the second machine - a published artifact that is not
+    reproduced is a hole in the chain this milestone exists to close. It carries the image
+    offsets, lengths and both digests per member of the trusted path, which is what makes
+    the device's numbers checkable at all and what settles the content-digest versus
+    file-digest confusion REPRODUCIBLE.md 4.3 names as the likeliest support question.
+    REPRODUCIBLE.md 3.5's artifact table takes this row and the ratified Q47 camera-variant
+    row in the same edit.
   - **Nothing is published to crates.io.** Q8 was answered GPL-3.0-or-later for
     everything, and Q44/Q46 follow from it: the sealing layer stays a module inside
     notyas-wallet, `esp-idf-hmac`, `seedqr` and `bsms` stay in-tree, and no crate is
@@ -803,8 +886,14 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   - Extended boot self-test: seal/unseal KAT and a reduced-cost KDF KAT with the
     cost rationale documented in the source (the full-cost KDF does not fit the 1 s
     self-test budget).
-  - Verify screen finalized: storage state (granularity per Q2), anti-rollback and
-    HMAC-key state as actually read, per-board camera support statement.
+  - Verify screen finalized against VERIFY.md: storage state (granularity per Q2),
+    anti-rollback and HMAC-key state as actually read, per-board camera support statement,
+    and the final frozen field order. This is the first time most of the eFuse section is
+    anything but `disabled`, so the whole section is validated against a real release unit
+    AFTER the burn runbook rather than inferred from dev boards. VERIFY.md section 9's
+    self-reporting wording - what this screen can and cannot prove, given that it is produced
+    by the software under suspicion - lands verbatim in docs/SECURITY.md and VERIFYING.md;
+    it is the sentence that keeps the screen honest and it is not optional.
   - Release-unit runbook: eFuse HMAC-key provisioning, XTS-AES flash encryption,
     Secure Boot v2 RSA-3072 (never ECDSA - AR2026-006), anti-rollback, in a fixed
     order of burns with a dry run on a sacrificial unit.
@@ -1151,6 +1240,57 @@ record carries only a KDF-separated `passphrase_check` fingerprint, inside the A
 The consequences are acceptance criteria, not copy suggestions: three warning
 placements at m4b and a one-time acknowledgment before the first passphrase wallet is
 saved (OPEN-QUESTIONS Q22).
+
+**R23 - VERIFY.md was written against the superseded partition geometry.** Found in the
+VERIFY.md sweep, 2026-08-17. That document's flash map, its reserved-space scan example, its
+cost table, its `counters` location, its raw-digest ranges and both of its wireframes used
+`wallets` at 0x410000, `counters` at 0x450000, a 4 MiB app and an 11.7 MiB unmapped tail -
+the layout the ratified Q7 replaced. Sixteen places. Resolution: corrected in place to the
+frozen offsets, because MILESTONES and Q7 win on geometry and ARCHITECTURE 2.7 already
+carried the frozen table.
+
+*Why this was more than a find-and-replace, and the part worth remembering:* the freeze moves
+where the blank space **is**. Declaring the app at its collision bound turns the app tail into
+almost all of the must-be-blank space (about 12.8 MiB for a 1.8 MiB image) and shrinks board
+B's unmapped tail from 11.7 MiB to 1.73 MiB. VERIFY.md's own merged-image caveat says a
+`merged.bin` flash writes `0xff` padding that becomes ciphertext on an encrypted unit - and
+that caveat covers exactly the app tail. So on a release board B flashed from a merged image,
+the scan's fully trustworthy region is 1.73 MiB rather than 11.7 MiB. The document now states
+that plainly, with the three mitigations that keep it useful (flash the artifacts separately;
+unencrypted units are unaffected; the per-span report shows which case you are in) and one
+prohibition: the scan must not quietly exclude the app tail to avoid false positives, which
+would trade a legible caveat for an invisible blind spot. A second, independent arithmetic
+error in the same example - image tails computed from the image LENGTH rather than from
+`base + length` - was fixed at the same time.
+
+**R24 - a boot counter would have falsified SECURITY invariant 2a.** Found in the VERIFY.md
+sweep. VERIFY.md section 6 adds a power-on counter in the plaintext `counters` ledger and its
+section 14 recommends incrementing it early in every boot. Invariant 2a says of a device with
+no stored wallet that "nothing is ever written to flash" - the 0.1.0 stateless property,
+retained verbatim and mechanically enforced. A counter incrementing on every power-up writes
+to flash on blank and unprovisioned devices, so the two cannot both stand. Resolution: the
+invariant wins, and it is not close - this project's governing rule is that a claim is
+mechanically enforced or not made, and trading a headline invariant for a convenience row is
+the wrong direction. Counting begins when the ledger is formatted, which is the same moment
+the device stops being stateless for every other reason; before that the row renders
+`not counted`, never `0`. Ratified as Q61(ii). The feature keeps its value: it answers "has
+anyone powered this on since I set it up", and the question it cannot answer - since the
+factory - is not answerable on this hardware by any means.
+
+**R25 - two documents specified screen S-46, and one of them opined.** Found in the VERIFY.md
+sweep. VERIFY.md declares itself the owner document for S-46 and specifies a design contract
+whose rule 2 forbids verdicts, risk language and advice sentences beside a value; UX-SCREENS'
+S-46 entry carried an edge state rendering the flash-encryption row as a `WARNING` with
+"disabled - a stored wallet on this board is protected by the PIN only". Resolution: the
+contract wins for this screen's content. A screen whose purpose is to let an owner read raw
+values loses that purpose the moment it starts interpreting them, and VERIFY.md's field order
+and colour rules are CI-asserted while a prose caveat is not. UX-SCREENS keeps the screen
+inventory, the component library and the copy vocabulary; its S-46 sketch is marked superseded
+in detail and the WARNING edge state is struck. The caveat itself is real and moves rather
+than disappearing: a dev board's stored wallet IS protected by the PIN ladder alone, and that
+belongs at the moment of decision - the "Save (PIN-protected)" fork and the wipe-policy
+sub-screen - where it can change behaviour, not on an instrument panel the user opened to read
+hex.
 
 **R20 - anti-phishing words before provisioning. AMENDED 2026-08-17 by the ratified
 Q45.** The words derive from the eFuse key, which is burned **by the host with
