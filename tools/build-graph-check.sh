@@ -72,19 +72,33 @@ for lock in $LOCKS; do
         # RNG crates in firmware: check if getrandom appears as a dep of anything
         # OTHER than tempfile/embuild (which are build-time only). We approximate
         # this by checking if any non-exempt package depends on it.
+        #
+        # Implemented in awk, not python: this check must run identically on a CI
+        # runner, a maintainer's Windows shell and a minimal container. A silently
+        # missing interpreter used to abort the whole script under `set -e` with no
+        # message, which is the worst possible failure mode for a security gate.
         for crate in $BANNED_RNG; do
             if grep -q "^name = \"${crate}\"$" "$lock"; then
-                # Check if it's only pulled by build-time deps.
-                PULLERS=$(python3 -c "
-import re, sys
-with open('$lock') as f:
-    content = f.read()
-for block in content.split('[[package]]'):
-    if '\"$crate\"' in block and not block.strip().startswith('name = \"$crate\"'):
-        name = re.search(r'name = \"(.+?)\"', block)
-        if name and name.group(1) not in ['embuild', 'tempfile', 'getrandom', 'cc', 'bindgen']:
-            print(name.group(1))
-" 2>/dev/null)
+                # Every package whose `dependencies` list names $crate, minus the
+                # host-side build-tool exemptions. Lockfile dependency entries are
+                # either "name" or "name version (source)", so the first
+                # whitespace-separated token is the crate name.
+                PULLERS=$(awk -v crate="$crate" -v exempt=" $BUILD_DEP_EXEMPT cc bindgen " '
+                    /^\[\[package\]\]/ { name = ""; indeps = 0; next }
+                    /^name = "/        { name = $0; sub(/^name = "/, "", name);
+                                         sub(/"$/, "", name); next }
+                    /^dependencies = \[/ { indeps = 1; next }
+                    indeps && /^\]/    { indeps = 0; next }
+                    indeps {
+                        dep = $0
+                        sub(/^[ \t]*"/, "", dep)
+                        sub(/",?$/, "", dep)
+                        split(dep, parts, " ")
+                        if (parts[1] == crate && name != crate &&
+                            index(exempt, " " name " ") == 0) seen[name] = 1
+                    }
+                    END { for (n in seen) print n }
+                ' "$lock" | sort | tr '\n' ' ')
                 if [ -n "$PULLERS" ]; then
                     echo "VIOLATION: banned crate '${crate}' pulled at runtime by: $PULLERS (in $lock)"
                     VIOLATIONS=$((VIOLATIONS + 1))
