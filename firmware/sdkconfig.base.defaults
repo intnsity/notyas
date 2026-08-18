@@ -1,20 +1,19 @@
-# notyas firmware - sdkconfig defaults.
-# Board: Waveshare ESP32-P4-WiFi6-Touch-LCD-4B (ESP32-P4NRW32, rev v1.3, 32 MB flash).
+# notyas firmware - shared sdkconfig defaults (all boards).
+# Board-specific options (flash size only, by policy - nothing in this file
+# may name a GPIO or a flash size) live in boards/<board>/sdkconfig.defaults;
+# tools/build.ps1 passes both via ESP_IDF_SDKCONFIG_DEFAULTS (later file wins).
 
 # --- Chip revision (make-or-break) -------------------------------------------
-# Our dev silicon is rev v1.3, i.e. the pre-v3.0 engineering-sample family.
-# IDF v5.5 defaults to CONFIG_ESP32P4_REV_MIN_301 (rev >= v3.1); an image built
-# for the v3.x family flashes fine on v1.3 silicon but never boots (ROM banner
-# only / boot loop, no output). Numbering note: ESP32P4_REV_MIN_1 is rev v0.1
-# and ESP32P4_REV_MIN_100 is rev v1.0 (REV_MIN_FULL = major*100 + minor).
+# All current dev units (Waveshare 4B and Elecrow CrowPanel Advanced) are
+# rev v1.3, i.e. the pre-v3.0 engineering-sample family. IDF v5.5 defaults to
+# CONFIG_ESP32P4_REV_MIN_301 (rev >= v3.1); an image built for the v3.x family
+# flashes fine on v1.3 silicon but never boots (ROM banner only / boot loop,
+# no output). Numbering note: ESP32P4_REV_MIN_1 is rev v0.1 and
+# ESP32P4_REV_MIN_100 is rev v1.0 (REV_MIN_FULL = major*100 + minor).
 # SELECTS_REV_LESS_V3 caps REV_MAX_FULL at 199, excluding v3.x chips entirely.
 # Release builds for production (rev >= v3.1) hardware MUST revisit this.
 CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
 CONFIG_ESP32P4_REV_MIN_100=y
-
-# --- Flash -------------------------------------------------------------------
-# 32 MB external QSPI NOR (Waveshare's own example sdkconfigs wrongly say 16MB).
-CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
 
 # --- Logging -----------------------------------------------------------------
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
@@ -35,13 +34,14 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y
 
 # --- PSRAM (0.1.0-m2) --------------------------------------------------------
-# 32 MB in-package PSRAM (ESP32-P4NRW32). The DPI panel driver allocates the
-# 720x720 RGB565 framebuffer (~1 MB) from this heap, so display work needs it.
+# Both boards use the ESP32-P4NRW32 (32 MB in-package PSRAM). The panel
+# drivers allocate the framebuffer from this heap, so display work needs it.
 # Speed combination is Waveshare's own proven config (their esp_lcd_st7703
 # test app): 200 MHz PSRAM clock, which IDF gates behind the experimental
 # features flag. XIP from PSRAM + 256 KB L2 cache with 128 B lines per the
 # Waveshare BSP examples - code/rodata execute from PSRAM, freeing internal
-# RAM and keeping the DSI stream from starving flash cache.
+# RAM and keeping the display stream from starving flash cache. Proven on
+# both boards' rev v1.3 silicon (same package).
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_200M=y
 CONFIG_IDF_EXPERIMENTAL_FEATURES=y

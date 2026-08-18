@@ -18,7 +18,15 @@ debug = true # symbols are nice and they don't increase the size on flash
 opt-level = "z"
 
 [features]
+# Exactly one board feature must be enabled (enforced in src/board/mod.rs).
+# There is deliberately no default: the build IS the board (docs/BOARDS.md),
+# and a build that does not name its hardware must fail, not guess.
 default = []
+board-waveshare-4b = []
+board-elecrow-5 = []
+board-elecrow-7 = []
+board-elecrow-9 = []
+board-elecrow-101 = []
 
 [dependencies]
 log = "0.4"
@@ -39,3 +47,14 @@ bindings_header = "bindings/st7703.h"
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/esp_lcd_touch_gt911", version = "^1" }
 bindings_header = "bindings/gt911.h"
+
+# Elecrow CrowPanel Advanced boards. The EK79007 DSI panel driver serves the
+# 7/9/10.1 inch siblings; the bindings header also surfaces the core-IDF RGB
+# panel API used by the 5 inch. NOTE: esp-idf-sys package metadata cannot be
+# feature-gated, so every board build compiles all components and carries all
+# bindings - the cfg-gated Rust in src/board/ only ever calls its own board's
+# surface (the security argument lives in what runs, but keep this in mind
+# when auditing the C side of the image).
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/esp_lcd_ek79007", version = "^1" }
+bindings_header = "bindings/elecrow.h"

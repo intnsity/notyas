@@ -18,12 +18,18 @@ MCU = "esp32p4"
 # silently dropped. Pinning CARGO_WORKSPACE_DIR to the crate dir fixes the
 # probe. `value = "", relative = true` expands to this config file's parent.
 CARGO_WORKSPACE_DIR = { value = "", relative = true }
-# Pass the defaults file EXPLICITLY. Relying on esp-idf-sys's automatic
+# Pass the defaults files EXPLICITLY. Relying on esp-idf-sys's automatic
 # root-crate discovery silently fails here (its `cargo metadata` probe runs in
 # CARGO_TARGET_DIR and finds no Cargo.toml), and the build then proceeds with
 # stock IDF defaults - i.e. rev v3.1+ family - producing an image that boots
 # nothing on our rev v1.3 silicon.
-ESP_IDF_SDKCONFIG_DEFAULTS = { value = "sdkconfig.defaults", relative = true }
+# Semicolon list, later file wins; relative paths are resolved by esp-idf-sys
+# against CARGO_WORKSPACE_DIR (pinned above), i.e. this directory's parent.
+# This in-repo default selects the WAVESHARE overlay so a bare `cargo build`
+# stays safe on the reference board; tools/build.ps1 -Board overrides it with
+# the right pair - ALWAYS build other boards through build.ps1, or the image
+# gets the wrong flash-size header.
+ESP_IDF_SDKCONFIG_DEFAULTS = "sdkconfig.base.defaults;boards/waveshare-4b/sdkconfig.defaults"
 # ESP-IDF release tag, checked out and managed by esp-idf-sys/embuild.
 # v5.5.5 is rejected in practice: it backports new struct fields
 # (sdmmc_host_t.unaligned_multi_block_rw_max_chunk_size,
