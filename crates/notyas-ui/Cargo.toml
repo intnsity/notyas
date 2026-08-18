@@ -19,8 +19,10 @@ publish = false
 # DrawTarget types are identical across the three crates. Pure Rust, no_std.
 embedded-graphics = "0.8"
 # The pipeline this UI fronts. default-features = false drops the "qr" feature (qrcode
-# needs std); 0.1.0 has no QR screen, and leaving it out keeps this crate provable on a
-# bare-metal target exactly like the core.
+# needs std): this crate NEVER computes a QR code - it renders precomputed matrices
+# handed in via Ui::show_qr (the firmware answers Ui::touch's UiRequest::Qr with the
+# core's std-side encoder) - which keeps the crate provable on a bare-metal target
+# exactly like the core. See src/qr.rs and the crate-level "QR scope" docs.
 notyas-core = { path = "../notyas-core", default-features = false }
 # Committed notyas Sans / notyas Mono glyph atlases and the text renderer.
 notyas-fonts = { path = "../notyas-fonts" }

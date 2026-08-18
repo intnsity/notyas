@@ -12,7 +12,7 @@ use embedded_graphics::geometry::{OriginDimensions, Size};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::Pixel;
 
-use notyas_ui::{theme, Region, RegionId, ScreenId, TouchEvent, Ui};
+use notyas_ui::{theme, QrData, Region, RegionId, ScreenId, TouchEvent, Ui, UiRequest};
 
 // ---------------------------------------------------------------------------------------
 // Test framebuffer
@@ -74,12 +74,22 @@ fn region(ui: &Ui, id: RegionId) -> Region {
         .unwrap_or_else(|| panic!("no region {id:?} on {:?}", ui.screen()))
 }
 
-/// Tap the center of a region, the way the simulator and a finger do.
-fn tap(ui: &mut Ui, id: RegionId) {
+/// Tap the center of a region, the way the simulator and a finger do. Returns what the
+/// Up leg of the tap asked the embedder to do (QR requests; `None` for everything else).
+fn tap(ui: &mut Ui, id: RegionId) -> Option<UiRequest> {
     let r = region(ui, id).rect;
     let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
     ui.touch(TouchEvent::Down { x, y });
-    ui.touch(TouchEvent::Up { x, y });
+    ui.touch(TouchEvent::Up { x, y })
+}
+
+/// A synthetic (non-scannable) symbol for modal tests: the UI renders whatever matrix
+/// it is handed, so a checkerboard exercises layout without notyas-core's std-only
+/// encoder in the dev graph.
+fn checkerboard(size: usize) -> QrData {
+    let rows: Vec<Vec<bool>> =
+        (0..size).map(|y| (0..size).map(|x| (x + y) % 2 == 0).collect()).collect();
+    QrData::from_matrix(&rows).unwrap()
 }
 
 fn type_dice(ui: &mut Ui, digits: &str) {
@@ -166,10 +176,21 @@ fn walk_all_screens(w: u32, h: u32) {
 
     let mut ui = Ui::new(w, h);
     check(&ui);
+    // Network toggle: both states lay out (and the toggle overlaps nothing - the
+    // region checks run on every stop).
+    tap(&mut ui, RegionId::NetToggle);
+    check(&ui);
+    tap(&mut ui, RegionId::NetToggle);
 
     // Dice -> mnemonic -> modal -> revealed -> passphrase (on) -> schemes.
     tap(&mut ui, RegionId::HomeNewSeed);
     check(&ui);
+    // Every dice mode lays out (the fixed-count hint is the longer one - review
+    // item 3; the mode set is the full desktop one, RAW/12/15/18/21/24).
+    for i in (0..6).rev() {
+        tap(&mut ui, RegionId::Mode(i));
+        check(&ui);
+    }
     type_dice(&mut ui, SIXES);
     check(&ui);
     tap(&mut ui, RegionId::DiceDone);
@@ -194,6 +215,16 @@ fn walk_all_screens(w: u32, h: u32) {
         tap(&mut ui, RegionId::Tab(i));
         check(&ui);
     }
+    // QR modal: open from a real request, check it is the only tappable thing, close.
+    // The xpub button is the one QR button visible without scrolling on every geometry.
+    tap(&mut ui, RegionId::Tab(2));
+    let req = tap(&mut ui, RegionId::QrXpub).expect("QR tap must raise a request");
+    let UiRequest::Qr(target) = req;
+    ui.show_qr(target, checkerboard(29));
+    check(&ui);
+    assert_eq!(ui.regions().len(), 1, "QR modal open: only Close is tappable");
+    tap(&mut ui, RegionId::ModalClose);
+    check(&ui);
     tap(&mut ui, RegionId::Back);
     assert_eq!(ui.screen(), ScreenId::Home);
 
@@ -258,18 +289,83 @@ fn backspace_removes_rolls() {
 
 #[test]
 fn fixed_mode_effective_bits_gate_matches_desktop() {
-    // In FIXED mode the mnemonic is a hash stretch: 24 words advertise 256 ENT bits,
-    // but three rolls are still three rolls. Done must stay inert (effective bits rule).
+    // In fixed-count mode the mnemonic is a hash stretch: 24 words advertise 256 ENT
+    // bits, but three rolls are still three rolls. Done must stay inert (effective
+    // bits rule).
     let mut ui = Ui::new(720, 720);
     tap(&mut ui, RegionId::HomeNewSeed);
-    tap(&mut ui, RegionId::ModeToggle); // RAW -> FIXED 24
+    tap(&mut ui, RegionId::Mode(5)); // RAW -> fixed 24
     type_dice(&mut ui, "123");
     tap(&mut ui, RegionId::DiceDone);
     assert_eq!(ui.screen(), ScreenId::DiceEntry);
-    // Enough rolls for 128 effective bits unlocks it, and FIXED yields a mnemonic.
+    // Enough rolls for 128 effective bits unlocks it, and the fixed mode yields a
+    // mnemonic.
     type_dice(&mut ui, SIXES);
     tap(&mut ui, RegionId::DiceDone);
     assert_eq!(ui.screen(), ScreenId::MnemonicDisplay);
+}
+
+/// Every fixed word count of the desktop set is selectable and derives once the
+/// effective-bits gate opens.
+#[test]
+fn all_fixed_word_counts_reach_the_mnemonic() {
+    for i in 1u8..=5 {
+        let mut ui = Ui::new(720, 720);
+        tap(&mut ui, RegionId::HomeNewSeed);
+        tap(&mut ui, RegionId::Mode(i));
+        type_dice(&mut ui, SIXES);
+        tap(&mut ui, RegionId::DiceDone);
+        assert_eq!(ui.screen(), ScreenId::MnemonicDisplay, "mode segment {i}");
+    }
+}
+
+/// The roll history is visible, unmasked typed input (desktop survey section 5): a
+/// different last digit changes the dice frame, and backspace restores it exactly.
+/// Contrast with the mnemonic screen, whose masked frame is seed-independent.
+#[test]
+fn roll_history_shows_and_backspace_reverts() {
+    let mut ui = Ui::new(720, 720);
+    tap(&mut ui, RegionId::HomeNewSeed);
+    type_dice(&mut ui, "12345");
+    let five = Fb::render(&ui, 720, 720);
+    type_dice(&mut ui, "6");
+    let six = Fb::render(&ui, 720, 720);
+    assert_ne!(five.px, six.px, "the sixth roll must appear in the history tail");
+    tap(&mut ui, RegionId::DiceBackspace);
+    let reverted = Fb::render(&ui, 720, 720);
+    assert_eq!(five.px, reverted.px, "backspace must restore the previous frame");
+}
+
+/// With far more rolls than the tail can show, digits that scrolled off the left end
+/// no longer influence any pixel of the history band - the tail is bounded and clipped
+/// to its well (the ellipsis marks the cut), it never bleeds or reflows the screen.
+#[test]
+fn roll_history_tail_is_bounded_by_its_well() {
+    for (w, h) in [(720u32, 720u32), (800, 480)] {
+        // Same trailing 40 digits, different equal-length 90-digit prefixes
+        // (rotations of one block, so the roll count matches too).
+        let tail = "1234512345123451234512345123451234512345";
+        let a = format!("{}{tail}", "162534".repeat(15));
+        let b = format!("{}{tail}", "253416".repeat(15));
+        let mk = |digits: &str| {
+            let mut ui = Ui::new(w, h);
+            tap(&mut ui, RegionId::HomeNewSeed);
+            type_dice(&mut ui, digits);
+            Fb::render(&ui, w, h)
+        };
+        let (fa, fb) = (mk(&a), mk(&b));
+        // The history band: full body width, HIST_H (44) tall, at the top of the body.
+        let body = notyas_ui::layout::Metrics::new(w, h).body();
+        for y in body.y..body.y + 44 {
+            for x in 0..w as i32 {
+                let i = (y as u32 * w + x as u32) as usize;
+                assert_eq!(
+                    fa.px[i], fb.px[i],
+                    "{w}x{h}: pixel ({x},{y}) depends on digits beyond the visible tail"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -412,4 +508,187 @@ fn home_renders_butter_paper() {
     let fb = Fb::render(&ui, 720, 720);
     assert!(fb.count(theme::PAPER_1) > 100_000, "the page must be paper-1");
     assert!(fb.count(theme::ACCENT) > 1_000, "the primary button must be cobalt");
+}
+
+// ---------------------------------------------------------------------------------------
+// QR display
+// ---------------------------------------------------------------------------------------
+
+/// BIP39 test vector #1 (SIXES, no passphrase), BIP84 `m/84'/0'/0'/0/0` - the same
+/// published constant notyas-core's qr tests use. Nothing secret.
+const VECTOR1_BIP84_ADDR0: &str = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
+/// The matching SLIP-132 account key.
+const VECTOR1_BIP84_ZPUB: &str = "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs";
+
+/// SIXES flow with the passphrase left off, landed on Schemes.
+fn ui_at_schemes(w: u32, h: u32) -> Ui {
+    let mut ui = ui_at_mnemonic(w, h, SIXES);
+    tap(&mut ui, RegionId::Next);
+    tap(&mut ui, RegionId::KeyDone); // passphrase off -> Continue
+    assert_eq!(ui.screen(), ScreenId::Schemes);
+    ui
+}
+
+/// The QR request carries exactly the public string the screen shows - pinned against
+/// the published test-vector values, so a payload transformation (or an off-by-one in
+/// the row indexing) cannot hide.
+#[test]
+fn qr_requests_carry_the_shown_public_values() {
+    let mut ui = ui_at_schemes(720, 720);
+    tap(&mut ui, RegionId::Tab(2)); // BIP84
+    let UiRequest::Qr(zpub) = tap(&mut ui, RegionId::QrSlip132).expect("slip132 QR");
+    assert_eq!(zpub.payload, VECTOR1_BIP84_ZPUB);
+    let UiRequest::Qr(xpub) = tap(&mut ui, RegionId::QrXpub).expect("xpub QR");
+    assert!(xpub.payload.starts_with("xpub"), "{}", xpub.payload);
+    assert!(xpub.label.starts_with("Account xpub m/84'"), "{}", xpub.label);
+    // The first address row sits below the fold on the 720 panel with the SLIP-132
+    // block present - scroll it into view, exactly as a finger would.
+    ui.touch(TouchEvent::Down { x: 360, y: 400 });
+    ui.touch(TouchEvent::Move { x: 360, y: 100 });
+    ui.touch(TouchEvent::Up { x: 360, y: 100 });
+    let UiRequest::Qr(addr) = tap(&mut ui, RegionId::QrAddress(0)).expect("address QR");
+    assert_eq!(addr.payload, VECTOR1_BIP84_ADDR0);
+    assert_eq!(addr.label, "m/84'/0'/0'/0/0");
+    // The taps alone must NOT open anything: the modal waits for show_qr.
+    assert!(ui.regions().iter().any(|r| r.id == RegionId::Back), "no modal yet");
+}
+
+/// show_qr opens the modal, Close restores the schemes screen pixel-identically, and
+/// while the modal is open the sheet below (tabs, back, QR buttons) is inert.
+#[test]
+fn qr_modal_opens_and_closes_on_both_geometries() {
+    for (w, h) in [(720u32, 720u32), (800, 480)] {
+        let mut ui = ui_at_schemes(w, h);
+        let before = Fb::render(&ui, w, h);
+        let UiRequest::Qr(target) = tap(&mut ui, RegionId::QrXpub).expect("request");
+        ui.show_qr(target, checkerboard(33));
+        let open = Fb::render(&ui, w, h);
+        assert_ne!(before.px, open.px, "{w}x{h}: the modal must actually draw");
+        let regions = ui.regions();
+        assert_eq!(regions.len(), 1, "{w}x{h}: modal open, only Close");
+        assert_eq!(regions[0].id, RegionId::ModalClose);
+        tap(&mut ui, RegionId::ModalClose);
+        let closed = Fb::render(&ui, w, h);
+        assert_eq!(before.px, closed.px, "{w}x{h}: Close must restore the sheet exactly");
+    }
+}
+
+/// The 0.1.0 QR scope, test-asserted: no QR button exists on any screen that handles
+/// secret material (dice rolls, the mnemonic - masked or revealed, a typed phrase, the
+/// passphrase), and a stray show_qr on those screens is dropped, not displayed.
+#[test]
+fn no_qr_is_reachable_from_secret_screens() {
+    let is_qr = |r: &Region| {
+        matches!(r.id, RegionId::QrXpub | RegionId::QrSlip132 | RegionId::QrAddress(_))
+    };
+    let assert_qr_free = |ui: &mut Ui, name: &str| {
+        assert!(!ui.regions().iter().any(is_qr), "{name} offers a QR button");
+        let before = Fb::render(ui, 720, 720);
+        let stray = notyas_ui::QrTarget {
+            label: String::from("stray"),
+            payload: String::from("stray"),
+        };
+        ui.show_qr(stray, checkerboard(21));
+        let after = Fb::render(ui, 720, 720);
+        assert_eq!(before.px, after.px, "{name} displayed an unsolicited QR");
+    };
+
+    let mut ui = Ui::new(720, 720);
+    tap(&mut ui, RegionId::HomeNewSeed);
+    type_dice(&mut ui, SIXES);
+    assert_qr_free(&mut ui, "dice entry");
+    tap(&mut ui, RegionId::DiceDone);
+    assert_qr_free(&mut ui, "mnemonic (masked)");
+    tap(&mut ui, RegionId::Reveal);
+    tap(&mut ui, RegionId::ModalConfirm);
+    assert_qr_free(&mut ui, "mnemonic (revealed)");
+    tap(&mut ui, RegionId::Next);
+    tap(&mut ui, RegionId::PassToggle);
+    assert_qr_free(&mut ui, "passphrase entry");
+
+    let mut ui = Ui::new(720, 720);
+    tap(&mut ui, RegionId::HomeVerifySeed);
+    type_keys(&mut ui, "zoo zoo zoo");
+    assert_qr_free(&mut ui, "phrase entry");
+}
+
+/// Off-screen QR buttons are not tappable: on the short panel the last address row
+/// starts below the viewport, and its button only joins the hit regions after
+/// scrolling down.
+#[test]
+fn qr_buttons_scroll_with_the_content() {
+    let mut ui = ui_at_schemes(800, 480);
+    let visible =
+        |ui: &Ui| ui.regions().iter().any(|r| r.id == RegionId::QrAddress(4));
+    assert!(!visible(&ui), "address 4 must start below the 480px viewport");
+    // Drag far past the limit; the UI clamps to the real content height.
+    ui.touch(TouchEvent::Down { x: 400, y: 400 });
+    ui.touch(TouchEvent::Move { x: 400, y: -2000 });
+    ui.touch(TouchEvent::Up { x: 400, y: -2000 });
+    assert!(visible(&ui), "address 4 must be tappable after scrolling to the end");
+}
+
+// ---------------------------------------------------------------------------------------
+// Network toggle
+// ---------------------------------------------------------------------------------------
+
+/// The Home toggle drives the whole pipeline: testnet derivations produce tb1
+/// addresses, the SLIP-132 rendering (mainnet-only by definition) disappears, and the
+/// choice survives leaving and re-entering the flow.
+#[test]
+fn network_toggle_reaches_the_derivation() {
+    let mut ui = Ui::new(720, 720);
+    tap(&mut ui, RegionId::NetToggle);
+    tap(&mut ui, RegionId::HomeNewSeed);
+    type_dice(&mut ui, SIXES);
+    tap(&mut ui, RegionId::DiceDone);
+    tap(&mut ui, RegionId::Next);
+    tap(&mut ui, RegionId::KeyDone);
+    assert_eq!(ui.screen(), ScreenId::Schemes);
+    tap(&mut ui, RegionId::Tab(2)); // BIP84
+    let UiRequest::Qr(addr) = tap(&mut ui, RegionId::QrAddress(0)).expect("address QR");
+    assert!(addr.payload.starts_with("tb1"), "testnet BIP84 address: {}", addr.payload);
+    assert!(
+        !ui.regions().iter().any(|r| r.id == RegionId::QrSlip132),
+        "SLIP-132 is mainnet-only and must vanish on testnet"
+    );
+    // A fresh Ui defaults to mainnet: same flow, bc1 address (the SLIP-132 block
+    // above the rows pushes row 0 below the fold - scroll it into view first).
+    let mut ui2 = ui_at_schemes(720, 720);
+    tap(&mut ui2, RegionId::Tab(2));
+    ui2.touch(TouchEvent::Down { x: 360, y: 400 });
+    ui2.touch(TouchEvent::Move { x: 360, y: 100 });
+    ui2.touch(TouchEvent::Up { x: 360, y: 100 });
+    let UiRequest::Qr(a2) = tap(&mut ui2, RegionId::QrAddress(0)).expect("address QR");
+    assert!(a2.payload.starts_with("bc1"), "mainnet by default: {}", a2.payload);
+}
+
+// ---------------------------------------------------------------------------------------
+// Passphrase byte counter invariant
+// ---------------------------------------------------------------------------------------
+
+/// The passphrase status row reports NFKD BYTES computed as `len()`. That shortcut is
+/// sound only while every key the on-screen keyboard can emit is ASCII (NFKD identity,
+/// one byte per char) - this pins the invariant against future keyboard pages.
+#[test]
+fn every_keyboard_key_is_ascii() {
+    let mut ui = Ui::new(720, 720);
+    tap(&mut ui, RegionId::HomeVerifySeed);
+    let assert_ascii = |ui: &Ui| {
+        for r in ui.regions() {
+            if let RegionId::Key(c) = r.id {
+                assert!(
+                    c.is_ascii(),
+                    "key '{c}' is not ASCII: the NFKD-bytes-as-len counter breaks"
+                );
+            }
+        }
+    };
+    assert_ascii(&ui); // lowercase page (initial)
+    tap(&mut ui, RegionId::Shift);
+    assert_ascii(&ui); // uppercase
+    tap(&mut ui, RegionId::PageDigits);
+    assert_ascii(&ui); // digits page
+    tap(&mut ui, RegionId::PageSymbols);
+    assert_ascii(&ui); // symbols page
 }

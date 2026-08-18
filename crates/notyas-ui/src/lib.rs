@@ -26,6 +26,23 @@
 //! - No secret appears in any `Debug` output; [`Ui`]'s impl prints the screen id only.
 //! - There is no clipboard, no export, no persistence: pixels are the only output.
 //!
+//! # QR scope (0.1.0)
+//!
+//! The only values the UI ever offers as a QR code are **public**: per-scheme receive
+//! addresses and the account xpub (plus its SLIP-132 rendering where one exists). There
+//! is deliberately **no private-key export path on the device at all** - no mnemonic,
+//! xprv, seed or WIF ever renders as a QR (or leaves the device any other way), which is
+//! stronger than masking: desktop BigDice can reveal private values behind its reveal
+//! gate, the device cannot. SeedQR-style mnemonic export is a considered 0.2.x feature,
+//! not an 0.1.0 omission. Enforced structurally (the QR buttons exist only on the
+//! Schemes screen, and only on public values) and asserted by the test suite.
+//!
+//! The UI also never *computes* a QR: notyas-core's `qr` feature needs std, and this
+//! crate stays `no_std`. A tap on a QR button makes [`Ui::touch`] return
+//! [`UiRequest::Qr`] naming the payload; the firmware encodes it (std side) and hands
+//! the finished matrix back through [`Ui::show_qr`]. See [`qr`] for why this
+//! request/response split was chosen over a provider callback.
+//!
 //! # Hit testing
 //!
 //! [`Ui::regions`] is the single source of truth for what is tappable: `touch` resolves
@@ -44,6 +61,7 @@ extern crate std;
 
 pub mod canvas;
 pub mod layout;
+pub mod qr;
 mod screens;
 pub mod theme;
 
@@ -58,6 +76,7 @@ use embedded_graphics::primitives::Rectangle;
 use zeroize::{Zeroize, Zeroizing};
 
 use layout::{Metrics, Rect};
+pub use qr::QrData;
 // `bitcoin` through the core's re-export: the UI names the pipeline's own exact pin
 // (it only needs `Network::Bitcoin`), never a second dependency that could drift.
 use notyas_core::bip39::{self, Mnemonic, MnemonicMode, WordCount, MIN_SECURE_BITS};
@@ -122,8 +141,9 @@ pub enum RegionId {
     /// Dice keypad digit, 1..=6.
     Digit(u8),
     DiceBackspace,
-    /// RAW / FIXED mode toggle on the dice screen.
-    ModeToggle,
+    /// Dice mode segment, indexing the desktop mode set: RAW, then
+    /// [`bip39::FIXED_WORD_COUNTS`] (12/15/18/21/24) - see [`dice_mode`].
+    Mode(u8),
     DiceDone,
     /// Opens the reveal-confirm modal on the mnemonic screen.
     Reveal,
@@ -147,8 +167,50 @@ pub enum RegionId {
     KeyDone,
     /// Scheme tab, indexing [`Scheme::ALL`].
     Tab(u8),
+    /// QR button beside the account xpub on the schemes screen.
+    QrXpub,
+    /// QR button beside the SLIP-132 rendering (BIP49/84 mainnet only).
+    QrSlip132,
+    /// QR button beside receive address row `n` (0-based).
+    QrAddress(u8),
     ModalCancel,
     ModalConfirm,
+    /// Close button of the QR modal.
+    ModalClose,
+    /// Mainnet / testnet toggle on the Home screen.
+    NetToggle,
+}
+
+// ---------------------------------------------------------------------------------------
+// Requests to the embedder
+// ---------------------------------------------------------------------------------------
+
+/// What the user asked to see as a QR code. Both fields are **public values by
+/// construction**: the only [`RegionId`]s that produce a target are the schemes screen's
+/// QR buttons, which sit beside receive addresses and account xpubs (see the crate-level
+/// "QR scope" note). `label` is what the modal will title itself with (a derivation
+/// path or "Account xpub ..."), safe to log; `payload` is the exact string to encode -
+/// no transformation between what the screen shows and what the scanner reads, the same
+/// policy as `notyas_core::qr`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QrTarget {
+    pub label: String,
+    pub payload: String,
+}
+
+/// Work the [`Ui`] needs its embedder to do, returned from [`Ui::touch`].
+///
+/// Chosen over a provider trait/callback deliberately: a callback would have to be
+/// stored (`Box<dyn ...>` erasing what runs inside the input path) or threaded through
+/// every `touch` call, and either way QR encoding - std-only code - would execute
+/// *inside* this no_std crate's state machine. Returning a request keeps `touch` a pure
+/// state transition, keeps the std/no_std boundary visible in the type system, and
+/// costs the embedder three lines: match, encode, [`Ui::show_qr`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiRequest {
+    /// Encode `payload` (e.g. with `notyas_core::qr::matrix`, std side), pack it into a
+    /// [`QrData`] and hand it back via [`Ui::show_qr`] together with this target.
+    Qr(QrTarget),
 }
 
 /// A tappable region: identity plus the rectangle it occupies right now.
@@ -290,11 +352,20 @@ pub(crate) struct PassState {
     pub page: Page,
 }
 
+/// The QR modal, open over the schemes screen: a finished symbol plus its title.
+pub(crate) struct QrModal {
+    pub label: String,
+    pub data: QrData,
+}
+
 pub(crate) struct SchemesState {
     /// The full pipeline output; its own Drop wipes the secrets it holds.
     pub report: Report,
     pub tab: usize,
     pub scroll: i32,
+    /// `Some` while the QR modal is open. Filled only through [`Ui::show_qr`]
+    /// (the embedder answering a [`UiRequest::Qr`]), never computed here.
+    pub qr: Option<QrModal>,
 }
 
 // The variants differ in size because each owns exactly its screen's data (a Report is
@@ -335,6 +406,11 @@ pub struct Ui {
     state: State,
     verify: VerifyInfo,
     pressed: Option<Pressed>,
+    /// Network every derivation runs on. Toggled on Home (desktop parity: the desktop
+    /// pipeline takes the network as an input too); lives on the `Ui` rather than in a
+    /// screen state so the choice survives screen changes within a session. Power-off
+    /// resets it to mainnet like everything else - the device is stateless.
+    network: bitcoin::Network,
 }
 
 impl core::fmt::Debug for Ui {
@@ -353,7 +429,13 @@ impl Ui {
             state: State::Home,
             verify: VerifyInfo::default(),
             pressed: None,
+            network: bitcoin::Network::Bitcoin,
         }
+    }
+
+    /// The network the next derivation will run on (Home-screen toggle).
+    pub fn network(&self) -> bitcoin::Network {
+        self.network
     }
 
     pub fn screen(&self) -> ScreenId {
@@ -383,14 +465,19 @@ impl Ui {
 
     /// Feed one touch event. Taps fire on Up over the same region the Down hit;
     /// vertical drags scroll the scrollable screens (mnemonic grid, scheme details).
-    pub fn touch(&mut self, ev: TouchEvent) {
+    ///
+    /// Returns `Some` when the tap needs work only the embedder can do (currently: QR
+    /// encoding, which is std-only - see [`UiRequest`]). Dropping a request loses
+    /// nothing but the response; the state machine has already moved on cleanly.
+    pub fn touch(&mut self, ev: TouchEvent) -> Option<UiRequest> {
         match ev {
             TouchEvent::Down { x, y } => {
                 let id = self.hit(x, y);
                 self.pressed = Some(Pressed { id, last_y: y, moved: 0 });
+                None
             }
             TouchEvent::Move { x: _, y } => {
-                let Some(p) = self.pressed.as_mut() else { return };
+                let p = self.pressed.as_mut()?;
                 let dy = y - p.last_y;
                 p.last_y = y;
                 p.moved += dy.abs();
@@ -398,20 +485,34 @@ impl Ui {
                     p.id = None;
                 }
                 self.scroll_by(-dy);
+                None
             }
             TouchEvent::Up { x, y } => {
-                let Some(p) = self.pressed.take() else { return };
-                let (Some(down), Some(up)) = (p.id, self.hit(x, y)) else { return };
+                let p = self.pressed.take()?;
+                let (down, up) = (p.id?, self.hit(x, y)?);
                 if down == up && p.moved <= DRAG_SLOP {
-                    self.activate(down);
+                    self.activate(down)
+                } else {
+                    None
                 }
             }
         }
     }
 
+    /// Install the finished QR symbol for a [`UiRequest::Qr`] and open the modal.
+    ///
+    /// Only acts while the schemes screen is showing - the one screen whose regions can
+    /// emit a QR request. A response arriving after the user navigated away is dropped:
+    /// resurrecting a modal over a different screen would show a QR nobody asked for.
+    pub fn show_qr(&mut self, target: QrTarget, data: QrData) {
+        if let State::Schemes(s) = &mut self.state {
+            s.qr = Some(QrModal { label: target.label, data });
+        }
+    }
+
     /// Repaint the whole screen. The only output path this crate has.
     pub fn draw<D: DrawTarget<Color = Rgb565>>(&self, target: &mut D) -> Result<(), D::Error> {
-        screens::draw(target, &self.m, &self.state, &self.verify)
+        screens::draw(target, &self.m, &self.state, &self.verify, self.network)
     }
 
     // --- internals ---------------------------------------------------------------------
@@ -428,7 +529,8 @@ impl Ui {
         let limit = screens::scroll_limit(&self.m, &self.state, &self.verify);
         match &mut self.state {
             State::Mnemonic(s) if !s.modal => s.scroll = (s.scroll + dy).clamp(0, limit),
-            State::Schemes(s) => s.scroll = (s.scroll + dy).clamp(0, limit),
+            // The sheet under an open QR modal is inert, scrolling included.
+            State::Schemes(s) if s.qr.is_none() => s.scroll = (s.scroll + dy).clamp(0, limit),
             State::Verify { scroll } => *scroll = (*scroll + dy).clamp(0, limit),
             _ => {}
         }
@@ -436,12 +538,21 @@ impl Ui {
 
     /// The state machine: what a completed tap on `id` does in the current state.
     /// Unmatched combinations are ignored by construction - `regions` never offers a
-    /// region the current state cannot act on.
-    fn activate(&mut self, id: RegionId) {
+    /// region the current state cannot act on. Returns the request a QR button raises;
+    /// every other tap resolves entirely inside this crate and returns `None`.
+    fn activate(&mut self, id: RegionId) -> Option<UiRequest> {
         match (&mut self.state, id) {
             // --- global -----------------------------------------------------------------
             // Dropping the state zeroizes every secret it held (see the state types).
             (_, RegionId::Back) => self.state = State::Home,
+
+            // --- home: network toggle ---------------------------------------------------
+            (State::Home, RegionId::NetToggle) => {
+                self.network = match self.network {
+                    bitcoin::Network::Bitcoin => bitcoin::Network::Testnet,
+                    _ => bitcoin::Network::Bitcoin,
+                };
+            }
 
             // --- home -------------------------------------------------------------------
             (State::Home, RegionId::HomeNewSeed) => self.state = State::Dice(DiceState::new()),
@@ -466,15 +577,12 @@ impl Ui {
                 s.rolls.pop();
                 s.entropy = parse_dice(&s.rolls);
             }
-            (State::Dice(s), RegionId::ModeToggle) => {
-                s.mode = match s.mode {
-                    MnemonicMode::Raw => MnemonicMode::Words(fixed_words()),
-                    MnemonicMode::Words(_) => MnemonicMode::Raw,
-                };
+            (State::Dice(s), RegionId::Mode(i)) if (i as usize) < DICE_MODE_LABELS.len() => {
+                s.mode = dice_mode(i);
             }
             (State::Dice(s), RegionId::DiceDone) => {
                 if s.effective_bits() < MIN_SECURE_BITS {
-                    return; // Drawn disabled, with the reason; a tap does nothing.
+                    return None; // Drawn disabled, with the reason; a tap does nothing.
                 }
                 if let Ok(mnem) = bip39::mnemonic_from_dice(&s.entropy, s.mode) {
                     let dice = core::mem::take(&mut s.entropy);
@@ -534,7 +642,7 @@ impl Ui {
             (State::Phrase(s), RegionId::KeyDone) => {
                 let normalized = bip39::normalize_phrase(&s.text);
                 if normalized.is_empty() {
-                    return; // Nothing typed; Done is drawn disabled.
+                    return None; // Nothing typed; Done is drawn disabled.
                 }
                 self.state = State::Passphrase(PassState {
                     source: SeedSource::Phrase(normalized),
@@ -569,7 +677,7 @@ impl Ui {
             (State::Passphrase(s), RegionId::PageSymbols) => s.page = Page::Symbols,
             (State::Passphrase(s), RegionId::KeyDone) => {
                 if s.enabled && *s.entry != *s.confirm {
-                    return; // Mismatch shown in danger ink; Done is drawn disabled.
+                    return None; // Mismatch shown in danger ink; Done is drawn disabled.
                 }
                 let passphrase: &str = if s.enabled { &s.entry } else { "" };
                 let params = Parameters {
@@ -579,7 +687,7 @@ impl Ui {
                         SeedSource::Phrase(_) => MnemonicMode::Raw,
                     },
                     passphrase,
-                    network: bitcoin::Network::Bitcoin,
+                    network: self.network,
                     schemes: &Scheme::ALL,
                     account: ChildIndex::ZERO,
                     change: ChildIndex::ZERO,
@@ -593,7 +701,8 @@ impl Ui {
                 // Both arms were validated before this screen; a None here would be a
                 // core bug, and staying put beats panicking in the input path.
                 if let Some(report) = report {
-                    self.state = State::Schemes(SchemesState { report, tab: 0, scroll: 0 });
+                    self.state =
+                        State::Schemes(SchemesState { report, tab: 0, scroll: 0, qr: None });
                 }
             }
 
@@ -602,18 +711,69 @@ impl Ui {
                 s.tab = i as usize;
                 s.scroll = 0;
             }
+            // The QR buttons: every payload here is a PUBLIC value (crate-level QR scope
+            // note). The request carries the exact string the screen shows - encoding
+            // happens on the embedder's std side, the modal opens via `show_qr`.
+            (State::Schemes(s), RegionId::QrXpub) => {
+                let acct = &s.report.schemes[s.tab.min(s.report.schemes.len() - 1)].derived.account;
+                return Some(UiRequest::Qr(QrTarget {
+                    label: format!("Account xpub {}", acct.path),
+                    payload: acct.xpub.clone(),
+                }));
+            }
+            (State::Schemes(s), RegionId::QrSlip132) => {
+                let sr = &s.report.schemes[s.tab.min(s.report.schemes.len() - 1)];
+                let (slip, (_, label)) =
+                    (sr.derived.account.slip132_pub.as_ref()?, sr.scheme.slip132_labels()?);
+                return Some(UiRequest::Qr(QrTarget {
+                    label: format!("{label} {}", sr.derived.account.path),
+                    payload: slip.clone(),
+                }));
+            }
+            (State::Schemes(s), RegionId::QrAddress(i)) => {
+                let sr = &s.report.schemes[s.tab.min(s.report.schemes.len() - 1)];
+                let row = sr.derived.rows.get(i as usize)?;
+                return Some(UiRequest::Qr(QrTarget {
+                    label: row.path.clone(),
+                    payload: row.address.clone(),
+                }));
+            }
+            (State::Schemes(s), RegionId::ModalClose) => s.qr = None,
 
             _ => {}
+        }
+        None
+    }
+}
+
+/// Segment labels of the dice mode control, in [`dice_mode`] index order. Desktop
+/// parity: the full `--words <raw|12|15|18|21|24>` set, not a binary toggle. All the
+/// fixed counts share the Coldcard/SeedSigner-compatible SHA256 math; RAW is the
+/// iancoleman-compatible raw-bits mode (ARCHITECTURE.md dice math note).
+pub(crate) const DICE_MODE_LABELS: [&str; 6] = ["RAW", "12", "15", "18", "21", "24"];
+
+/// The mode behind segment `i` of the dice mode control: 0 = RAW, 1..=5 = the
+/// [`bip39::FIXED_WORD_COUNTS`] entry. Total for any u8 (out-of-range clamps to 24),
+/// keeping the input path panic-free.
+pub(crate) fn dice_mode(i: u8) -> MnemonicMode {
+    match i {
+        0 => MnemonicMode::Raw,
+        _ => {
+            let count = bip39::FIXED_WORD_COUNTS[(i as usize - 1).min(4)];
+            // Every FIXED_WORD_COUNTS member is a valid WordCount by definition.
+            MnemonicMode::Words(WordCount::new(count).unwrap_or_else(|_| unreachable!()))
         }
     }
 }
 
-/// The FIXED mode's word count: 24, the Coldcard/SeedSigner-compatible full-length seed
-/// (their dice math is algorithm-identical to this mode - see ARCHITECTURE.md).
-fn fixed_words() -> WordCount {
-    // 24 is a member of FIXED_WORD_COUNTS, so this cannot fail; unwrap_or keeps the
-    // input path panic-free anyway.
-    WordCount::new(24).unwrap_or_else(|_| unreachable!())
+/// Inverse of [`dice_mode`], for drawing the active segment.
+pub(crate) fn dice_mode_index(mode: MnemonicMode) -> usize {
+    match mode {
+        MnemonicMode::Raw => 0,
+        MnemonicMode::Words(n) => {
+            1 + bip39::FIXED_WORD_COUNTS.iter().position(|&c| c == n.get()).unwrap_or(4)
+        }
+    }
 }
 
 /// Append/remove one character on whichever passphrase field has focus.

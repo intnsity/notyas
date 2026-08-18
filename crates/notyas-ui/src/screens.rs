@@ -24,10 +24,12 @@ use crate::canvas::{
 use crate::layout::{Metrics, Rect};
 use crate::theme::*;
 use crate::{
-    DiceState, MnemonicState, NullTarget, Page, PassFocus, PassState, PhraseState, Region,
-    RegionId, SchemesState, State, VerifyInfo, VERSION,
+    dice_mode_index, DiceState, MnemonicState, NullTarget, Page, PassFocus, PassState,
+    PhraseState, QrModal, Region, RegionId, SchemesState, State, VerifyInfo,
+    DICE_MODE_LABELS, VERSION,
 };
 use notyas_core::bip39::{self, rolls_for_bits, Checksum, MnemonicMode, MIN_SECURE_BITS};
+use notyas_core::bitcoin::Network;
 use notyas_core::derive::Scheme;
 
 const LINE: i32 = 42; // BODY / HEADING / MONO line height
@@ -45,14 +47,23 @@ pub(crate) fn regions(m: &Metrics, state: &State) -> Vec<Region> {
             out.push(Region { id: RegionId::HomeNewSeed, rect: btns[0] });
             out.push(Region { id: RegionId::HomeVerifySeed, rect: btns[1] });
             out.push(Region { id: RegionId::HomeVerifyDevice, rect: btns[2] });
+            out.push(Region { id: RegionId::NetToggle, rect: home_net_toggle(m) });
         }
-        State::Dice(_) => {
-            let l = dice_layout(m);
+        State::Dice(s) => {
+            let l = dice_layout(m, s.mode);
             out.push(Region { id: RegionId::Back, rect: back_rect(m) });
             for (i, k) in l.keys.iter().enumerate() {
                 out.push(Region { id: RegionId::Digit(i as u8 + 1), rect: *k });
             }
-            out.push(Region { id: RegionId::ModeToggle, rect: l.toggle });
+            let n = DICE_MODE_LABELS.len() as i32;
+            let seg_w = l.mode.w / n;
+            for i in 0..n {
+                let w = if i == n - 1 { l.mode.w - seg_w * (n - 1) } else { seg_w };
+                out.push(Region {
+                    id: RegionId::Mode(i as u8),
+                    rect: Rect::new(l.mode.x + i * seg_w, l.mode.y, w, l.mode.h),
+                });
+            }
             out.push(Region { id: RegionId::DiceBackspace, rect: l.backspace });
             out.push(Region { id: RegionId::DiceDone, rect: l.done });
         }
@@ -93,17 +104,41 @@ pub(crate) fn regions(m: &Metrics, state: &State) -> Vec<Region> {
                 out.push(Region { id: RegionId::KeyDone, rect: l.continue_btn });
             }
         }
-        State::Schemes(_) => {
-            let l = schemes_layout(m);
-            out.push(Region { id: RegionId::Back, rect: back_rect(m) });
-            let n = Scheme::ALL.len() as i32;
-            let seg_w = l.tabs.w / n;
-            for i in 0..n {
-                let w = if i == n - 1 { l.tabs.w - seg_w * (n - 1) } else { seg_w };
-                out.push(Region {
-                    id: RegionId::Tab(i as u8),
-                    rect: Rect::new(l.tabs.x + i * seg_w, l.tabs.y, w, l.tabs.h),
-                });
+        State::Schemes(s) => {
+            if let Some(qr) = &s.qr {
+                // Modal open: like the reveal modal, the sheet below is inert.
+                let l = qr_modal_layout(m, qr.data.size() as i32);
+                out.push(Region { id: RegionId::ModalClose, rect: l.close });
+            } else {
+                let l = schemes_layout(m);
+                out.push(Region { id: RegionId::Back, rect: back_rect(m) });
+                let n = Scheme::ALL.len() as i32;
+                let seg_w = l.tabs.w / n;
+                for i in 0..n {
+                    let w = if i == n - 1 { l.tabs.w - seg_w * (n - 1) } else { seg_w };
+                    out.push(Region {
+                        id: RegionId::Tab(i as u8),
+                        rect: Rect::new(l.tabs.x + i * seg_w, l.tabs.y, w, l.tabs.h),
+                    });
+                }
+                // QR buttons ride the scrolled content: replay the content walk (the
+                // same code that draws, so the rects cannot drift) and keep only the
+                // buttons fully inside the viewport - a partially clipped button draws
+                // but does not tap, which is the honest reading of "half a button".
+                let mut buttons = Vec::new();
+                let _ = schemes_content(
+                    &mut NullTarget,
+                    m,
+                    s,
+                    l.viewport.y - s.scroll,
+                    Some(&mut buttons),
+                );
+                out.extend(buttons.into_iter().filter(|b| {
+                    b.rect.x >= l.viewport.x
+                        && b.rect.y >= l.viewport.y
+                        && b.rect.right() <= l.viewport.right()
+                        && b.rect.bottom() <= l.viewport.bottom()
+                }));
             }
         }
         State::Verify { .. } => {
@@ -118,10 +153,11 @@ pub(crate) fn draw<D: DrawTarget<Color = Rgb565>>(
     m: &Metrics,
     state: &State,
     verify: &VerifyInfo,
+    network: Network,
 ) -> Result<(), D::Error> {
     fill(t, m.screen(), PAPER_1)?;
     match state {
-        State::Home => draw_home(t, m),
+        State::Home => draw_home(t, m, network),
         State::Dice(s) => draw_dice(t, m, s),
         State::Mnemonic(s) => draw_mnemonic(t, m, s),
         State::Phrase(s) => draw_phrase(t, m, s),
@@ -142,7 +178,8 @@ pub(crate) fn scroll_limit(m: &Metrics, state: &State, verify: &VerifyInfo) -> i
         }
         State::Schemes(s) => {
             let l = schemes_layout(m);
-            let end = schemes_content(&mut NullTarget, m, s, l.viewport.y).unwrap_or_default();
+            let end =
+                schemes_content(&mut NullTarget, m, s, l.viewport.y, None).unwrap_or_default();
             (end - l.viewport.y - l.viewport.h).max(0)
         }
         State::Verify { .. } => {
@@ -195,7 +232,19 @@ fn home_buttons(m: &Metrics) -> [Rect; 3] {
     ]
 }
 
-fn draw_home<D: DrawTarget<Color = Rgb565>>(t: &mut D, m: &Metrics) -> Result<(), D::Error> {
+/// The mainnet/testnet toggle, top-right so it reads as a device setting rather than a
+/// step of the flow. Compact on purpose: it clears the centered title on both shipped
+/// geometries (asserted by the region-overlap tests).
+fn home_net_toggle(m: &Metrics) -> Rect {
+    let w = 260.min(m.w / 2);
+    Rect::new(m.w - m.pad - w, m.pad, w, 48)
+}
+
+fn draw_home<D: DrawTarget<Color = Rgb565>>(
+    t: &mut D,
+    m: &Metrics,
+    network: Network,
+) -> Result<(), D::Error> {
     let title_y = m.h / 7;
     text_centered(
         t,
@@ -213,6 +262,10 @@ fn draw_home<D: DrawTarget<Color = Rgb565>>(t: &mut D, m: &Metrics) -> Result<()
         INK_SECONDARY,
         PAPER_1,
     )?;
+    // Desktop parity: the network is a pipeline input. Everything derived downstream
+    // (addresses, xpub prefixes, the schemes info line) reflects the choice.
+    let mainnet = network == Network::Bitcoin;
+    toggle(t, home_net_toggle(m), ["Mainnet", "Testnet"], usize::from(!mainnet))?;
     let [b0, b1, b2] = home_buttons(m);
     button(t, b0, "New seed (dice)", ButtonKind::Primary, PAPER_1)?;
     button(t, b1, "Verify existing seed", ButtonKind::Secondary, PAPER_1)?;
@@ -224,14 +277,28 @@ fn draw_home<D: DrawTarget<Color = Rgb565>>(t: &mut D, m: &Metrics) -> Result<()
 // Dice entry
 // ---------------------------------------------------------------------------------------
 
+/// Roll-history well height: one MONO_SMALL line, vertically centered.
+const HIST_H: i32 = 44;
+/// Mode segmented-control height.
+const MODE_H: i32 = 48;
+/// Keypad internal gap (tighter than `Metrics::gap` so the 800x480 landscape keypad
+/// keeps its keys on the 80px physical floor).
+const KEYPAD_GAP: i32 = 10;
+/// Widest reason line the status block can show (128-bit deficit = 77 rolls); the
+/// layout reserves what this measures so the drawn text can never clip.
+const NEED_WORST: &str = "Need 128 bits - about 77 more rolls";
+
 struct DiceLayout {
-    /// Info column: roll count line, mode toggle, cross-check hint, meter, status line.
-    count_y: i32,
-    toggle: Rect,
+    /// Full-width roll-history well (typed input, unmasked - see `draw_dice`).
+    hist: Rect,
+    /// Full-width six-segment mode control (RAW / 12 / 15 / 18 / 21 / 24).
+    mode: Rect,
+    /// Info block: cross-check hint, meter, status lines.
     hint_y: i32,
-    hint_lines: i32,
     meter: Rect,
     status_y: i32,
+    /// Reserved status height: bits line + measured worst-case reason wrap.
+    status_h: i32,
     info_x: i32,
     info_w: i32,
     /// 1..6, reading order.
@@ -240,58 +307,98 @@ struct DiceLayout {
     done: Rect,
 }
 
-fn dice_layout(m: &Metrics) -> DiceLayout {
+/// The mode's cross-check hint: which external tool reproduces this mode's math
+/// (ARCHITECTURE.md dice math note). Worded to the measured width budget: one line on
+/// the 720x720 portrait info row, two on the 800x480 landscape info column - the
+/// layout reserves exactly what `wrap_words` needs (review item: the old fixed
+/// reservation clipped the third wrapped line at 800x480).
+fn dice_hint(mode: MnemonicMode) -> &'static str {
+    match mode {
+        MnemonicMode::Raw => "Raw dice bits: iancoleman",
+        MnemonicMode::Words(_) => "SHA256 of rolls: Coldcard, SeedSigner",
+    }
+}
+
+fn dice_layout(m: &Metrics, mode: MnemonicMode) -> DiceLayout {
     let body = m.body();
     let g = m.gap;
-    // Landscape panels split into an info column and a keypad column so the keypad keeps
-    // full-size touch targets; portrait stacks them.
+    // Two full-width rows first: the roll-history well and the mode control (six
+    // finger-sized segments need the whole width on the 800x480 panel). Below them,
+    // landscape splits into an info column and a keypad column so the keypad keeps
+    // full-size touch targets; portrait stacks info over keypad.
+    let hist = Rect::new(body.x, body.y, body.w, HIST_H);
+    let mode_r = Rect::new(body.x, hist.bottom() + g, body.w, MODE_H);
+    let top = mode_r.bottom() + g;
+
+    // The hint and status rows are measured, not assumed: the info block reserves as
+    // many lines as the current mode's hint (and the worst-case reason line) wrap to,
+    // so no wording/geometry combination can clip (review item 3; the layout unit
+    // tests pin the keypad floor and the info fit for every mode on both geometries).
+    let info_w = if m.landscape() { (body.w - g) * 9 / 20 } else { body.w };
+    let hint_lines = wrap_words(dice_hint(mode), info_w, BODY).len().max(1) as i32;
+    let need_lines = (wrap_words(NEED_WORST, info_w, BODY).len() as i32).clamp(1, 2);
+    let status_h = LINE + need_lines * LINE;
+
     let (info, pad) = if m.landscape() {
-        let info_w = (body.w - g) * 9 / 20;
         (
-            Rect::new(body.x, body.y, info_w, body.h),
-            Rect::new(body.x + info_w + g, body.y, body.w - info_w - g, body.h),
+            Rect::new(body.x, top, info_w, body.bottom() - top),
+            Rect::new(body.x + info_w + g, top, body.w - info_w - g, body.bottom() - top),
         )
     } else {
-        let hint_lines = 1;
-        // Two status lines: the bits/strength readout plus the reason/ready line.
-        let info_h = LINE + 48 + hint_lines * LINE + 20 + 2 * LINE + 5 * g;
+        let info_h = hint_lines * LINE + 20 + status_h + 2 * g;
         (
-            Rect::new(body.x, body.y, body.w, info_h),
-            Rect::new(body.x, body.y + info_h + g, body.w, body.h - info_h - g),
+            Rect::new(body.x, top, body.w, info_h),
+            Rect::new(body.x, top + info_h + g, body.w, body.bottom() - (top + info_h + g)),
         )
     };
-    let hint_lines = if m.landscape() { 2 } else { 1 };
 
-    let count_y = info.y;
-    let toggle = Rect::new(info.x, count_y + LINE + g, info.w, 48);
-    let hint_y = toggle.bottom() + g;
+    let hint_y = info.y;
     let meter = Rect::new(info.x, hint_y + hint_lines * LINE + g, info.w, 20);
     let status_y = meter.bottom() + g;
 
     // Keypad: 3x2 digit grid above a Backspace | Done row, filling the pad column.
     let ctl_h = m.btn;
-    let key_w = (pad.w - 2 * g) / 3;
-    let key_h = (pad.h - ctl_h - 3 * g) / 2;
+    let key_w = (pad.w - 2 * KEYPAD_GAP) / 3;
+    let key_h = (pad.h - ctl_h - 3 * KEYPAD_GAP) / 2;
     let mut keys = [Rect::new(0, 0, 0, 0); 6];
     for (i, k) in keys.iter_mut().enumerate() {
         let col = (i % 3) as i32;
         let row = (i / 3) as i32;
-        *k = Rect::new(pad.x + col * (key_w + g), pad.y + row * (key_h + g), key_w, key_h);
+        *k = Rect::new(
+            pad.x + col * (key_w + KEYPAD_GAP),
+            pad.y + row * (key_h + KEYPAD_GAP),
+            key_w,
+            key_h,
+        );
     }
-    let ctl_y = pad.y + 2 * (key_h + g) + g;
-    let bs_w = (pad.w - g) * 2 / 5;
+    let ctl_y = pad.y + 2 * (key_h + KEYPAD_GAP) + KEYPAD_GAP;
+    let bs_w = (pad.w - KEYPAD_GAP) * 2 / 5;
     DiceLayout {
-        count_y,
-        toggle,
+        hist,
+        mode: mode_r,
         hint_y,
-        hint_lines,
         meter,
         status_y,
+        status_h,
         info_x: info.x,
         info_w: info.w,
         keys,
         backspace: Rect::new(pad.x, ctl_y, bs_w, ctl_h),
-        done: Rect::new(pad.x + bs_w + g, ctl_y, pad.w - bs_w - g, ctl_h),
+        done: Rect::new(pad.x + bs_w + KEYPAD_GAP, ctl_y, pad.w - bs_w - KEYPAD_GAP, ctl_h),
+    }
+}
+
+/// Per-frame heap copies of the roll digits, wiped on every exit path (the same drop
+/// guard pattern as `PhraseTemps` - `?` returns must not strand secret bytes).
+struct RollTemps {
+    grouped: String,
+    shown: String,
+}
+
+impl Drop for RollTemps {
+    fn drop(&mut self) {
+        self.grouped.zeroize();
+        self.shown.zeroize();
     }
 }
 
@@ -301,25 +408,66 @@ fn draw_dice<D: DrawTarget<Color = Rgb565>>(
     s: &DiceState,
 ) -> Result<(), D::Error> {
     draw_bar(t, m, "New seed")?;
-    let l = dice_layout(m);
+    let l = dice_layout(m, s.mode);
 
-    // Roll count. The count is shown, the rolls themselves are not echoed: the digit
-    // string alone regenerates the wallet, and it never has a reason to be on screen.
-    let count = format!("Rolls: {}", s.entropy.events());
-    text(t, &count, l.info_x, l.count_y, MONO, INK_PRIMARY, PAPER_1)?;
-
-    // Mode toggle with the external tool each mode cross-checks against (the modes are
-    // deliberately not interchangeable - see ARCHITECTURE.md's dice math note).
-    let raw = matches!(s.mode, MnemonicMode::Raw);
-    toggle(t, l.toggle, ["RAW", "FIXED 24"], if raw { 0 } else { 1 })?;
-    let hint = if raw {
-        "Raw dice bits. Cross-checks: iancoleman"
-    } else {
-        "SHA256 of rolls. Cross-checks: Coldcard, SeedSigner"
+    // Roll history well: the digits as typed, deliberately UNMASKED - typed input is
+    // the user's own (desktop survey section 5), and seeing it is what makes a
+    // mis-entry catchable and backspace informed. Count on the left; on the right a
+    // trailing tail grouped in fives from the first roll (stable group boundaries),
+    // led by an ellipsis when older digits scrolled off. The derived mnemonic stays
+    // masked as always.
+    panel(t, l.hist, PAPER_3, BORDER_STRONG)?;
+    let inner = l.hist.inset(2);
+    let pad_x = 10;
+    let ty = l.hist.y + (l.hist.h - SMALL_LINE) / 2;
+    let count = format!("Rolls {}", s.entropy.events());
+    let adv = MONO_SMALL.glyph('6').advance as i32;
+    let cap = ((inner.w - 2 * pad_x - MONO_SMALL.text_width(&count) as i32 - 2 * m.gap)
+        / adv)
+        .max(0) as usize;
+    let tmp = {
+        let mut grouped = String::with_capacity(s.rolls.len() + s.rolls.len() / 5 + 2);
+        for (i, c) in s.rolls.chars().enumerate() {
+            if i > 0 && i % 5 == 0 {
+                grouped.push(' ');
+            }
+            grouped.push(c);
+        }
+        let total = grouped.chars().count();
+        let mut shown = String::with_capacity(cap + 4);
+        if total > cap {
+            shown.push('\u{2026}');
+            shown.push(' ');
+            shown.extend(grouped.chars().skip(total - cap.saturating_sub(2)));
+        } else {
+            shown.push_str(&grouped);
+        }
+        RollTemps { grouped, shown }
     };
+    let tw = MONO_SMALL.text_width(&tmp.shown) as i32;
+    {
+        let mut clip = t.clipped(&inner.to_eg());
+        text(&mut clip, &count, inner.x + pad_x, ty, MONO_SMALL, INK_SECONDARY, PAPER_3)?;
+        text(
+            &mut clip,
+            &tmp.shown,
+            inner.right() - pad_x - tw,
+            ty,
+            MONO_SMALL,
+            INK_PRIMARY,
+            PAPER_3,
+        )?;
+    }
+    drop(tmp);
+
+    // Mode control, desktop parity: RAW plus every fixed word count, with the external
+    // tool each mode cross-checks against below (the modes are deliberately not
+    // interchangeable - see ARCHITECTURE.md's dice math note). The layout reserved
+    // space for every wrapped hint line, so nothing here truncates.
+    tabs(t, l.mode, &DICE_MODE_LABELS, dice_mode_index(s.mode))?;
     let mut hy = l.hint_y;
-    for line in wrap_words(hint, l.info_w, BODY).iter().take(l.hint_lines as usize) {
-        text(t, line, l.info_x, hy, BODY, INK_SECONDARY, PAPER_1)?;
+    for line in wrap_words(dice_hint(s.mode), l.info_w, BODY) {
+        text(t, &line, l.info_x, hy, BODY, INK_SECONDARY, PAPER_1)?;
         hy += LINE;
     }
 
@@ -355,12 +503,15 @@ fn draw_dice<D: DrawTarget<Color = Rgb565>>(
         if ready { ButtonKind::Primary } else { ButtonKind::Disabled },
         PAPER_1,
     )?;
-    // The reason a disabled Done is disabled, always visible next to the meter.
+    // The reason a disabled Done is disabled, always visible next to the meter. The
+    // line budget is the one the layout reserved (measured from the worst case), so
+    // this can neither clip nor overrun into the keypad.
     let status2_y = l.status_y + LINE;
+    let need_lines = ((l.status_h - LINE) / LINE).max(1) as usize;
     if !ready {
         let deficit = MIN_SECURE_BITS - bits.min(MIN_SECURE_BITS);
         let need = format!("Need {MIN_SECURE_BITS} bits - about {} more rolls", rolls_for_bits(deficit));
-        for (i, line) in wrap_words(&need, l.info_w, BODY).iter().take(2).enumerate() {
+        for (i, line) in wrap_words(&need, l.info_w, BODY).iter().take(need_lines).enumerate() {
             text(t, line, l.info_x, status2_y + i as i32 * LINE, BODY, DANGER, PAPER_1)?;
         }
     } else {
@@ -834,18 +985,26 @@ fn draw_passphrase<D: DrawTarget<Color = Rgb565>>(
     // `differ` is the exact predicate the Done handler blocks on; the drawn state must
     // never disagree with it. The status row carries ONE line (two would overlap on the
     // 720-wide panel): the mismatch warning once a confirm attempt exists, otherwise the
-    // char counter - extended with the reason Done is still disabled while the confirm
+    // byte counter - extended with the reason Done is still disabled while the confirm
     // field is untouched (a disabled control always says why).
-    let chars = s.entry.chars().count();
+    //
+    // The counter reports NFKD BYTES, the desktop's counter semantics: BIP39 feeds
+    // PBKDF2 the NFKD byte string, and byte length is what external passphrase limits
+    // (e.g. other wallets' 256-byte caps) are stated in. The on-screen keyboard emits
+    // ASCII only (test-asserted), for which NFKD is the identity and every char is one
+    // byte - so `len()` IS the NFKD byte count, with no normalization pass over the
+    // secret here in the draw path.
+    let bytes = s.entry.len();
     let differ = *s.entry != *s.confirm;
     if differ && !s.confirm.is_empty() {
         let msg = "The two passphrases are different.";
         text(t, msg, body.x, l.status_y, MONO_SMALL, DANGER, PAPER_1)?;
     } else if differ {
-        let msg = format!("{chars} chars - repeat to continue");
+        let msg = format!("{bytes} bytes (NFKD) - repeat to continue");
         text(t, &msg, body.x, l.status_y, MONO_SMALL, INK_MUTED, PAPER_1)?;
     } else {
-        text(t, &format!("{chars} chars"), body.x, l.status_y, MONO_SMALL, INK_MUTED, PAPER_1)?;
+        let msg = format!("{bytes} bytes (NFKD)");
+        text(t, &msg, body.x, l.status_y, MONO_SMALL, INK_MUTED, PAPER_1)?;
     }
 
     draw_keyboard(t, l.kb, s.page, !differ)?;
@@ -875,15 +1034,55 @@ fn schemes_layout(m: &Metrics) -> SchemesLayout {
     }
 }
 
+/// QR button geometry: fixed physical size, not panel-derived - fingers do not scale
+/// with the panel (same reasoning as [`crate::layout::DICE_KEY_MIN`]).
+const QR_BTN_W: i32 = 96;
+const QR_BTN_H: i32 = 56;
+
+/// One caption + wrapped-value block with a QR button on the right; returns the y after
+/// the block. The value wraps beside the button column, and the block is never shorter
+/// than the button so consecutive buttons cannot overlap. When `buttons` is given the
+/// button's region is collected (content coordinates - the caller filters by viewport).
+#[allow(clippy::too_many_arguments)] // one deep helper beats five drifting copies
+fn qr_block<D: DrawTarget<Color = Rgb565>>(
+    t: &mut D,
+    m: &Metrics,
+    y: i32,
+    caption: &str,
+    value: &str,
+    id: RegionId,
+    buttons: &mut Option<&mut Vec<Region>>,
+) -> Result<i32, D::Error> {
+    let body = m.body();
+    let rect = Rect::new(body.right() - QR_BTN_W, y, QR_BTN_W, QR_BTN_H);
+    button(t, rect, "QR", ButtonKind::Secondary, PAPER_1)?;
+    if let Some(list) = buttons {
+        list.push(Region { id, rect });
+    }
+    let vw = body.w - QR_BTN_W - m.gap;
+    text(t, caption, body.x, y, MONO_SMALL, INK_MUTED, PAPER_1)?;
+    let end = mono_wrapped(
+        t,
+        value,
+        Rect::new(body.x, y + SMALL_LINE, vw, i32::MAX / 2),
+        MONO_SMALL,
+        INK_PRIMARY,
+        PAPER_1,
+    )?;
+    Ok(end.max(y + QR_BTN_H))
+}
+
 /// Draws (or measures, against [`NullTarget`]) the active tab's content starting at
 /// `y0`; returns the y after the last line. Only PUBLIC values are drawn: account xpub,
-/// SLIP-132 rendering, receive addresses. Private keys never reach the device screen in
-/// 0.1.0 - there is no reveal for them, which is stronger than a mask.
+/// SLIP-132 rendering, receive addresses - each with a QR button whose target is that
+/// same public value (crate-level QR scope note). Private keys never reach the device
+/// screen in 0.1.0 - there is no reveal for them, which is stronger than a mask.
 fn schemes_content<D: DrawTarget<Color = Rgb565>>(
     t: &mut D,
     m: &Metrics,
     s: &SchemesState,
     y0: i32,
+    mut buttons: Option<&mut Vec<Region>>,
 ) -> Result<i32, D::Error> {
     let body = m.body();
     let g = m.gap;
@@ -894,43 +1093,32 @@ fn schemes_content<D: DrawTarget<Color = Rgb565>>(
     text(t, &format!("Account {}", acct.path), body.x, y, HEADING, INK_PRIMARY, PAPER_1)?;
     y += LINE + g;
 
-    text(t, "Account xpub", body.x, y, MONO_SMALL, INK_MUTED, PAPER_1)?;
-    y += SMALL_LINE;
-    y = mono_wrapped(
-        t,
-        &acct.xpub,
-        Rect::new(body.x, y, body.w, i32::MAX / 2),
-        MONO_SMALL,
-        INK_PRIMARY,
-        PAPER_1,
-    )?;
+    y = qr_block(t, m, y, "Account xpub", &acct.xpub, RegionId::QrXpub, &mut buttons)?;
     if let (Some(slip), Some((_, label))) = (&acct.slip132_pub, sr.scheme.slip132_labels()) {
         y += g;
-        text(t, &format!("{label} (SLIP-132)"), body.x, y, MONO_SMALL, INK_MUTED, PAPER_1)?;
-        y += SMALL_LINE;
-        y = mono_wrapped(
+        y = qr_block(
             t,
+            m,
+            y,
+            &format!("{label} (SLIP-132)"),
             slip,
-            Rect::new(body.x, y, body.w, i32::MAX / 2),
-            MONO_SMALL,
-            INK_PRIMARY,
-            PAPER_1,
+            RegionId::QrSlip132,
+            &mut buttons,
         )?;
     }
 
     y += g * 2;
     text(t, "Receive addresses", body.x, y, HEADING, INK_PRIMARY, PAPER_1)?;
     y += LINE + g;
-    for row in &sr.derived.rows {
-        text(t, &row.path, body.x, y, MONO_SMALL, INK_MUTED, PAPER_1)?;
-        y += SMALL_LINE;
-        y = mono_wrapped(
+    for (i, row) in sr.derived.rows.iter().enumerate() {
+        y = qr_block(
             t,
+            m,
+            y,
+            &row.path,
             &row.address,
-            Rect::new(body.x, y, body.w, i32::MAX / 2),
-            MONO_SMALL,
-            INK_PRIMARY,
-            PAPER_1,
+            RegionId::QrAddress(i as u8),
+            &mut buttons,
         )?;
         y += g;
     }
@@ -952,16 +1140,114 @@ fn draw_schemes<D: DrawTarget<Color = Rgb565>>(
     tabs(t, l.tabs, &label_refs, s.tab)?;
 
     // Public wallet identity line: the master fingerprint is the standard cross-check
-    // handle, and whether a passphrase was applied is exactly what the user must verify.
+    // handle, and whether a passphrase was applied is exactly what the user must
+    // verify. On testnet the line says so - a tb1/tpub screen must never pass for a
+    // mainnet wallet at a glance.
     let info = format!(
-        "fingerprint {} - passphrase {}",
+        "fingerprint {} - passphrase {}{}",
         s.report.root_fingerprint,
-        if s.report.has_passphrase { "ON" } else { "off" }
+        if s.report.has_passphrase { "ON" } else { "off" },
+        if s.report.network == Network::Bitcoin { "" } else { " - TESTNET" }
     );
     text(t, &info, body.x, l.info_y, MONO_SMALL, INK_SECONDARY, PAPER_1)?;
 
-    let mut clip = t.clipped(&l.viewport.to_eg());
-    schemes_content(&mut clip, m, s, l.viewport.y - s.scroll)?;
+    {
+        let mut clip = t.clipped(&l.viewport.to_eg());
+        schemes_content(&mut clip, m, s, l.viewport.y - s.scroll, None)?;
+    }
+
+    if let Some(qr) = &s.qr {
+        draw_qr_modal(t, m, qr)?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// QR modal
+// ---------------------------------------------------------------------------------------
+
+/// Light margin around the symbol, in modules. ISO/IEC 18004's four: the core's
+/// `matrix()` deliberately ships no quiet zone (it belongs to the drawing - see that
+/// module's docs), so the modal is the place that draws it.
+const QR_QUIET: i32 = 4;
+
+struct QrModalLayout {
+    panel: Rect,
+    label_y: i32,
+    /// Free area between label and Close that the symbol is centered in. Read by the
+    /// largest-fit layout test; the draw path only needs the finished `sym`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    area: Rect,
+    /// The full drawn symbol including the quiet zone, centered in `area`.
+    sym: Rect,
+    /// Pixels per module. Integer, so modules stay crisp squares a scanner can read;
+    /// always the largest that fits, floored at 1.
+    scale: i32,
+    close: Rect,
+}
+
+fn qr_modal_layout(m: &Metrics, size: i32) -> QrModalLayout {
+    let panel = m.screen().inset(m.pad);
+    let pad = m.pad;
+    let btn_h = m.btn.min(72);
+    let label_y = panel.y + pad;
+    let close_w = (panel.w / 3).clamp(180, 280);
+    let close =
+        Rect::new(panel.x + (panel.w - close_w) / 2, panel.bottom() - pad - btn_h, close_w, btn_h);
+    let area_y = label_y + LINE + m.gap;
+    let area = Rect::new(panel.x + pad, area_y, panel.w - 2 * pad, close.y - m.gap - area_y);
+    let total = size + 2 * QR_QUIET;
+    let scale = (area.w.min(area.h) / total.max(1)).max(1);
+    let side = total * scale;
+    let sym = Rect::new(area.x + (area.w - side) / 2, area.y + (area.h - side) / 2, side, side);
+    QrModalLayout { panel, label_y, area, sym, scale, close }
+}
+
+fn draw_qr_modal<D: DrawTarget<Color = Rgb565>>(
+    t: &mut D,
+    m: &Metrics,
+    qr: &QrModal,
+) -> Result<(), D::Error> {
+    let size = qr.data.size() as i32;
+    let l = qr_modal_layout(m, size);
+    // Paper-3 like every modal; a 2px neutral frame (this modal shows a public value -
+    // the danger frame stays reserved for the reveal gate). The white panel doubles as
+    // the symbol's quiet zone surface.
+    fill(t, l.panel, PAPER_3)?;
+    frame(t, l.panel, BORDER_STRONG)?;
+    frame(t, l.panel.inset(1), BORDER_STRONG)?;
+    let title = Rect::new(l.panel.x + m.pad, l.label_y, l.panel.w - 2 * m.pad, LINE);
+    text_centered(t, &qr.label, title, HEADING, INK_PRIMARY, PAPER_3)?;
+
+    // The symbol: dark modules as horizontal runs (one fill per run, not per module).
+    // Ink on white, drawn at integer scale so every module is an exact square.
+    let origin_x = l.sym.x + QR_QUIET * l.scale;
+    let origin_y = l.sym.y + QR_QUIET * l.scale;
+    for y in 0..size {
+        let mut x = 0;
+        while x < size {
+            if qr.data.module(x as u16, y as u16) {
+                let run_start = x;
+                while x < size && qr.data.module(x as u16, y as u16) {
+                    x += 1;
+                }
+                fill(
+                    t,
+                    Rect::new(
+                        origin_x + run_start * l.scale,
+                        origin_y + y * l.scale,
+                        (x - run_start) * l.scale,
+                        l.scale,
+                    ),
+                    INK_PRIMARY,
+                )?;
+            } else {
+                x += 1;
+            }
+        }
+    }
+
+    button(t, l.close, "Close", ButtonKind::Primary, PAPER_3)?;
     Ok(())
 }
 
@@ -1023,4 +1309,91 @@ fn draw_verify<D: DrawTarget<Color = Rgb565>>(
     let mut clip = t.clipped(&body.to_eg());
     verify_content(&mut clip, m, v, body.y - scroll)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// Layout unit tests (geometry the integration suite cannot reach from outside)
+// ---------------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dice_mode;
+    use crate::layout::DICE_KEY_MIN;
+
+    /// The two shipped panels (docs/BOARDS.md): Waveshare 4B and Elecrow 5inch.
+    const GEOMETRIES: [(u32, u32); 2] = [(720, 720), (800, 480)];
+
+    /// The QR modal at every real symbol size the 0.1.0 targets produce (v3 addresses
+    /// through v7 zpubs) plus the format extremes: integer scale, largest fit, symbol
+    /// centered between label and Close, everything inside the panel.
+    #[test]
+    fn qr_modal_scales_integer_and_fits() {
+        for (w, h) in GEOMETRIES {
+            let m = Metrics::new(w, h);
+            for size in [21, 29, 33, 45, 57, 177] {
+                let l = qr_modal_layout(&m, size);
+                let total = size + 2 * QR_QUIET;
+                assert!(l.scale >= 1, "{w}x{h} size {size}: scale floor");
+                assert_eq!(l.sym.w, total * l.scale, "{w}x{h} size {size}: integer scale");
+                assert_eq!(l.sym.w, l.sym.h, "{w}x{h} size {size}: square");
+                // Largest fit: one more scale step would overflow the free area
+                // (unless the floor of 1 is already too big, as for v40 on tiny areas).
+                if total * (l.scale + 1) <= l.area.w.min(l.area.h) {
+                    panic!("{w}x{h} size {size}: scale {} is not the largest fit", l.scale);
+                }
+                // Centered in the free area (integer division may leave 1px bias).
+                assert!(((l.sym.x - l.area.x) - (l.area.right() - l.sym.right())).abs() <= 1);
+                assert!(((l.sym.y - l.area.y) - (l.area.bottom() - l.sym.bottom())).abs() <= 1);
+                // Fully inside the panel, clear of label and Close.
+                assert!(l.sym.x >= l.panel.x && l.sym.right() <= l.panel.right());
+                assert!(l.sym.y >= l.label_y + LINE, "{w}x{h} size {size}: overlaps label");
+                assert!(l.sym.bottom() <= l.close.y, "{w}x{h} size {size}: overlaps Close");
+                assert!(l.close.bottom() <= l.panel.bottom());
+            }
+        }
+    }
+
+    /// Review item (m3): the fixed hint reservation clipped the wrapped cross-check
+    /// hint. The layout now reserves what `wrap_words` measures; this pins that no
+    /// mode/geometry combination clips the hint, starves the keypad below its 80px
+    /// physical floor, undersizes a mode segment, or pushes the status block out of
+    /// the body - for the FULL desktop mode set (RAW, 12, 15, 18, 21, 24).
+    #[test]
+    fn dice_layout_fits_every_mode_on_both_geometries() {
+        for (w, h) in GEOMETRIES {
+            let m = Metrics::new(w, h);
+            let body = m.body();
+            for i in 0..DICE_MODE_LABELS.len() as u8 {
+                let mode = dice_mode(i);
+                let l = dice_layout(&m, mode);
+                for k in &l.keys {
+                    assert!(
+                        k.w >= DICE_KEY_MIN && k.h >= DICE_KEY_MIN,
+                        "{w}x{h} {mode:?}: key {k:?} below the {DICE_KEY_MIN}px floor"
+                    );
+                }
+                // Mode segments stay finger-sized on both panels.
+                let seg_w = l.mode.w / DICE_MODE_LABELS.len() as i32;
+                assert!(
+                    seg_w >= DICE_KEY_MIN && l.mode.h >= 44,
+                    "{w}x{h}: mode segment {seg_w}x{} too small",
+                    l.mode.h
+                );
+                // Full-width rows precede the columns and never overlap them.
+                assert!(l.hist.w == body.w && l.mode.w == body.w);
+                assert!(l.hist.bottom() <= l.mode.y && l.mode.bottom() <= l.hint_y);
+                let lines = wrap_words(dice_hint(mode), l.info_w, BODY).len() as i32;
+                assert!(
+                    l.hint_y + lines * LINE <= l.meter.y,
+                    "{w}x{h} {mode:?}: hint clips into the meter"
+                );
+                assert!(
+                    l.status_y + l.status_h <= body.bottom(),
+                    "{w}x{h} {mode:?}: status block leaves the body"
+                );
+                assert!(l.done.bottom() <= body.bottom());
+            }
+        }
+    }
 }
