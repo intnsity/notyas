@@ -1,6 +1,8 @@
 # build.ps1 - build the notyas firmware for one board.
 #
-# Usage: .\build.ps1 [-Board waveshare-4b|elecrow-5|elecrow-7|elecrow-9|elecrow-101]
+# Usage: .\build.ps1 [-Board waveshare-4b|waveshare-5|waveshare-7b|waveshare-7x|
+#                            waveshare-8x|waveshare-101x|elecrow-5|elecrow-7|
+#                            elecrow-9|elecrow-101]
 #                    [extra cargo build args, e.g. --release]
 #
 # The build IS the board (docs/BOARDS.md): -Board selects the cargo feature,
@@ -19,7 +21,9 @@
 # otherwise), and keep it per-board yourself.
 
 param(
-    [ValidateSet("waveshare-4b", "elecrow-5", "elecrow-7", "elecrow-9", "elecrow-101")]
+    [ValidateSet("waveshare-4b", "waveshare-5", "waveshare-7b", "waveshare-7x",
+                 "waveshare-8x", "waveshare-101x",
+                 "elecrow-5", "elecrow-7", "elecrow-9", "elecrow-101")]
     [string]$Board = "waveshare-4b",
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$CargoArgs
@@ -28,18 +32,28 @@ param(
 $ErrorActionPreference = "Stop"
 
 $boardMap = @{
-    "waveshare-4b" = @{ Feature = "board-waveshare-4b"; TargetDir = "C:\nyt-ws";  Untested = $false }
-    "elecrow-5"    = @{ Feature = "board-elecrow-5";    TargetDir = "C:\nyt-e5";  Untested = $false }
-    "elecrow-7"    = @{ Feature = "board-elecrow-7";    TargetDir = "C:\nyt-e7";  Untested = $true }
-    "elecrow-9"    = @{ Feature = "board-elecrow-9";    TargetDir = "C:\nyt-e9";  Untested = $true }
-    "elecrow-101"  = @{ Feature = "board-elecrow-101";  TargetDir = "C:\nyt-e101"; Untested = $true }
+    "waveshare-4b"   = @{ Feature = "board-waveshare-4b";   TargetDir = "C:\nyt-ws";    Untested = $false }
+    "waveshare-5"    = @{ Feature = "board-waveshare-5";    TargetDir = "C:\nyt-w5";    Untested = $true; Portrait = $true }
+    "waveshare-7b"   = @{ Feature = "board-waveshare-7b";   TargetDir = "C:\nyt-w7b";   Untested = $true }
+    "waveshare-7x"   = @{ Feature = "board-waveshare-7x";   TargetDir = "C:\nyt-w7x";   Untested = $true; Portrait = $true }
+    "waveshare-8x"   = @{ Feature = "board-waveshare-8x";   TargetDir = "C:\nyt-w8x";   Untested = $true; Portrait = $true }
+    "waveshare-101x" = @{ Feature = "board-waveshare-101x"; TargetDir = "C:\nyt-w101x"; Untested = $true; Portrait = $true }
+    "elecrow-5"      = @{ Feature = "board-elecrow-5";      TargetDir = "C:\nyt-e5";    Untested = $false }
+    "elecrow-7"      = @{ Feature = "board-elecrow-7";      TargetDir = "C:\nyt-e7";    Untested = $true }
+    "elecrow-9"      = @{ Feature = "board-elecrow-9";      TargetDir = "C:\nyt-e9";    Untested = $true }
+    "elecrow-101"    = @{ Feature = "board-elecrow-101";    TargetDir = "C:\nyt-e101";  Untested = $true }
 }
 $b = $boardMap[$Board]
 
 if ($b.Untested) {
-    Write-Warning ("Board '$Board' is an UNTESTED scaffold: config comes from Elecrow's " +
+    Write-Warning ("Board '$Board' is an UNTESTED scaffold: config comes from the vendor's " +
         "published sources and schematics but has never run on hardware here. " +
         "Do not trust the image beyond compile-checking. (docs/BOARDS.md status table)")
+}
+if ($b.Portrait) {
+    Write-Warning ("Board '$Board' has a PORTRAIT panel: the UI layout is derived from the " +
+        "board resolution but has only been verified at 720x720 and 800x480 landscape - " +
+        "PORTRAIT LAYOUT UNVERIFIED. (docs/BOARDS.md status table)")
 }
 
 $firmwareDir = Join-Path (Split-Path -Parent $PSScriptRoot) "firmware"
