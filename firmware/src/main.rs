@@ -27,6 +27,11 @@
 
 mod board;
 mod display;
+/// Temporary 0.2.0-m1 hardware-measurement harness. Not part of the product
+/// image: `--features measure` is the only thing that compiles it in, and a
+/// build that does never reaches the UI (see the call site below).
+#[cfg(feature = "measure")]
+mod measure;
 mod theme;
 mod touch;
 mod verify;
@@ -49,6 +54,9 @@ const BACKLIGHT_PERCENT: u8 = 80;
 /// GT911 poll cadence; the sleep also yields so the idle task feeds the WDT.
 const POLL_MS: u64 = 25;
 
+// A measurement build ends inside the harness; everything after that call is
+// dead by design, and only in that build.
+#[cfg_attr(feature = "measure", allow(unreachable_code))]
 fn main() {
     // Apply esp-idf-sys patches (rt linkage etc.) - must be first per template.
     sys::link_patches();
@@ -92,6 +100,14 @@ fn main() {
         verify::selftest_summary(&st),
         t0.elapsed().as_millis()
     );
+
+    // Measurement build (feature `measure`, off by default): run the harness
+    // here - after the self-test proves the crypto core, before any peripheral
+    // takes PSRAM or the flash bus - and never come back. Argon2id scratch
+    // sizing depends on the PSRAM heap being untouched, and the flash timings
+    // depend on nothing else driving the bus.
+    #[cfg(feature = "measure")]
+    measure::run();
 
     let mut display = board::display_init();
 

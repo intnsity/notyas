@@ -29,6 +29,13 @@ board-elecrow-7 = []
 board-elecrow-9 = []
 board-elecrow-101 = []
 
+# Temporary hardware-measurement harness for the 0.2.0 m1 storage freeze
+# (src/measure.rs, docs/plan-0.2.0/MEASUREMENTS.md). OFF by default and pulled in
+# by nothing else: with the feature off the module is not compiled, `argon2` is
+# not in the dependency graph, and the image is byte-for-byte the product image.
+# A measurement build never returns from the harness - it is not a product image.
+measure = ["dep:argon2"]
+
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.52", features = ["binstart"] }
@@ -45,6 +52,11 @@ notyas-ui = { path = "../crates/notyas-ui" }
 # Used directly for the selftest-failure screen (main.rs), which is deliberately NOT a
 # notyas-ui screen: it must render even when the crate under test is the one that failed.
 notyas-fonts = { path = "../crates/notyas-fonts" }
+# Measurement harness only (feature `measure`). default-features = false keeps the
+# `rand` / `password-hash` surface out of the graph - the harness calls the raw
+# hash_password_into_with_memory API with a scratch buffer it allocates itself, so
+# the crate never needs an allocator or an RNG (SECURITY.md invariant 3).
+argon2 = { version = "0.5", default-features = false, optional = true }
 
 [build-dependencies]
 embuild = "0.33"
