@@ -4,9 +4,11 @@
 # ESP-IDF v5.5.4, a pinned nightly, -Zbuild-std and a multi-GB toolchain download;
 # reproducing that in CI would be slow, fragile, and would still not prove anything
 # the hardware bring-up log does not already record. What CI *can* prove cheaply is
-# that the portable half of the tree is correct: the crypto core and the UI pass
-# their vector suites, both stay lint-clean, both still compile for a bare-metal
-# no_std target, and no banned crate has crept into the dependency graph.
+# that the portable half of the tree is correct: every host crate passes its vector
+# suites and stays lint-clean, the crypto core and the UI still compile for a
+# bare-metal no_std target, no banned crate has crept into the dependency graph,
+# the committed screenshots are what the UI renders today, and the repository's
+# own hygiene rules (sole authorship, ASCII hyphens) hold over what was pushed.
 #
 # Toolchain: the runner's preinstalled stable Rust. The crates declare
 # rust-version = 1.85; the firmware's nightly pin (firmware/README.md) is a
@@ -34,7 +36,7 @@ env:
 
 jobs:
   test:
-    name: test + clippy (host)
+    name: test + clippy + screenshots (host)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -45,20 +47,31 @@ jobs:
           cargo --version
           cargo clippy --version
 
+      # No `-p` list. The root workspace's default-members are exactly the
+      # host-safe crates (the firmware is a member but not a default one, because
+      # it needs ESP-IDF and a nightly pin), so a bare `cargo test` is both the
+      # full host suite and a list that cannot go stale when a crate is added.
+      #
       # --locked: the committed Cargo.lock is the graph that was audited and
       # hardware-verified. A CI run that silently resolves a different one is
       # testing something other than the release.
-      - name: Test notyas-core and notyas-ui
-        run: cargo test --locked -p notyas-core -p notyas-ui
+      - name: Test every host crate
+        run: cargo test --locked
 
-      # `-- -D warnings` rather than a global RUSTFLAGS: a warning in a third-party
-      # dependency is not ours to fix, and making one fail the build would leave CI
-      # hostage to any upstream release.
-      - name: Clippy notyas-core
-        run: cargo clippy --locked -p notyas-core --all-targets --all-features -- -D warnings
+      # Same reasoning for the lint pass, and `-- -D warnings` rather than a
+      # global RUSTFLAGS: a warning in a third-party dependency is not ours to
+      # fix, and making one fail the build would leave CI hostage to any upstream
+      # release.
+      - name: Clippy every host crate
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-      - name: Clippy notyas-ui
-        run: cargo clippy --locked -p notyas-ui --all-targets --all-features -- -D warnings
+      # docs/screenshots/ui is a build output that happens to be committed.
+      # Regenerate it and demand byte-identical bytes: that catches a stale
+      # picture after a UI change, and it catches a render path that has stopped
+      # being a pure function of its state. Runs here rather than in its own job
+      # to reuse this one's warm build.
+      - name: Screenshots are current and deterministic
+        run: bash tools/ci/check-screenshots.sh
 
   no_std:
     name: bare-metal no_std check (riscv32imac)
@@ -102,6 +115,52 @@ jobs:
       # No RNG source, no network stack, no closed crypto blob anywhere in the
       # dependency graph - and secp256k1 present, so the derivation path cannot
       # have been stubbed out. tools/build-graph-check.sh is the executable form
-      # of those claims.
+      # of those claims. It shells out to `cargo tree` for the per-crate half of
+      # the check, so it needs the toolchain this runner already has.
       - name: Run build-graph check
         run: bash tools/build-graph-check.sh
+
+  hygiene:
+    name: repository hygiene (authorship, dashes)
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 - the commit-message check reads whole ranges of history,
+      # which a shallow clone does not have.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Every commit in the PUSHED RANGE, not just the tip: a message cannot be
+      # corrected by a later commit, only by rewriting the one that carries it,
+      # so a violation that reaches the default branch costs a history rewrite.
+      # That has happened once already, which is why this gate exists.
+      #
+      # Range resolution, in order of precision:
+      #   * pull request  - base..HEAD, exactly the commits under review.
+      #   * push          - before..HEAD, exactly what this push added, but only
+      #                     when the before-image is actually in this clone. It
+      #                     is not, for a newly created branch (before is all
+      #                     zeros) or after a force-push (the old tip is
+      #                     unreachable and never fetched) - and a force-push is
+      #                     what fixing a violation requires, so this case is
+      #                     normal rather than exotic.
+      #   * otherwise     - the whole history. Strict by design: it is cheap at
+      #                     this repository's size, and the history is clean.
+      - name: Commit messages carry no forbidden token
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$BASE" ]; then
+            range="$BASE..HEAD"
+          elif [ -n "$BEFORE" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            range="$BEFORE..HEAD"
+          else
+            range="HEAD"
+          fi
+          echo "range: $range"
+          bash tools/ci/check-commit-messages.sh "$range"
+
+      # ASCII hyphens only, in every tracked text file.
+      - name: No em dash or en dash in the tree
+        run: bash tools/ci/check-dashes.sh
