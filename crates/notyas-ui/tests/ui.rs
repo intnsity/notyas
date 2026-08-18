@@ -225,6 +225,27 @@ fn walk_all_screens(w: u32, h: u32) {
     assert_eq!(ui.regions().len(), 1, "QR modal open: only Close is tappable");
     tap(&mut ui, RegionId::ModalClose);
     check(&ui);
+
+    // Back from Schemes: exit modal opens (serious screen). Confirm navigates
+    // back through the chain: Schemes -> Passphrase -> Mnemonic -> Dice -> Home.
+    // Each serious screen gates Back with the exit modal; Dice (input-only) goes
+    // straight to Home.
+    tap(&mut ui, RegionId::Back);
+    check(&ui); // exit modal open over Schemes
+    assert_eq!(ui.regions().len(), 2, "exit modal: only Cancel/Confirm");
+    tap(&mut ui, RegionId::ModalConfirm);
+    assert_eq!(ui.screen(), ScreenId::PassphraseEntry);
+    check(&ui);
+    tap(&mut ui, RegionId::Back);
+    check(&ui);
+    tap(&mut ui, RegionId::ModalConfirm);
+    assert_eq!(ui.screen(), ScreenId::MnemonicDisplay);
+    check(&ui);
+    tap(&mut ui, RegionId::Back);
+    check(&ui);
+    tap(&mut ui, RegionId::ModalConfirm);
+    assert_eq!(ui.screen(), ScreenId::DiceEntry);
+    check(&ui);
     tap(&mut ui, RegionId::Back);
     assert_eq!(ui.screen(), ScreenId::Home);
 
@@ -240,12 +261,15 @@ fn walk_all_screens(w: u32, h: u32) {
     tap(&mut ui, RegionId::PageLetters);
     check(&ui);
     tap(&mut ui, RegionId::Back);
+    // Phrase is non-serious: Back goes straight to Home (no exit modal).
+    assert_eq!(ui.screen(), ScreenId::Home);
 
     // Verify device.
     tap(&mut ui, RegionId::HomeVerifyDevice);
     assert_eq!(ui.screen(), ScreenId::VerifyDevice);
     check(&ui);
     tap(&mut ui, RegionId::Back);
+    // Verify is non-serious: Back goes straight to Home.
     assert_eq!(ui.screen(), ScreenId::Home);
 }
 
@@ -379,6 +403,56 @@ fn back_zeroizes_by_leaving_and_home_restarts_clean() {
     tap(&mut ui, RegionId::HomeNewSeed);
     tap(&mut ui, RegionId::DiceDone);
     assert_eq!(ui.screen(), ScreenId::DiceEntry);
+}
+
+#[test]
+fn back_from_mnemonic_restores_dice_with_rolls() {
+    let mut ui = Ui::new(720, 720);
+    tap(&mut ui, RegionId::HomeNewSeed);
+    type_dice(&mut ui, SIXES);
+    tap(&mut ui, RegionId::DiceDone);
+    assert_eq!(ui.screen(), ScreenId::MnemonicDisplay);
+    // Back opens the exit modal; confirm goes back to Dice with rolls intact.
+    tap(&mut ui, RegionId::Back);
+    assert_eq!(ui.screen(), ScreenId::MnemonicDisplay, "modal stays over Mnemonic");
+    assert_eq!(ui.regions().len(), 2, "exit modal open");
+    tap(&mut ui, RegionId::ModalConfirm);
+    assert_eq!(ui.screen(), ScreenId::DiceEntry);
+    // The rolls are still there: Done should succeed immediately.
+    tap(&mut ui, RegionId::DiceDone);
+    assert_eq!(ui.screen(), ScreenId::MnemonicDisplay, "rolls survived the back-and-forth");
+}
+
+#[test]
+fn back_from_passphrase_restores_mnemonic() {
+    let mut ui = ui_at_mnemonic(720, 720, SIXES);
+    tap(&mut ui, RegionId::Next);
+    assert_eq!(ui.screen(), ScreenId::PassphraseEntry);
+    tap(&mut ui, RegionId::Back);
+    assert_eq!(ui.screen(), ScreenId::PassphraseEntry, "modal stays over Passphrase");
+    tap(&mut ui, RegionId::ModalConfirm);
+    assert_eq!(ui.screen(), ScreenId::MnemonicDisplay, "Back restored the Mnemonic");
+}
+
+#[test]
+fn back_from_schemes_restores_passphrase() {
+    let mut ui = ui_at_schemes(720, 720);
+    tap(&mut ui, RegionId::Back);
+    assert_eq!(ui.screen(), ScreenId::Schemes, "modal stays over Schemes");
+    tap(&mut ui, RegionId::ModalConfirm);
+    assert_eq!(ui.screen(), ScreenId::PassphraseEntry, "Back restored the Passphrase");
+}
+
+#[test]
+fn exit_modal_cancel_keeps_current_screen() {
+    let mut ui = ui_at_mnemonic(720, 720, SIXES);
+    let before = Fb::render(&ui, 720, 720);
+    tap(&mut ui, RegionId::Back);
+    // Cancel: stays on Mnemonic, frame identical (no modal drawn).
+    tap(&mut ui, RegionId::ModalCancel);
+    assert_eq!(ui.screen(), ScreenId::MnemonicDisplay);
+    let after = Fb::render(&ui, 720, 720);
+    assert_eq!(before.px, after.px, "cancel must restore the exact pre-modal frame");
 }
 
 #[test]

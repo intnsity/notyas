@@ -238,7 +238,17 @@ fn main() {
     tap(&mut ui, RegionId::ModalClose);
 
     // Verify device (DUMMY values installed above).
+    // Back from Schemes goes through the exit modal chain: Schemes -> Passphrase
+    // -> Mnemonic -> Dice -> Home. Each serious screen gates Back with a confirm.
     tap(&mut ui, RegionId::Back);
+    shot(&out_dir, "12-exit-modal", &ui); // exit modal over Schemes
+    tap(&mut ui, RegionId::ModalConfirm); // -> Passphrase
+    tap(&mut ui, RegionId::Back);
+    tap(&mut ui, RegionId::ModalConfirm); // -> Mnemonic
+    tap(&mut ui, RegionId::Back);
+    tap(&mut ui, RegionId::ModalConfirm); // -> Dice
+    tap(&mut ui, RegionId::Back); // Dice -> Home (no modal)
+
     tap(&mut ui, RegionId::HomeVerifyDevice);
     shot(&out_dir, "10-verify-device", &ui);
 
@@ -248,5 +258,5 @@ fn main() {
     type_keys(&mut ui, "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong");
     shot(&out_dir, "11-phrase-entry", &ui);
 
-    println!("done: 11 screens, deterministic (each frame rendered twice, byte-identical)");
+    println!("done: 13 screens, deterministic (each frame rendered twice, byte-identical)");
 }

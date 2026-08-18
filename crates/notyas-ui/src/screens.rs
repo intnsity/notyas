@@ -688,6 +688,41 @@ fn draw_modal<D: DrawTarget<Color = Rgb565>>(
 }
 
 // ---------------------------------------------------------------------------------------
+// Exit-confirmation modal (Back on serious screens)
+// ---------------------------------------------------------------------------------------
+
+/// The exit-confirmation modal shown when Back is pressed on a screen holding a
+/// derived secret (Mnemonic, Passphrase, Schemes). The user sees their seed or
+/// derived keys and could lose work by going back — this gate prevents an
+/// accidental tap from discarding it silently.
+static EXIT_MODAL: ModalSpec = ModalSpec {
+    title: "Go back?",
+    body: &[
+        "Going back will clear your current work from this screen.",
+        "You can re-enter your dice rolls or seed words to start again.",
+    ],
+    cancel: "Cancel",
+    confirm: "Go back",
+};
+
+/// Hit regions for the exit modal: only Cancel and Confirm are tappable.
+pub(crate) fn exit_modal_regions(m: &Metrics) -> Vec<Region> {
+    let (_, cancel, confirm) = modal_layout(m, &EXIT_MODAL);
+    vec![
+        Region { id: RegionId::ModalCancel, rect: cancel },
+        Region { id: RegionId::ModalConfirm, rect: confirm },
+    ]
+}
+
+/// Draw the exit modal overlay on top of the current screen.
+pub(crate) fn draw_exit_modal<D: DrawTarget<Color = Rgb565>>(
+    t: &mut D,
+    m: &Metrics,
+) -> Result<(), D::Error> {
+    draw_modal(t, m, &EXIT_MODAL)
+}
+
+// ---------------------------------------------------------------------------------------
 // On-screen keyboard (shared by phrase entry and passphrase)
 // ---------------------------------------------------------------------------------------
 

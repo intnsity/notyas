@@ -12,10 +12,18 @@
 //! and the pipeline itself is [`notyas_core`] - this crate renders what the core
 //! computes and computes nothing of its own.
 //!
-//! # Secrecy rules (non-negotiable; desktop BigDice house law)
+//! # Secrecy rules (non-negotiable; desktop BigDice house law, adapted for touch)
 //!
-//! - Masked values are a FIXED-length bullet run ([`theme::MASK_BULLETS`] /
-//!   [`theme::MASK_WORD_BULLETS`]), never a run proportional to the secret.
+//! - DERIVED secrets (mnemonic words) mask as a FIXED-length bullet run
+//!   ([`theme::MASK_WORD_BULLETS`]), never a run proportional to the secret: their
+//!   length is itself information.
+//! - INPUT fields (passphrase entry/confirm) mask ONE bullet per typed character:
+//!   the user already knows what they typed, the NFKD byte counter beside the field
+//!   discloses the length anyway, and a fixed run there reads as a rendering bug.
+//!   A Show/Hide toggle (default Hidden) can reveal the literal input - an unseen
+//!   typo silently derives a different wallet, which is the worse failure; the
+//!   desktop shows typed input unmasked outright, hidden-by-default is the
+//!   touch-device tightening of that same law.
 //! - The mnemonic is masked by default and revealed only through the explicit two-step
 //!   confirm modal; what the user TYPES (rolls, a phrase they already have) is their own
 //!   input and is not masked, matching the desktop.
@@ -67,6 +75,7 @@ pub mod theme;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::boxed::Box;
 use core::convert::Infallible;
 
 use embedded_graphics::draw_target::DrawTarget;
@@ -125,6 +134,9 @@ pub enum ScreenId {
     MnemonicDisplay,
     PhraseEntry,
     PassphraseEntry,
+    /// Interstitial while the seed/derivation pipeline runs (see [`Ui::tick`]). No
+    /// tappable regions: the compute is synchronous and cannot be cancelled.
+    Deriving,
     Schemes,
     VerifyDevice,
 }
@@ -151,6 +163,10 @@ pub enum RegionId {
     Next,
     /// "Use passphrase" opt-in toggle.
     PassToggle,
+    /// Show/Hide the passphrase fields (default Hidden; plain button, no confirm -
+    /// the passphrase is session-only typed input and an unseen typo is the worse
+    /// failure).
+    PassShow,
     /// Focus the passphrase entry field.
     PassEntry,
     /// Focus the repeat-passphrase field.
@@ -406,6 +422,13 @@ pub struct Ui {
     state: State,
     verify: VerifyInfo,
     pressed: Option<Pressed>,
+    /// Navigation stack: each forward transition pushes the prior screen here,
+    /// so Back restores it exactly (user's rolls, mnemonic, passphrase survive).
+    /// One level per forward step; Back pops. Empty stack + Back -> Home.
+    prior: Vec<Box<State>>,
+    /// Exit-confirmation modal is open over the current screen. When true, only
+    /// the modal's Cancel/Confirm are tappable; the sheet below is inert.
+    exit_modal: bool,
     /// Network every derivation runs on. Toggled on Home (desktop parity: the desktop
     /// pipeline takes the network as an input too); lives on the `Ui` rather than in a
     /// screen state so the choice survives screen changes within a session. Power-off
@@ -429,6 +452,8 @@ impl Ui {
             state: State::Home,
             verify: VerifyInfo::default(),
             pressed: None,
+            prior: Vec::new(),
+            exit_modal: false,
             network: bitcoin::Network::Bitcoin,
         }
     }
@@ -460,6 +485,9 @@ impl Ui {
     /// modal is open, only the modal's buttons are returned - the sheet below it is
     /// inert, exactly as it is unreachable on screen.
     pub fn regions(&self) -> Vec<Region> {
+        if self.exit_modal {
+            return screens::exit_modal_regions(&self.m);
+        }
         screens::regions(&self.m, &self.state)
     }
 
@@ -505,6 +533,9 @@ impl Ui {
     /// emit a QR request. A response arriving after the user navigated away is dropped:
     /// resurrecting a modal over a different screen would show a QR nobody asked for.
     pub fn show_qr(&mut self, target: QrTarget, data: QrData) {
+        if self.exit_modal {
+            return;
+        }
         if let State::Schemes(s) = &mut self.state {
             s.qr = Some(QrModal { label: target.label, data });
         }
@@ -512,7 +543,11 @@ impl Ui {
 
     /// Repaint the whole screen. The only output path this crate has.
     pub fn draw<D: DrawTarget<Color = Rgb565>>(&self, target: &mut D) -> Result<(), D::Error> {
-        screens::draw(target, &self.m, &self.state, &self.verify, self.network)
+        screens::draw(target, &self.m, &self.state, &self.verify, self.network)?;
+        if self.exit_modal {
+            screens::draw_exit_modal(target, &self.m)?;
+        }
+        Ok(())
     }
 
     // --- internals ---------------------------------------------------------------------
@@ -523,7 +558,7 @@ impl Ui {
 
     /// Apply a vertical scroll delta to the current screen, clamped to its content.
     fn scroll_by(&mut self, dy: i32) {
-        if dy == 0 {
+        if dy == 0 || self.exit_modal {
             return;
         }
         let limit = screens::scroll_limit(&self.m, &self.state, &self.verify);
@@ -541,10 +576,46 @@ impl Ui {
     /// region the current state cannot act on. Returns the request a QR button raises;
     /// every other tap resolves entirely inside this crate and returns `None`.
     fn activate(&mut self, id: RegionId) -> Option<UiRequest> {
+        // Exit-confirmation modal takes priority over everything: while it is
+        // open, only Cancel and Confirm are tappable (regions() returns only
+        // those two), and every other tap is ignored.
+        if self.exit_modal {
+            match id {
+                RegionId::ModalCancel => self.exit_modal = false,
+                RegionId::ModalConfirm => {
+                    self.exit_modal = false;
+                    if let Some(prev) = self.prior.pop() {
+                        self.state = *prev;
+                    } else {
+                        self.state = State::Home;
+                    }
+                }
+                _ => {}
+            }
+            return None;
+        }
+
         match (&mut self.state, id) {
             // --- global -----------------------------------------------------------------
-            // Dropping the state zeroizes every secret it held (see the state types).
-            (_, RegionId::Back) => self.state = State::Home,
+            // Back: navigates to the prior screen. On serious screens (where a
+            // derived secret is in memory) the exit-confirmation modal opens
+            // first; on input-only screens (Dice, Phrase, Verify) it goes
+            // straight back, matching the user's expectation that "Back" means
+            // "the screen I was on before".
+            (_, RegionId::Back) => {
+                match &self.state {
+                    State::Mnemonic(_) | State::Passphrase(_) | State::Schemes(_) => {
+                        self.exit_modal = true;
+                    }
+                    _ => {
+                        if let Some(prev) = self.prior.pop() {
+                            self.state = *prev;
+                        } else {
+                            self.state = State::Home;
+                        }
+                    }
+                }
+            }
 
             // --- home: network toggle ---------------------------------------------------
             (State::Home, RegionId::NetToggle) => {
@@ -585,8 +656,9 @@ impl Ui {
                     return None; // Drawn disabled, with the reason; a tap does nothing.
                 }
                 if let Ok(mnem) = bip39::mnemonic_from_dice(&s.entropy, s.mode) {
-                    let dice = core::mem::take(&mut s.entropy);
+                    let dice = s.entropy.clone();
                     let mode = s.mode;
+                    self.prior.push(Box::new(core::mem::replace(&mut self.state, State::Home)));
                     self.state = State::Mnemonic(MnemonicState {
                         dice,
                         mode,
@@ -606,9 +678,9 @@ impl Ui {
             }
             (State::Mnemonic(s), RegionId::ModalCancel) => s.modal = false,
             (State::Mnemonic(s), RegionId::Next) if !s.modal => {
-                let dice = core::mem::take(&mut s.dice);
+                let dice = s.dice.clone();
                 let mode = s.mode;
-                // `s.mnem` is dropped with the state and wipes itself.
+                self.prior.push(Box::new(core::mem::replace(&mut self.state, State::Home)));
                 self.state = State::Passphrase(PassState {
                     source: SeedSource::Dice { dice, mode },
                     enabled: false,
@@ -644,6 +716,7 @@ impl Ui {
                 if normalized.is_empty() {
                     return None; // Nothing typed; Done is drawn disabled.
                 }
+                self.prior.push(Box::new(core::mem::replace(&mut self.state, State::Home)));
                 self.state = State::Passphrase(PassState {
                     source: SeedSource::Phrase(normalized),
                     enabled: false,
@@ -701,6 +774,7 @@ impl Ui {
                 // Both arms were validated before this screen; a None here would be a
                 // core bug, and staying put beats panicking in the input path.
                 if let Some(report) = report {
+                    self.prior.push(Box::new(core::mem::replace(&mut self.state, State::Home)));
                     self.state =
                         State::Schemes(SchemesState { report, tab: 0, scroll: 0, qr: None });
                 }
