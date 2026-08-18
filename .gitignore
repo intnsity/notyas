@@ -1,5 +1,10 @@
 /target/
 **/target/
+
+# Enclosure models are kept out of the published repo until their provenance and
+# licence are settled - third-party models (e.g. Makerworld) carry their own terms
+# that may not permit redistribution under GPL-3.0. Revisit for 0.2.0.
+/3dp/
 **/*.rs.bk
 *.swp
 *.swo
