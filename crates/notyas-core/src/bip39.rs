@@ -242,6 +242,66 @@ pub fn wordlist() -> &'static [&'static str] {
     &WORDLIST
 }
 
+/// Order `word` against the first `prefix.len()` bytes of `prefix` folded to ASCII
+/// lowercase. `Equal` therefore means exactly "word starts with prefix, ignoring case".
+///
+/// Folding the PREFIX rather than lowercasing a copy of it is what keeps
+/// [`words_with_prefix`] allocation-free: the prefix is a slice of the user's phrase, and
+/// a lowercase heap copy of part of a phrase would be one more buffer to wipe. The fold
+/// is exact because every wordlist entry is ASCII a-z (build.rs verifies the list);
+/// a non-ASCII prefix byte is >= 0x80 > b'z', so it simply orders past the whole list.
+fn cmp_prefix_folded(word: &str, prefix: &str) -> core::cmp::Ordering {
+    use core::cmp::Ordering;
+    let w = word.as_bytes();
+    for (i, p) in prefix.as_bytes().iter().enumerate() {
+        match w.get(i) {
+            // The word ran out inside the prefix: it is a strict prefix of it, so it
+            // sorts before every word the prefix can match.
+            None => return Ordering::Less,
+            Some(c) => match c.cmp(&p.to_ascii_lowercase()) {
+                Ordering::Equal => {}
+                other => return other,
+            },
+        }
+    }
+    Ordering::Equal
+}
+
+/// Up to `max` BIP39 words starting with `prefix`, in wordlist (alphabetical) order.
+///
+/// Case-insensitive, so a phrase typed on a shifted keyboard still completes. An empty
+/// prefix returns nothing: every word matches it, which is no suggestion at all.
+///
+/// The wordlist is sorted (asserted by build.rs and by `wordlist_is_the_official_2048`),
+/// so the matches are one contiguous run and a binary search finds its start.
+pub fn words_with_prefix(prefix: &str, max: usize) -> Vec<&'static str> {
+    use core::cmp::Ordering;
+    if prefix.is_empty() || max == 0 {
+        return Vec::new();
+    }
+    let list = wordlist();
+    let start = list.partition_point(|w| cmp_prefix_folded(w, prefix) == Ordering::Less);
+    list[start..]
+        .iter()
+        .take_while(|w| cmp_prefix_folded(w, prefix) == Ordering::Equal)
+        .take(max)
+        .copied()
+        .collect()
+}
+
+/// The word currently being typed at the end of `text`: everything after the last
+/// whitespace run, or the empty string when `text` ends with whitespace (the next word
+/// has not started) or is empty.
+///
+/// The splitter is [`char::is_whitespace`], the same one [`normalize_phrase`] uses, so
+/// the fragment is exactly the token the phrase parser would eventually see.
+pub fn current_word_fragment(text: &str) -> &str {
+    match text.rsplit_once(char::is_whitespace) {
+        Some((_, fragment)) => fragment,
+        None => text,
+    }
+}
+
 /// Turn parsed dice into a mnemonic (SPEC steps 4-7).
 ///
 /// SPEC obligations:
@@ -892,6 +952,76 @@ mod tests {
             *seed(&normalize_phrase("  abandon   abandon\tabout "), ""),
             *seed("abandon abandon about", "")
         );
+    }
+
+    /// The autocomplete's contract, checked against the whole committed list rather than
+    /// a handful of examples: for every prefix length the binary-searched run must equal
+    /// the run a linear scan finds, and it must be capped at `max`.
+    #[test]
+    fn words_with_prefix_matches_a_linear_scan_over_the_whole_wordlist() {
+        let list = wordlist();
+        for word in list {
+            for take in 1..=word.len() {
+                let prefix = &word[..take];
+                let want: Vec<&str> =
+                    list.iter().filter(|w| w.starts_with(prefix)).copied().collect();
+                assert_eq!(
+                    words_with_prefix(prefix, usize::MAX),
+                    want,
+                    "prefix {prefix:?}"
+                );
+                assert_eq!(
+                    words_with_prefix(prefix, 4),
+                    want[..want.len().min(4)],
+                    "prefix {prefix:?} capped at 4"
+                );
+            }
+        }
+    }
+
+    /// Case folding, the empty cases, and inputs the wordlist cannot contain. None of
+    /// these may panic or return a stray word: the device calls this on every keypress.
+    #[test]
+    fn words_with_prefix_folds_case_and_refuses_the_degenerate_inputs() {
+        assert_eq!(words_with_prefix("ZOO", 4), ["zoo"]);
+        assert_eq!(words_with_prefix("Ab", 3), ["abandon", "ability", "able"]);
+        assert_eq!(words_with_prefix("aB", 3), words_with_prefix("ab", 3));
+        // A prefix that is itself a whole word still lists the longer completions.
+        assert_eq!(words_with_prefix("act", 4), ["act", "action", "actor", "actress"]);
+        // Empty prefix means "every word", which is no suggestion at all.
+        assert!(words_with_prefix("", 4).is_empty());
+        assert!(words_with_prefix("abandon", 0).is_empty());
+        // Nothing in the list can match these.
+        assert!(words_with_prefix("zzz", 4).is_empty());
+        assert!(words_with_prefix("abandonment", 4).is_empty());
+        assert!(words_with_prefix("ab-", 4).is_empty());
+        assert!(words_with_prefix("\u{fc}ber", 4).is_empty());
+        assert!(words_with_prefix(" ", 4).is_empty());
+    }
+
+    /// The fragment is the token the phrase parser would see, which is what makes it a
+    /// sound completion prefix. Whitespace of every flavour ends a word.
+    #[test]
+    fn current_word_fragment_is_the_last_split_whitespace_token() {
+        for text in [
+            "",
+            "abandon",
+            "abandon ",
+            "  ",
+            "abandon about",
+            "abandon  ab",
+            "abandon\tab",
+            "abandon\r\n",
+            "zoo zoo z",
+            "\u{a0}ab",
+        ] {
+            let want = if text.ends_with(char::is_whitespace) {
+                ""
+            } else {
+                text.split_whitespace().next_back().unwrap_or("")
+            };
+            assert_eq!(current_word_fragment(text), want, "{text:?}");
+        }
     }
 
     /// Every official vector is a well formed phrase, so the checker must accept all 24 and
