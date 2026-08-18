@@ -1,10 +1,13 @@
 # notyas-firmware
 
-std Rust on ESP-IDF for ESP32-P4 touch-display boards. Milestone 0.1.0-m2:
-display and GT911 touch up from Rust - the Butter Paper demo shell renders,
-touches are drawn live and logged. Multi-board per docs/BOARDS.md: exactly one
-`board-*` cargo feature selects the hardware at compile time (the build IS the
-board - no default feature, no runtime detection).
+std Rust on ESP-IDF for ESP32-P4 touch-display boards. Milestone 0.1.0-m3:
+the full product is integrated - notyas-core's boot self-test runs before any
+peripheral, the real notyas-ui screens replace the m2 demo shell, and the
+Verify screen shows only values READ at boot (running-partition SHA256, eFuse
+state, radio pad readback - SECURITY.md invariant 5). Multi-board per
+docs/BOARDS.md: exactly one `board-*` cargo feature selects the hardware at
+compile time (the build IS the board - no default feature, no runtime
+detection).
 
 | Board feature | Hardware | Status |
 |---|---|---|
@@ -119,7 +122,7 @@ Notes the scripts encode:
   default (v3.x-family) config and does not boot on this chip.
 - Monitor manually: `espflash monitor --port COM3` (115200 baud; Ctrl-C exits).
 
-## What 0.1.0-m2 does
+## What 0.1.0-m3 does
 
 Boot sequence in `src/main.rs` (board-agnostic; hardware in `src/board/`),
 in load-bearing order:
@@ -127,11 +130,22 @@ in load-bearing order:
 1. `esp_idf_svc::sys::link_patches()` + EspLogger init.
 2. **Airgap lockdown first**: `board::radio_lockdown()` drives the board's
    C6 kill line low and holds it for the whole power cycle - the radio chip
-   sits in reset. Waveshare: GPIO54. Elecrow 5inch: GPIO20 (the C6 EN pullup
-   means the C6 ran from power-on until this line; logged, not hidden - see
-   BOARDS.md). The board name, flash size, and RADIO_KILL_DOC are logged
-   verbatim; scaffold boards additionally log `UNTESTED BOARD CONFIG`.
-3. `board::display_init()` - all panel bring-up quirks live per board:
+   sits in reset. Waveshare: GPIO54 (no EN pullup - the C6 is held down from
+   power-on too; docs/research/waveshare-family.md). Elecrow 5inch: GPIO20
+   (the C6 EN pullup means the C6 ran from power-on until this line; logged,
+   not hidden - see BOARDS.md). The board name, flash size, and
+   RADIO_KILL_DOC are logged verbatim; scaffold boards additionally log
+   `UNTESTED BOARD CONFIG`.
+3. **Boot self-test** (`notyas_core::selftest::run()`), before any
+   peripheral: 6 checks over pinned vectors, each logged, 491 ms measured on
+   both boards (the PBKDF2 vector dominates). On failure the display still
+   comes up and a dedicated failure screen paints the per-check verdicts
+   (SECURITY.md invariant 5: hard failure surfaced on screen, not a silent
+   brick), then the device parks - it refuses to run the UI over a crypto
+   core that failed its own vectors. The failure screen is deliberately NOT
+   a notyas-ui screen: it draws with notyas-fonts directly, so it renders
+   even when the crate stack under test is what failed.
+4. `board::display_init()` - all panel bring-up quirks live per board:
    - waveshare_4b: LDO ch3 2500 mV (DPHY) + ch4 3300 mV; 2-lane DSI at
      480 Mbps; ST7703 via `waveshare/esp_lcd_st7703` (720x720 RGB565, DPI
      38 MHz); backlight enable (GPIO33) held low until first frame.
@@ -143,77 +157,110 @@ in load-bearing order:
    directly and publish via `esp_lcd_panel_draw_bitmap`'s no-copy cache-sync
    path (verified for both the DPI and RGB drivers in IDF v5.5.4).
    `display::Display` implements `embedded_graphics::DrawTarget` at the
-   board's resolution; the shell lays out from fractions of it.
-4. Butter Paper shell painted (tokens in `src/theme.rs`), then
-   `board::backlight_set(80)`: LEDC PWM GPIO26 inverted (waveshare) / one
-   I2C register write to the STC8 co-MCU at 0x2F reg 0x20 (elecrow-5).
-5. `board::touch_init()`:
+   board's resolution; notyas-ui lays out from it.
+5. `Ui::new(board::DISPLAY_WIDTH, board::DISPLAY_HEIGHT)` +
+   `ui.set_verify_info(verify::build(&selftest))` - `src/verify.rs` reads
+   every Verify-screen value at boot: running-app SHA256 through
+   `esp_ota_get_running_partition` + `esp_partition_get_sha256` (~290 ms
+   over the 2.5 MB image), secure-boot and flash-encryption eFuse state,
+   chip revision via `efuse_hal_chip_revision`, the kill line's pad level
+   read back, IDF version, board name, firmware semver. Source id reports
+   "unavailable" until the release tooling ships it - never a fake value.
+6. First frame drawn and published, timed once (it IS the steady-state
+   frame time, since every frame is a full repaint): **20 ms draw + <1 ms
+   publish at 720x720** (Waveshare), **17 ms + <1 ms at 800x480** (Elecrow).
+   Then `board::backlight_set(80)`: LEDC PWM GPIO26 inverted (waveshare) /
+   one I2C register write to the STC8 co-MCU at 0x2F reg 0x20 (elecrow-5).
+7. `board::touch_init()`:
    - waveshare_4b: manual GT911 reset (GPIO23) + 120 ms wake, probe
      0x5D/0x14, driver gets rst=int=NC (INT unrouted; see pitfall 7).
    - elecrow_5: factory sequence - driver owns RST (GPIO36) and INT
      (GPIO42) and straps the address deterministically to 0x5D.
-6. Main loop: poll GT911 every 25 ms; on a new touch point, log
-   `touch x=.. y=..` and repaint the status line; heartbeat once per second.
+8. Main loop, every 25 ms: poll the GT911 and synthesize `TouchEvent`s from
+   the poll stream (point after none = Down, point after point = Move, none
+   after point = Up at the last seen point) -> `ui.touch()` -> full-screen
+   `ui.draw()` into the framebuffer -> publish. Down/Up and screen
+   transitions are logged (ScreenId carries no data - safe to log);
+   heartbeat once per second.
 
-## Captured boot log - Waveshare 4B (COM3, 2026-08-17, multi-board refactor)
+The partition table is the in-repo `firmware/partitions.csv`: a single 4 MB
+factory app partition and nothing else (no NVS, no phy_init, no otadata -
+SECURITY.md invariant 2), identical on both boards so the running-partition
+hash procedure is board-independent. flash.ps1 writes it explicitly (see
+pitfall 11).
 
-Behavior identical to the pre-refactor m2 log (module paths in log tags
-changed to `board::waveshare_4b`). GT911 address was 0x14 on this cycle; it
-can legitimately be 0x5D on others (pitfall 7).
+## Captured boot log - Waveshare 4B (COM3, 2026-08-17, 0.1.0-m3)
+
+GT911 address was 0x14 on this cycle; it can legitimately be 0x5D on others
+(pitfall 7). Long verify lines abbreviated with `[...]`.
 
 ```
 I (30) boot: chip revision: v1.3
 I (42) boot.esp32p4: SPI Flash Size : 32MB
+I (59) boot:  0 factory          factory app      00 00 00010000 00400000
 I esp_psram: Found 32MB PSRAM device
 I esp_psram: Speed: 200MHz
-I (1187) notyas_firmware::board::waveshare_4b: C6 radio held in reset (GPIO54 low)
-I (1194) notyas_firmware: board: Waveshare ESP32-P4-WiFi6-Touch-LCD-4B | flash 32 MB | radio kill GPIO54
-I (1226) notyas_firmware::board::waveshare_4b: LDO channel 3 acquired at 2500 mV (MIPI DPHY)
-I (1234) notyas_firmware::board::waveshare_4b: LDO channel 4 acquired at 3300 mV (GPIO39-48 bank)
-I (1244) notyas_firmware::board::waveshare_4b: DSI bus up: 2 lanes, 480 Mbps/lane
-I (1250) st7703: version: 2.0.0
-I (1694) notyas_firmware::board::waveshare_4b: ST7703 panel initialized (720x720 RGB565, DPI 38 MHz)
-I (1694) notyas_firmware::board::waveshare_4b: DPI framebuffer at 0x480b0a80 (PSRAM)
-I (1716) notyas_firmware::board::waveshare_4b: backlight PWM duty set to 80%
-I (1859) notyas_firmware::board::waveshare_4b: GT911 responds at i2c address 0x14
-I (1871) notyas_firmware::touch: GT911 initialized: product id "911" ([39, 31, 31, 00]), polled mode, reset GPIO23
-I (1880) notyas_firmware: notyas 0.1.0-m2 shell up on Waveshare ESP32-P4-WiFi6-Touch-LCD-4B
-I (2903) notyas_firmware: notyas 0.1.0-m2 | IDF v5.5.4 | free heap 32264868 bytes
+I (1707) notyas_firmware::board::waveshare_4b: C6 radio held in reset (GPIO54 low; no EN pullup - C6 held down from power-on)
+I (1717) notyas_firmware: board: Waveshare ESP32-P4-WiFi6-Touch-LCD-4B | flash 32 MB | radio kill GPIO54
+I (2235) notyas_firmware: selftest: wordlist      pass
+I (2235) notyas_firmware: selftest: dice raw      pass
+I (2235) notyas_firmware: selftest: dice fixed    pass
+I (2238) notyas_firmware: selftest: bip39 seed    pass
+I (2243) notyas_firmware: selftest: bip84 account pass
+I (2248) notyas_firmware: selftest: bip86 taproot pass
+I (2253) notyas_firmware: selftest: 6/6 passed in 491 ms
+I (2726) notyas_firmware::board::waveshare_4b: ST7703 panel initialized (720x720 RGB565, DPI 38 MHz)
+I (3023) notyas_firmware::verify: app sha256 (running partition, hashed in 291 ms): bce60175fbbeb380e14dd558b78b8fa02f1eff8685803d485cf20aaf74b80322
+I (3025) notyas_firmware: verify: fw 0.1.0 | Waveshare ESP32-P4-WiFi6-Touch-LCD-4B | ESP-IDF v5.5.4 | ESP32-P4 rev v1.3
+I (3036) notyas_firmware: verify: radio: kill GPIO54 reads LOW (C6 held in reset) | GPIO54 -> ESP32-C6 CHIP_PU (EN) [...]
+I (3075) notyas_firmware: verify: secure boot: disabled (dev unit; release units burn Secure Boot v2 RSA-3072) | flash encryption: disabled (dev unit; release units enable XTS-AES)
+I (3112) notyas_firmware: frame time: draw 20 ms + publish 0 ms (720x720 full repaint)
+I (3112) notyas_firmware::board::waveshare_4b: backlight PWM duty set to 80%
+I (3263) notyas_firmware::board::waveshare_4b: GT911 responds at i2c address 0x14
+I (3284) notyas_firmware: notyas 0.1.0 ui up on Waveshare ESP32-P4-WiFi6-Touch-LCD-4B
+I (4300) notyas_firmware: notyas 0.1.0 | IDF v5.5.4 | free heap 30450584 bytes
+I (77714) notyas_firmware: notyas 0.1.0 | IDF v5.5.4 | free heap 30450584 bytes
 ```
 
-34 s monitored, no watchdog, steady heap, zero errors.
+78 s monitored, no watchdog, free heap byte-identical (30450584) across all
+72 heartbeats, zero errors.
 
-## Captured boot log - Elecrow CrowPanel Advanced 5inch (COM6, 2026-08-17)
+## Captured boot log - Elecrow CrowPanel Advanced 5inch (COM6, 2026-08-17, 0.1.0-m3)
 
-Two consecutive boots byte-identical apart from millisecond jitter. Note the
-lockdown warning: on this board the C6 EN pullup means the radio co-processor
-ran from power-on until app_main's first line (BOARDS.md documents this and
-the hardware mitigation for production units).
+Note the lockdown warning: on this board the C6 EN pullup means the radio
+co-processor ran from power-on until app_main's first line (BOARDS.md
+documents this and the hardware mitigation for production units). The
+Waveshare board has no such window (no EN pullup).
 
 ```
 I (30) boot: chip revision: v1.3
 I (42) boot.esp32p4: SPI Flash Size : 16MB
+I (59) boot:  0 factory          factory app      00 00 00010000 00400000
 I esp_psram: Found 32MB PSRAM device
 I esp_psram: Speed: 200MHz
-I (1195) notyas_firmware::board::elecrow_5: C6 radio held in reset (GPIO20 low)
-W (1201) notyas_firmware::board::elecrow_5: C6 power-on window: C6 EN is pulled up (R77) - the C6 ran from power-on until this line; hardware-held in reset from here on
-I (1216) notyas_firmware: board: Elecrow CrowPanel Advanced 5inch ESP32-P4 | flash 16 MB | radio kill GPIO20
-I (1257) notyas_firmware::board::elecrow_5: backlight set to 0% (STC8 0x2F reg 0x20)
-I (1265) notyas_firmware::board::elecrow_5: LDO channel 4 acquired at 3300 mV (GPIO45-54 bank)
-I (1278) notyas_firmware::board::elecrow_5: RGB panel initialized (800x480 RGB565 DE mode, pclk 25 MHz)
-I (1282) notyas_firmware::board::elecrow_5: RGB framebuffer at 0x480b0a80 (PSRAM)
-I (1302) notyas_firmware::board::elecrow_5: backlight set to 80% (STC8 0x2F reg 0x20)
-I (1373) GT911: TouchPad_ID:0x39,0x31,0x31
-I (1373) GT911: TouchPad_Config_Version:99
-I (1373) notyas_firmware::board::elecrow_5: GT911 at i2c address 0x5D (driver-strapped via INT GPIO42)
-I (1379) notyas_firmware::touch: GT911 initialized: product id "911" ([39, 31, 31, 00]), polled mode, reset GPIO36 (driver-managed), int GPIO42
-I (1391) notyas_firmware: notyas 0.1.0-m2 shell up on Elecrow CrowPanel Advanced 5inch ESP32-P4
-I (2414) notyas_firmware: notyas 0.1.0-m2 | IDF v5.5.4 | free heap 32562936 bytes
+I (1667) notyas_firmware::board::elecrow_5: C6 radio held in reset (GPIO20 low)
+W (1673) notyas_firmware::board::elecrow_5: C6 power-on window: C6 EN is pulled up (R77) - the C6 ran from power-on until this line; hardware-held in reset from here on
+I (1688) notyas_firmware: board: Elecrow CrowPanel Advanced 5inch ESP32-P4 | flash 16 MB | radio kill GPIO20
+I (2203) notyas_firmware: selftest: wordlist      pass
+I (2221) notyas_firmware: selftest: 6/6 passed in 491 ms
+I (2226) notyas_firmware::board::elecrow_5: backlight set to 0% (STC8 0x2F reg 0x20)
+I (2246) notyas_firmware::board::elecrow_5: RGB panel initialized (800x480 RGB565 DE mode, pclk 25 MHz)
+I (2545) notyas_firmware::verify: app sha256 (running partition, hashed in 287 ms): cc94a2b763e96addca5ec7cc7bc50ee0bebf6d65805f983b68502a97ffe2e960
+I (2547) notyas_firmware: verify: fw 0.1.0 | Elecrow CrowPanel Advanced 5inch ESP32-P4 | ESP-IDF v5.5.4 | ESP32-P4 rev v1.3
+I (2558) notyas_firmware: verify: radio: kill GPIO20 reads LOW (C6 held in reset) | GPIO20 -> ESP32-C6 CHIP_PU (EN) via R95 [...]
+I (2594) notyas_firmware: verify: secure boot: disabled (dev unit; release units burn Secure Boot v2 RSA-3072) | flash encryption: disabled (dev unit; release units enable XTS-AES)
+I (2628) notyas_firmware: frame time: draw 17 ms + publish 0 ms (800x480 full repaint)
+I (2628) notyas_firmware::board::elecrow_5: backlight set to 80% (STC8 0x2F reg 0x20)
+I (2703) notyas_firmware::board::elecrow_5: GT911 at i2c address 0x5D (driver-strapped via INT GPIO42)
+I (2721) notyas_firmware: notyas 0.1.0 ui up on Elecrow CrowPanel Advanced 5inch ESP32-P4
+I (3759) notyas_firmware: notyas 0.1.0 | IDF v5.5.4 | free heap 30757920 bytes
+I (78647) notyas_firmware: notyas 0.1.0 | IDF v5.5.4 | free heap 30757920 bytes
 ```
 
-34 s monitored per boot, no watchdog, steady heap, zero errors. The GT911
-address is deterministic here (0x5D, INT-strapped by the driver) - unlike the
-Waveshare board's floating-INT coin flip.
+78 s monitored, no watchdog, free heap byte-identical (30757920) across all
+heartbeats, zero errors. The GT911 address is deterministic here (0x5D,
+INT-strapped by the driver) - unlike the Waveshare board's floating-INT
+coin flip.
 
 ## Pitfalls hit while proving this (all encoded in config/scripts now)
 
@@ -276,3 +323,31 @@ Waveshare board's floating-INT coin flip.
 10. One CARGO_TARGET_DIR per board, always. The IDF build dir bakes in the
     merged sdkconfig; reusing a dir across boards resurrects the stale-
     bootloader hazard the per-board dirs were introduced to kill.
+11. `espflash flash --partition-table <file>` does NOT write the partition
+    table to the device - it only uses it to lay out and validate the app
+    image. Proven by flash readback: after a "successful" flash naming the
+    new 4 MB table, 0x8000 still held the old 1 MB one and the bootloader
+    refused the app ("Image length ... doesn't fit in partition length").
+    flash.ps1 therefore converts firmware/partitions.csv to binary
+    (`espflash partition-table --to-binary`) and writes it to 0x8000 with
+    `espflash write-bin` before every app flash.
+12. secp256k1-sys (via notyas-core -> bitcoin) cross-compiles its C library
+    with cc-rs, which cannot find the ESP toolchain (esp-idf-sys exports it
+    only inside its own build script) and, once pointed at a GCC, produces
+    soft-float PIC objects that the static IDF link rejects (`discarded
+    output section: '.got.plt'` at final link). build.ps1 exports
+    `CC/AR/CFLAGS_riscv32imafc_esp_espidf` pointing at the embuild-installed
+    riscv32-esp-elf-gcc with `-march=rv32imafc_zicsr_zifencei -mabi=ilp32f
+    -fno-pic`.
+13. Static-inline IDF functions are not bindgen-able:
+    `esp_secure_boot_enabled()` never appears in the bindings no matter what
+    header is included. Read the underlying real API instead
+    (`esp_efuse_read_field_bit(ESP_EFUSE_SECURE_BOOT_EN)` - same bit its
+    non-virtual arm reads through efuse_ll). bindings/verify.h documents the
+    equivalence; the extra_components entry that carries it has NO component
+    to build - esp-idf-sys accepts a bindings_header-only entry.
+14. `gpio_get_level` on an OUTPUT-mode pin returns a constant 0 regardless
+    of the pad's real level (input buffer disabled). Pins whose level is
+    reported on the Verify screen (the radio kill line) are claimed as
+    GPIO_MODE_INPUT_OUTPUT in `board::claim_output` so the readback is the
+    actual pad state - the whole point of reporting it.
