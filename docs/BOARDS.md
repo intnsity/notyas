@@ -16,13 +16,23 @@ Advanced family).
 | `board-elecrow-7` | Elecrow CrowPanel Advanced 7inch ESP32-P4 | 1024x600 MIPI-DSI (EK79007) | 16 MB | GPIO32 low -> C6 EN | **UNTESTED scaffold** - compiles, never ran |
 | `board-elecrow-9` | Elecrow CrowPanel Advanced 9inch ESP32-P4 | 1024x600 MIPI-DSI (EK79007) | 16 MB | GPIO32 low -> C6 EN | **UNTESTED scaffold** - compiles, never ran |
 | `board-elecrow-101` | Elecrow CrowPanel Advanced 10.1inch ESP32-P4 | 1024x600 MIPI-DSI (EK79007) | 16 MB | GPIO32 low -> C6 EN | **UNTESTED scaffold** - compiles, never ran |
+| `board-waveshare-5` | Waveshare ESP32-P4-WIFI6-Touch-LCD-5 | 720x1280 MIPI-DSI (HX8394) | 32 MB | GPIO54 low -> C6 EN | **UNTESTED scaffold + PORTRAIT LAYOUT UNVERIFIED** - compiles, never ran |
+| `board-waveshare-7b` | Waveshare ESP32-P4-WIFI6-Touch-LCD-7B | 1024x600 MIPI-DSI (EK79007) | 32 MB | GPIO54 low -> C6 EN | **UNTESTED scaffold** - compiles, never ran |
+| `board-waveshare-7x` | Waveshare ESP32-P4-WIFI6-Touch-LCD-7 ("X") | 720x1280 MIPI-DSI (ILI9881C) | 32 MB | GPIO54 low -> C6 EN | **UNTESTED scaffold + PORTRAIT LAYOUT UNVERIFIED** - compiles, never ran |
+| `board-waveshare-8x` | Waveshare ESP32-P4-WIFI6-Touch-LCD-8 ("X") | 800x1280 MIPI-DSI (JD9365) | 32 MB | GPIO54 low -> C6 EN | **UNTESTED scaffold + PORTRAIT LAYOUT UNVERIFIED** - compiles, never ran |
+| `board-waveshare-101x` | Waveshare ESP32-P4-WIFI6-Touch-LCD-10.1 ("X") | 800x1280 MIPI-DSI (JD9365) | 32 MB | GPIO54 low -> C6 EN | **UNTESTED scaffold + PORTRAIT LAYOUT UNVERIFIED** - compiles, never ran |
 
-"UNTESTED scaffold" is a hard status: every constant traces to a published Elecrow
-source (factory firmware + that board's own V1.0 Eagle schematic), the module carries
-an UNTESTED banner, the firmware logs `UNTESTED BOARD CONFIG` at boot, and build.ps1
-warns. No verification claim of any kind until a physical unit runs it.
+"UNTESTED scaffold" is a hard status: every constant traces to a published vendor
+source (Elecrow: factory firmware + that board's own V1.0 Eagle schematic; Waveshare:
+docs/research/waveshare-family.md - schematics - plus the vendor's BSP monorepo at a
+pinned commit), the module carries an UNTESTED banner, the firmware logs `UNTESTED
+BOARD CONFIG` at boot, and build.ps1 warns. No verification claim of any kind until a
+physical unit runs it. "PORTRAIT LAYOUT UNVERIFIED" is the additional caveat for the
+720x1280 / 800x1280 panels: the UI derives its layout from DISPLAY_WIDTH/HEIGHT but
+has only ever been rendered at 720x720 (square) and 800x480 (landscape); these boards
+log a dedicated boot warning for it.
 
-All five are ESP32-P4NRW32 (32 MB PSRAM), GT911 touch, and carry an ESP32-C6 whose
+All boards are ESP32-P4NRW32 (32 MB PSRAM), GT911 touch, and carry an ESP32-C6 whose
 only control line is its EN pin from a P4 GPIO; both bench units are rev v1.3 dev
 silicon. Correction to the original design text: the 7/9/10.1 inch siblings do NOT
 "share the electronics" with the 5inch - they are a different layout (C6 EN on GPIO32
@@ -278,6 +288,30 @@ guarantee on the Verify screen.
   been surveyed; assume the socket-must-be-empty requirement until the fact
   sheet covers them.
 
+### board-waveshare-5 / -7b / -7x / -8x / -101x (UNTESTED scaffolds)
+
+- Kill: **GPIO54 -> C6 CHIP_PU (EN)**, driven low first thing in app_main, never
+  released - the family-invariant circuit, schematic-verified per board in
+  docs/research/waveshare-family.md (5: R34; 7B: R33; X series: R54; all 0R).
+  Like the 4B and unlike every Elecrow board, C6 EN carries **no pullup** (module
+  C6 with 1 uF to GND only), so the radio is held down from power-on - no boot
+  window exists. SDIO host never configured on GPIO14-19. The 7B schematic marks
+  its C6 block "optional"; a C6-unpopulated factory variant would only improve
+  the airgap.
+- **UNTESTED**: source-verified only (family schematic survey + the Waveshare BSP
+  monorepo @ be0e5e4, re-fetched 2026-08-17 for DPI timings, backlight polarity,
+  and panel init tables) - no such hardware has ever run this firmware. The
+  modules carry the banner, the boot log says `UNTESTED BOARD CONFIG`, and
+  build.ps1 warns. A physical unit must reproduce the 4B verification protocol
+  before a status row can say verified.
+- **PORTRAIT LAYOUT UNVERIFIED** (5 / 7x / 8x / 101x): first portrait panels in
+  the roster (720x1280, 800x1280). The Layout mechanism is resolution-agnostic by
+  design, but no portrait rendering has ever been looked at; these boards log an
+  extra `PORTRAIT LAYOUT UNVERIFIED` warning at boot and keep the caveat in the
+  status table until a portrait unit is verified end to end. (The 7B is 1024x600
+  landscape - same aspect class as the verified Elecrow 5inch - so it carries
+  only the plain UNTESTED status.)
+
 ## Flash size and partition table
 
 Waveshare has 32 MB flash, Elecrow 16 MB. Decision: **one shared partition table,
@@ -316,9 +350,13 @@ CH343; COM6 = Elecrow CH340K - port letters drift, still overridable). The exist
 newest-bootloader-under-esp-idf-sys search is unchanged and now runs inside the
 per-board target dir, which removes the wrong-board-bootloader hazard by construction.
 
-Implemented as designed, extended to all five boards (scaffold target dirs
-C:\nyt-e7 / C:\nyt-e9 / C:\nyt-e101; scaffolds get a build.ps1 UNTESTED warning
-and no default flash port - `-Port` must be passed explicitly).
+Implemented as designed, extended to the full roster in build.ps1 (scaffold
+target dirs C:\nyt-e7 / C:\nyt-e9 / C:\nyt-e101 / C:\nyt-w5 / C:\nyt-w7b /
+C:\nyt-w7x / C:\nyt-w8x / C:\nyt-w101x; scaffolds get a build.ps1 UNTESTED
+warning - plus a PORTRAIT warning where it applies). flash.ps1 knows the Elecrow
+scaffolds (no default flash port - `-Port` must be passed explicitly) but not
+yet the Waveshare ones: extending it is deliberately deferred until a physical
+Waveshare scaffold unit exists to flash.
 
 Release packaging (tools, later): build both boards, emit
 `notyas-<ver>-<board>.bin` + per-board SHA256 lines into one signed SHA256SUMS.txt.

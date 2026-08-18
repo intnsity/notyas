@@ -14,6 +14,9 @@ detection).
 | `board-waveshare-4b` | Waveshare ESP32-P4-WiFi6-Touch-LCD-4B, 720x720 DSI | verified on hardware |
 | `board-elecrow-5` | Elecrow CrowPanel Advanced 5inch, 800x480 RGB | verified on hardware |
 | `board-elecrow-7` / `-9` / `-101` | Elecrow CrowPanel Advanced 1024x600 DSI | UNTESTED scaffolds |
+| `board-waveshare-7b` | Waveshare ESP32-P4-WIFI6-Touch-LCD-7B, 1024x600 DSI | UNTESTED scaffold |
+| `board-waveshare-5` | Waveshare ESP32-P4-WIFI6-Touch-LCD-5, 720x1280 DSI | UNTESTED scaffold + portrait layout unverified |
+| `board-waveshare-7x` / `-8x` / `-101x` | Waveshare Touch-LCD-7/8/10.1 "X", 720x1280 / 800x1280 DSI | UNTESTED scaffolds + portrait layout unverified |
 
 Board modules live in `src/board/<name>.rs` behind one flat surface
 (BOARDS.md, normative); everything else is board-agnostic.
@@ -101,12 +104,14 @@ Then, from anywhere:
 ```
 
 `-Board` drives the cargo feature, the sdkconfig pair, the per-board
-CARGO_TARGET_DIR (C:\nyt-ws, C:\nyt-e5, C:\nyt-e7, C:\nyt-e9, C:\nyt-e101),
-espflash `--flash-size` (32mb/16mb) and the default port (COM3/COM6; port
-letters drift - override with `-Port COMx`). Per-board target dirs mean
-switching boards never needs a clean, and flash.ps1's
-newest-bootloader-under-esp-idf-sys search can no longer pick up another
-board's bootloader.
+CARGO_TARGET_DIR (C:\nyt-ws, C:\nyt-e5, C:\nyt-e7, C:\nyt-e9, C:\nyt-e101,
+C:\nyt-w5, C:\nyt-w7b, C:\nyt-w7x, C:\nyt-w8x, C:\nyt-w101x), espflash
+`--flash-size` (32mb/16mb) and the default port (COM3/COM6; port letters
+drift - override with `-Port COMx`). flash.ps1 does not know the Waveshare
+scaffold boards yet (no hardware exists to flash); build.ps1 knows the full
+roster. Per-board target dirs mean switching boards never needs a clean, and
+flash.ps1's newest-bootloader-under-esp-idf-sys search can no longer pick up
+another board's bootloader.
 
 Notes the scripts encode:
 
