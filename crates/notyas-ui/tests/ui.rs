@@ -83,6 +83,15 @@ fn tap(ui: &mut Ui, id: RegionId) -> Option<UiRequest> {
     ui.touch(TouchEvent::Up { x, y })
 }
 
+/// Passphrase Done, then the embedder's `tick`: the two halves of one user action, with
+/// the interstitial live in between. Tests that care about the split assert around it
+/// (`deriving_interstitial_*`); everything else just wants to land on Schemes.
+fn tap_done_and_derive(ui: &mut Ui) {
+    tap(ui, RegionId::KeyDone);
+    assert_eq!(ui.screen(), ScreenId::Deriving, "Done must park on the interstitial");
+    assert!(ui.tick(), "tick must consume the pending derivation");
+}
+
 /// A synthetic (non-scannable) symbol for modal tests: the UI renders whatever matrix
 /// it is handed, so a checkerboard exercises layout without notyas-core's std-only
 /// encoder in the dev graph.
@@ -134,7 +143,15 @@ fn ui_at_mnemonic(w: u32, h: u32, dice: &str) -> Ui {
 /// 80 px physical floor. Checked on every screen the state machine can reach.
 fn check_regions(ui: &Ui, w: i32, h: i32) {
     let regions = ui.regions();
-    assert!(!regions.is_empty(), "{:?} has no tappable regions", ui.screen());
+    // Deriving is the one screen with nothing to tap, by design: the compute is
+    // synchronous and cannot be cancelled.
+    assert_eq!(
+        regions.is_empty(),
+        ui.screen() == ScreenId::Deriving,
+        "{:?} tappable regions: {}",
+        ui.screen(),
+        regions.len()
+    );
     for r in &regions {
         assert!(
             r.rect.x >= 0 && r.rect.y >= 0 && r.rect.right() <= w && r.rect.bottom() <= h,
@@ -148,6 +165,16 @@ fn check_regions(ui: &Ui, w: i32, h: i32) {
             assert!(
                 r.rect.w >= 80 && r.rect.h >= 80,
                 "dice key {:?} below 80px at {w}x{h}: {:?}",
+                r.id,
+                r.rect
+            );
+        }
+        // The completion chips carry their own physical floor: they sit directly above
+        // the keyboard, so a thin one would be mistapped for a key.
+        if matches!(r.id, RegionId::Suggest(_)) {
+            assert!(
+                r.rect.h >= 60,
+                "suggestion chip {:?} below 60px at {w}x{h}: {:?}",
                 r.id,
                 r.rect
             );
@@ -206,9 +233,15 @@ fn walk_all_screens(w: u32, h: u32) {
     check(&ui);
     type_keys(&mut ui, "ab");
     check(&ui); // confirm field now present
+    tap(&mut ui, RegionId::PassShow);
+    check(&ui); // revealed fields
+    tap(&mut ui, RegionId::PassShow);
     tap(&mut ui, RegionId::PassConfirm);
     type_keys(&mut ui, "ab");
     tap(&mut ui, RegionId::KeyDone);
+    assert_eq!(ui.screen(), ScreenId::Deriving);
+    check(&ui); // the interstitial lays out and paints on both geometries
+    assert!(ui.tick());
     assert_eq!(ui.screen(), ScreenId::Schemes);
     check(&ui);
     for i in 0..4 {
@@ -249,8 +282,21 @@ fn walk_all_screens(w: u32, h: u32) {
     tap(&mut ui, RegionId::Back);
     assert_eq!(ui.screen(), ScreenId::Home);
 
-    // Phrase entry, all keyboard pages.
+    // Phrase entry, all keyboard pages, with the suggestion strip both empty and full.
     tap(&mut ui, RegionId::HomeVerifySeed);
+    check(&ui);
+    // "ab" has more than four completions, so the strip is at its widest here - the
+    // geometry that has to fit inside the body next to a usable keyboard.
+    type_keys(&mut ui, "ab");
+    check(&ui);
+    assert_eq!(
+        ui.regions().iter().filter(|r| matches!(r.id, RegionId::Suggest(_))).count(),
+        4,
+        "a full strip must be four chips at {w}x{h}"
+    );
+    tap(&mut ui, RegionId::Suggest(0));
+    check(&ui);
+    tap(&mut ui, RegionId::KeyBackspace);
     check(&ui);
     tap(&mut ui, RegionId::Shift);
     check(&ui);
@@ -479,7 +525,7 @@ fn passphrase_mismatch_blocks_done() {
     // Fix the confirm field and proceed.
     tap(&mut ui, RegionId::KeyBackspace);
     type_keys(&mut ui, "c");
-    tap(&mut ui, RegionId::KeyDone);
+    tap_done_and_derive(&mut ui);
     assert_eq!(ui.screen(), ScreenId::Schemes);
 }
 
@@ -492,7 +538,7 @@ fn phrase_entry_requires_words_and_reaches_schemes() {
     type_keys(&mut ui, "zoo zoo zoo");
     tap(&mut ui, RegionId::KeyDone);
     assert_eq!(ui.screen(), ScreenId::PassphraseEntry);
-    tap(&mut ui, RegionId::KeyDone); // passphrase off -> continue
+    tap_done_and_derive(&mut ui); // passphrase off -> continue
     assert_eq!(ui.screen(), ScreenId::Schemes);
 }
 
@@ -541,14 +587,14 @@ fn no_reveal_region_after_reveal() {
 
 #[test]
 fn masked_field_paints_inside_its_rect() {
-    // The mask is a FIXED 24-bullet run; on the narrow side-by-side fields of the
-    // 800x480 landscape layout it is wider than the field and must be clipped, not
-    // bleed across the gap into the confirm field. The gap column between the two
+    // A passphrase longer than the field can show: on the narrow side-by-side fields of
+    // the 800x480 landscape layout the bullet run outruns the rect and must be clipped,
+    // not bleed across the gap into the confirm field. The gap column between the two
     // fields must stay free of glyph ink.
     let mut ui = ui_at_mnemonic(800, 480, SIXES);
     tap(&mut ui, RegionId::Next);
     tap(&mut ui, RegionId::PassToggle);
-    type_keys(&mut ui, "a");
+    type_keys(&mut ui, "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz");
     let entry = region(&ui, RegionId::PassEntry).rect;
     let fb = Fb::render(&ui, 800, 480);
     for y in entry.y..entry.y + entry.h {
@@ -561,6 +607,88 @@ fn masked_field_paints_inside_its_rect() {
             );
         }
     }
+}
+
+/// The INPUT masking rule, pinned at the pixel level: a masked passphrase field shows
+/// one bullet per typed character and nothing else. Same length must render identically
+/// whatever the characters were (no content leak), and one more character must render
+/// differently (the count is real, not a fixed run).
+#[test]
+fn masked_input_field_shows_length_only() {
+    let at_passphrase = |typed: &str| {
+        let mut ui = ui_at_mnemonic(720, 720, SIXES);
+        tap(&mut ui, RegionId::Next);
+        tap(&mut ui, RegionId::PassToggle);
+        type_keys(&mut ui, typed);
+        Fb::render(&ui, 720, 720)
+    };
+    let six_a = at_passphrase("abcdef");
+    let six_b = at_passphrase("zyxwvu");
+    let seven = at_passphrase("abcdefg");
+    assert_eq!(six_a.px, six_b.px, "a masked field must not depend on the characters");
+    assert_ne!(six_a.px, seven.px, "a masked field must show one bullet per character");
+}
+
+/// The passphrase header row - label, Show/Hide, Off/On - must lay out side by side on
+/// both geometries. The label is measured text, not a region, so the region-overlap
+/// sweep cannot see it: this checks the ink directly by looking for the label's own
+/// pixels inside the Show button, which is where it landed when Show was left-anchored.
+#[test]
+fn the_passphrase_header_row_does_not_collide() {
+    for (w, h) in [(720u32, 720u32), (800, 480)] {
+        let mut ui = ui_at_mnemonic(w, h, SIXES);
+        tap(&mut ui, RegionId::Next);
+        let show = region(&ui, RegionId::PassShow).rect;
+        let toggle = region(&ui, RegionId::PassToggle).rect;
+        assert!(show.right() <= toggle.x, "{w}x{h}: Show overlaps the Off/On toggle");
+        assert!(show.x > notyas_ui::layout::Metrics::new(w, h).body().x);
+        // The button's own paper must be intact: a label bleeding under it would put
+        // body-copy ink on paper-1 inside a paper-3 button.
+        let fb = Fb::render(&ui, w, h);
+        for y in show.y + 2..show.bottom() - 2 {
+            for x in show.x + 2..show.right() - 2 {
+                assert_ne!(
+                    fb.px[(y as u32 * w + x as u32) as usize],
+                    theme::PAPER_1,
+                    "{w}x{h}: page paper inside the Show button at ({x},{y})"
+                );
+            }
+        }
+    }
+}
+
+/// Show reveals the literal passphrase INCLUDING its leading and trailing spaces: those
+/// are the characters a plain rendering hides and PBKDF2 still consumes, and an unseen
+/// one silently derives a different wallet. Hidden -> shown must change the frame, and a
+/// value that differs only by a trailing space must be distinguishable while shown.
+#[test]
+fn show_reveals_the_passphrase_and_its_edge_spaces() {
+    let render = |typed: &str, show: bool| {
+        let mut ui = ui_at_mnemonic(720, 720, SIXES);
+        tap(&mut ui, RegionId::Next);
+        tap(&mut ui, RegionId::PassToggle);
+        type_keys(&mut ui, typed);
+        if show {
+            tap(&mut ui, RegionId::PassShow);
+        }
+        Fb::render(&ui, 720, 720)
+    };
+    assert_ne!(render("abc", false).px, render("abc", true).px, "Show must reveal");
+    // Hidden, "abc " and "abc" differ only in bullet count; shown, the difference has to
+    // survive as a visible mark rather than as blank paper.
+    assert_ne!(
+        render("abc ", true).px,
+        render("abc", true).px,
+        "a trailing space must be visible when the passphrase is shown"
+    );
+    assert_ne!(
+        render(" abc", true).px,
+        render("abc", true).px,
+        "a leading space must be visible when the passphrase is shown"
+    );
+    // ...and it must be a mark, not just a shift: a leading and a trailing space put the
+    // same three letters in different places, but both must be legible as spaces.
+    assert_ne!(render(" abc", true).px, render("abc ", true).px);
 }
 
 #[test]
@@ -598,7 +726,7 @@ const VECTOR1_BIP84_ZPUB: &str = "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m
 fn ui_at_schemes(w: u32, h: u32) -> Ui {
     let mut ui = ui_at_mnemonic(w, h, SIXES);
     tap(&mut ui, RegionId::Next);
-    tap(&mut ui, RegionId::KeyDone); // passphrase off -> Continue
+    tap_done_and_derive(&mut ui); // passphrase off -> Continue
     assert_eq!(ui.screen(), ScreenId::Schemes);
     ui
 }
@@ -717,7 +845,7 @@ fn network_toggle_reaches_the_derivation() {
     type_dice(&mut ui, SIXES);
     tap(&mut ui, RegionId::DiceDone);
     tap(&mut ui, RegionId::Next);
-    tap(&mut ui, RegionId::KeyDone);
+    tap_done_and_derive(&mut ui);
     assert_eq!(ui.screen(), ScreenId::Schemes);
     tap(&mut ui, RegionId::Tab(2)); // BIP84
     let UiRequest::Qr(addr) = tap(&mut ui, RegionId::QrAddress(0)).expect("address QR");
@@ -765,4 +893,233 @@ fn every_keyboard_key_is_ascii() {
     assert_ascii(&ui); // digits page
     tap(&mut ui, RegionId::PageSymbols);
     assert_ascii(&ui); // symbols page
+}
+
+// ---------------------------------------------------------------------------------------
+// BIP39 completion strip (phrase entry)
+// ---------------------------------------------------------------------------------------
+
+/// The phrase screen with `typed` in its buffer.
+fn ui_at_phrase(w: u32, h: u32, typed: &str) -> Ui {
+    let mut ui = Ui::new(w, h);
+    tap(&mut ui, RegionId::HomeVerifySeed);
+    type_keys(&mut ui, typed);
+    assert_eq!(ui.screen(), ScreenId::PhraseEntry);
+    ui
+}
+
+fn chips(ui: &Ui) -> usize {
+    ui.regions().iter().filter(|r| matches!(r.id, RegionId::Suggest(_))).count()
+}
+
+/// When the strip offers chips and when it stays out of the way. The rules are about
+/// what is left to complete, not about how much has been typed.
+#[test]
+fn the_strip_offers_completions_only_while_a_word_is_unfinished() {
+    // Nothing typed: no word in progress.
+    assert_eq!(chips(&ui_at_phrase(720, 720, "")), 0);
+    // Mid-word with many matches: the strip is full (capped at four).
+    assert_eq!(chips(&ui_at_phrase(720, 720, "ab")), 4);
+    // Mid-word with few matches: exactly the matches, no padding.
+    assert_eq!(chips(&ui_at_phrase(720, 720, "zeb")), 1); // -> "zebra"
+    // A finished word followed by a space: the next word has not started.
+    assert_eq!(chips(&ui_at_phrase(720, 720, "abandon ")), 0);
+    // A fragment nothing can complete.
+    assert_eq!(chips(&ui_at_phrase(720, 720, "qqq")), 0);
+    // "act" IS a word but "action"/"actor"/"actress" extend it, so completing is still
+    // worth offering. "zoo" and "about" are each the only word with their own prefix:
+    // there is nothing left to complete, so the strip yields the row and the checksum
+    // advisory above it is what the user reads at the end of a phrase.
+    assert_eq!(chips(&ui_at_phrase(720, 720, "act")), 4);
+    assert_eq!(chips(&ui_at_phrase(720, 720, "about")), 0);
+    assert_eq!(chips(&ui_at_phrase(720, 720, "zoo")), 0);
+}
+
+/// Tapping a chip replaces the fragment being typed with that exact word and appends the
+/// separating space, so the next word can be typed straight away. Checked through the
+/// pixels, since the phrase buffer is private: the result must be identical to having
+/// typed the whole word and a space by hand.
+#[test]
+fn tapping_a_chip_completes_the_word_and_appends_a_space() {
+    // The strip's own order is the wordlist's, so chip 1 after "ab" is "ability".
+    let mut tapped = ui_at_phrase(720, 720, "zoo ab");
+    tap(&mut tapped, RegionId::Suggest(1));
+    let typed = ui_at_phrase(720, 720, "zoo ability ");
+    assert_eq!(Fb::render(&tapped, 720, 720).px, Fb::render(&typed, 720, 720).px);
+    // The trailing space really is there: the strip is empty (no word in progress) and
+    // the next keystroke starts a new word rather than extending "ability".
+    assert_eq!(chips(&tapped), 0);
+
+    // Case is corrected, not appended to: a fragment typed on the shifted page is
+    // replaced by the lowercase wordlist spelling.
+    let mut shifted = ui_at_phrase(720, 720, "");
+    tap(&mut shifted, RegionId::Shift);
+    type_keys(&mut shifted, "AB");
+    assert_eq!(chips(&shifted), 4);
+    tap(&mut shifted, RegionId::Suggest(0));
+    let lower = ui_at_phrase(720, 720, "abandon ");
+    // Only the phrase well is compared: the shifted run leaves the keyboard on its
+    // uppercase page, which is a keyboard difference, not a phrase-buffer one.
+    let (a, b) = (Fb::render(&shifted, 720, 720), Fb::render(&lower, 720, 720));
+    let well = notyas_ui::layout::Metrics::new(720, 720).body();
+    for y in well.y..well.y + 124 {
+        for x in 0..720 {
+            let i = (y as u32 * 720 + x as u32) as usize;
+            assert_eq!(a.px[i], b.px[i], "completed phrase differs at ({x},{y})");
+        }
+    }
+}
+
+/// The strip is phrase-entry only. No other screen offers a chip, and a stray
+/// `Suggest` tap on one cannot be routed anywhere: the completion source is the public
+/// wordlist and the target is the user's own typed input, and neither may become a path
+/// into a masked or derived value.
+#[test]
+fn no_completion_chip_reaches_a_secret_screen() {
+    let mut ui = Ui::new(720, 720);
+    tap(&mut ui, RegionId::HomeNewSeed);
+    type_dice(&mut ui, SIXES);
+    assert_eq!(chips(&ui), 0, "dice entry");
+    tap(&mut ui, RegionId::DiceDone);
+    assert_eq!(chips(&ui), 0, "mnemonic (masked)");
+    tap(&mut ui, RegionId::Reveal);
+    tap(&mut ui, RegionId::ModalConfirm);
+    assert_eq!(chips(&ui), 0, "mnemonic (revealed)");
+    tap(&mut ui, RegionId::Next);
+    tap(&mut ui, RegionId::PassToggle);
+    // A passphrase is not a wordlist word and must never be completed against one.
+    type_keys(&mut ui, "ab");
+    assert_eq!(chips(&ui), 0, "passphrase entry");
+    tap(&mut ui, RegionId::PassConfirm);
+    type_keys(&mut ui, "ab");
+    assert_eq!(chips(&ui), 0, "passphrase confirm");
+    let before = Fb::render(&ui, 720, 720);
+    // Taps in the dead space where the phrase screen would put its strip resolve to
+    // nothing here: there is no Suggest region to hit on this screen at all.
+    let strip_y = region(&ui_at_phrase(720, 720, "ab"), RegionId::Suggest(0)).rect;
+    for x in [strip_y.x + 10, strip_y.right() - 10] {
+        let y = strip_y.y + strip_y.h / 2;
+        ui.touch(TouchEvent::Down { x, y });
+        ui.touch(TouchEvent::Up { x, y });
+        assert_eq!(ui.screen(), ScreenId::PassphraseEntry, "a stray tap moved the screen");
+    }
+    assert_eq!(before.px, Fb::render(&ui, 720, 720).px);
+    tap_done_and_derive(&mut ui);
+    assert_eq!(chips(&ui), 0, "schemes");
+}
+
+/// The whole phrase screen must fit its body on both shipped geometries with the strip
+/// at full width: the well keeps at least one line, the keyboard keeps its four rows at
+/// the 40 px floor, and nothing lands outside the body. This is the budget the 800x480
+/// panel has no slack in - the half-finished five-row stack overflowed it by 200 px.
+#[test]
+fn the_phrase_screen_fits_its_body_on_both_geometries() {
+    for (w, h) in [(720u32, 720u32), (800, 480)] {
+        let ui = ui_at_phrase(w, h, "ab");
+        let body = notyas_ui::layout::Metrics::new(w, h).body();
+        let regions = ui.regions();
+        assert_eq!(chips(&ui), 4, "{w}x{h}: full strip");
+        // Every region except the top-bar Back sits inside the body.
+        for r in regions.iter().filter(|r| r.id != RegionId::Back) {
+            assert!(
+                r.rect.y >= body.y
+                    && r.rect.bottom() <= body.bottom()
+                    && r.rect.x >= body.x
+                    && r.rect.right() <= body.right(),
+                "{w}x{h}: {:?} escapes the body: {:?} vs {:?}",
+                r.id,
+                r.rect,
+                body
+            );
+        }
+        // The keyboard still has its four rows: the letter keys of the top row and the
+        // control row are at different y, and every key clears the 40 px floor.
+        let keys: Vec<_> = regions.iter().filter(|r| matches!(r.id, RegionId::Key(_))).collect();
+        assert_eq!(keys.len(), 26, "{w}x{h}: all three letter rows present");
+        for k in &keys {
+            assert!(k.rect.h >= 40, "{w}x{h}: key {:?} below the 40px floor", k.rect);
+        }
+        // The strip sits between the phrase well and the keyboard, touching neither.
+        let chip = regions.iter().find(|r| r.id == RegionId::Suggest(0)).unwrap().rect;
+        let top_key = keys.iter().map(|k| k.rect.y).min().unwrap();
+        assert!(chip.bottom() <= top_key, "{w}x{h}: strip overlaps the keyboard");
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Deriving interstitial
+// ---------------------------------------------------------------------------------------
+
+/// The point of the screen: Done must LEAVE the passphrase screen before any derivation
+/// runs, so the embedder's next draw publishes the interstitial and the PBKDF2 stretch
+/// happens with "Deriving" on the panel. `tick` is what does the work.
+#[test]
+fn deriving_interstitial_is_painted_before_the_derivation_runs() {
+    let mut ui = ui_at_mnemonic(720, 720, SIXES);
+    tap(&mut ui, RegionId::Next);
+    tap(&mut ui, RegionId::PassToggle);
+    type_keys(&mut ui, "ab");
+    tap(&mut ui, RegionId::PassConfirm);
+    type_keys(&mut ui, "ab");
+
+    tap(&mut ui, RegionId::KeyDone);
+    assert_eq!(ui.screen(), ScreenId::Deriving, "Done must not derive inline");
+    let interstitial = Fb::render(&ui, 720, 720);
+    assert!(ui.regions().is_empty(), "the interstitial cannot be tapped or cancelled");
+
+    assert!(ui.tick(), "tick runs the pending derivation");
+    assert_eq!(ui.screen(), ScreenId::Schemes);
+    assert_ne!(interstitial.px, Fb::render(&ui, 720, 720).px);
+    // Idempotent: nothing pending, nothing to repaint.
+    assert!(!ui.tick());
+}
+
+/// Back from Schemes lands on the passphrase screen with its fields intact - the
+/// Deriving state passes through the navigation stack without becoming a stop on it.
+#[test]
+fn deriving_is_not_a_step_on_the_back_stack() {
+    let mut ui = ui_at_schemes(720, 720);
+    tap(&mut ui, RegionId::Back);
+    tap(&mut ui, RegionId::ModalConfirm);
+    assert_eq!(ui.screen(), ScreenId::PassphraseEntry);
+    tap(&mut ui, RegionId::Back);
+    tap(&mut ui, RegionId::ModalConfirm);
+    assert_eq!(ui.screen(), ScreenId::MnemonicDisplay);
+}
+
+/// An embedder that has not added `tick` to its loop must not wedge on the interstitial:
+/// the next touch drains the pending work first. Slower than it should be, never stuck.
+#[test]
+fn a_stray_touch_drains_a_pending_derivation() {
+    let mut ui = ui_at_mnemonic(720, 720, SIXES);
+    tap(&mut ui, RegionId::Next);
+    tap(&mut ui, RegionId::KeyDone);
+    assert_eq!(ui.screen(), ScreenId::Deriving);
+    ui.touch(TouchEvent::Down { x: 10, y: 10 });
+    assert_eq!(ui.screen(), ScreenId::Schemes);
+}
+
+/// The passphrase reaches the derivation unchanged across the deferral: the same typed
+/// passphrase must produce the same published test-vector keys it did when Done derived
+/// inline, and the empty-passphrase path must stay empty (not "the field's contents").
+#[test]
+fn the_deferred_derivation_uses_the_passphrase_as_typed() {
+    // BIP39 test vector #1 with passphrase TREZOR, BIP84 account 0 address 0.
+    let mut ui = ui_at_mnemonic(720, 720, SIXES);
+    tap(&mut ui, RegionId::Next);
+    tap(&mut ui, RegionId::PassToggle);
+    tap(&mut ui, RegionId::Shift); // the page stays uppercase until shifted back
+    type_keys(&mut ui, "TREZOR");
+    tap(&mut ui, RegionId::PassConfirm);
+    type_keys(&mut ui, "TREZOR");
+    tap_done_and_derive(&mut ui);
+    tap(&mut ui, RegionId::Tab(2));
+    let UiRequest::Qr(with_pass) = tap(&mut ui, RegionId::QrXpub).expect("xpub QR");
+
+    // The same seed with the passphrase toggled off must derive something else.
+    let mut plain = ui_at_schemes(720, 720);
+    tap(&mut plain, RegionId::Tab(2));
+    let UiRequest::Qr(without) = tap(&mut plain, RegionId::QrXpub).expect("xpub QR");
+    assert_ne!(with_pass.payload, without.payload, "the passphrase must reach PBKDF2");
+    assert!(without.payload.starts_with("xpub"), "{}", without.payload);
 }

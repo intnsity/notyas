@@ -28,7 +28,10 @@ use crate::{
     PhraseState, QrModal, Region, RegionId, SchemesState, State, VerifyInfo,
     DICE_MODE_LABELS, VERSION,
 };
-use notyas_core::bip39::{self, rolls_for_bits, Checksum, MnemonicMode, MIN_SECURE_BITS};
+use notyas_core::bip39::{
+    self, current_word_fragment, rolls_for_bits, words_with_prefix, Checksum, MnemonicMode,
+    MIN_SECURE_BITS,
+};
 use notyas_core::bitcoin::Network;
 use notyas_core::derive::Scheme;
 
@@ -84,6 +87,9 @@ pub(crate) fn regions(m: &Metrics, state: &State) -> Vec<Region> {
         State::Phrase(s) => {
             let l = phrase_layout(m);
             out.push(Region { id: RegionId::Back, rect: back_rect(m) });
+            for i in 0..suggestions(&s.text).len() {
+                out.push(Region { id: RegionId::Suggest(i as u8), rect: suggest_chip(l.strip, i) });
+            }
             for k in keyboard(l.kb, s.page) {
                 out.push(Region { id: k.id, rect: k.rect });
             }
@@ -142,6 +148,10 @@ pub(crate) fn regions(m: &Metrics, state: &State) -> Vec<Region> {
                 }));
             }
         }
+        // Deliberately empty: the derivation is synchronous and cannot be cancelled, so
+        // the interstitial offers nothing to tap - not even Back, which would be a
+        // button that lies.
+        State::Deriving(_) => {}
         State::Verify { .. } => {
             out.push(Region { id: RegionId::Back, rect: back_rect(m) });
         }
@@ -163,6 +173,7 @@ pub(crate) fn draw<D: DrawTarget<Color = Rgb565>>(
         State::Mnemonic(s) => draw_mnemonic(t, m, s),
         State::Phrase(s) => draw_phrase(t, m, s),
         State::Passphrase(s) => draw_passphrase(t, m, s),
+        State::Deriving(_) => draw_deriving(t, m),
         State::Schemes(s) => draw_schemes(t, m, s),
         State::Verify { scroll } => draw_verify(t, m, verify, *scroll),
     }
@@ -205,12 +216,34 @@ fn draw_bar<D: DrawTarget<Color = Rgb565>>(
     m: &Metrics,
     title: &str,
 ) -> Result<(), D::Error> {
-    let bar = Rect::new(0, 0, m.w, m.bar);
-    fill(t, bar, PAPER_2)?;
+    bar(t, m, title, true)
+}
+
+/// Top bar without the Back affordance, for a screen that has no tappable regions at
+/// all: a drawn button that nothing hit-tests would be a lie about what the panel does.
+fn draw_bar_no_back<D: DrawTarget<Color = Rgb565>>(
+    t: &mut D,
+    m: &Metrics,
+    title: &str,
+) -> Result<(), D::Error> {
+    bar(t, m, title, false)
+}
+
+fn bar<D: DrawTarget<Color = Rgb565>>(
+    t: &mut D,
+    m: &Metrics,
+    title: &str,
+    back: bool,
+) -> Result<(), D::Error> {
+    fill(t, Rect::new(0, 0, m.w, m.bar), PAPER_2)?;
     fill(t, Rect::new(0, m.bar - 1, m.w, 1), BORDER)?;
-    let back = back_rect(m);
-    button(t, back, "< Back", ButtonKind::Ghost, PAPER_2)?;
-    let x = back.right() + m.gap;
+    let back_r = back_rect(m);
+    let x = if back {
+        button(t, back_r, "< Back", ButtonKind::Ghost, PAPER_2)?;
+        back_r.right() + m.gap
+    } else {
+        back_r.x
+    };
     let y = (m.bar - LINE) / 2;
     text(t, title, x, y, HEADING, INK_PRIMARY, PAPER_2)?;
     Ok(())
@@ -694,7 +727,7 @@ fn draw_modal<D: DrawTarget<Color = Rgb565>>(
 
 /// The exit-confirmation modal shown when Back is pressed on a screen holding a
 /// derived secret (Mnemonic, Passphrase, Schemes). The user sees their seed or
-/// derived keys and could lose work by going back — this gate prevents an
+/// derived keys and could lose work by going back - this gate prevents an
 /// accidental tap from discarding it silently.
 static EXIT_MODAL: ModalSpec = ModalSpec {
     title: "Go back?",
@@ -742,11 +775,24 @@ fn page_rows(page: Page) -> [&'static str; 3] {
     }
 }
 
+/// Keyboard row gap and the floor/ceiling on a row's height. The floor is physical (a
+/// 40 px key is ~4.4 mm on the primary panel, the smallest a letter key may get).
+const KB_ROW_GAP: i32 = 8;
+const KB_ROW_MIN: i32 = 40;
+const KB_ROW_MAX: i32 = 72;
+
+/// Height the keyboard occupies when every row is at its floor - the smallest `area`
+/// [`keyboard`] can be given before it starts drawing above `area.y`. Screens that share
+/// their body with a keyboard size themselves against this rather than restating it.
+pub(crate) fn keyboard_min_h() -> i32 {
+    4 * KB_ROW_MIN + 3 * KB_ROW_GAP
+}
+
 /// Bottom-anchored keyboard in `area`: three character rows and a control row.
 fn keyboard(area: Rect, page: Page) -> Vec<Key> {
-    let rg = 8; // row gap
+    let rg = KB_ROW_GAP;
     let kg = 6; // key gap
-    let row_h = ((area.h - 3 * rg) / 4).clamp(40, 72);
+    let row_h = ((area.h - 3 * rg) / 4).clamp(KB_ROW_MIN, KB_ROW_MAX);
     let kb_h = 4 * row_h + 3 * rg;
     let top = area.bottom() - kb_h;
     let key_w = (area.w - 9 * kg) / 10;
@@ -768,7 +814,8 @@ fn keyboard(area: Rect, page: Page) -> Vec<Key> {
 
     // Control row: [page A][page B][space][backspace][done], weighted 2:2:6:4:4.
     // Backspace gets a larger share (4/18 vs the old 3/20) so the correction key is
-    // an easy target; "Bksp" labels it unambiguously (the font atlas has no ⌫ glyph).
+    // an easy target; "Bksp" labels it unambiguously (the atlas is ASCII plus the bullet
+    // and the ellipsis, so there is no erase-left glyph to draw).
     let y = top + 3 * (row_h + rg);
     let unit = area.w - 4 * kg;
     let widths = [unit * 2 / 18, unit * 2 / 18, unit * 6 / 18, unit * 4 / 18, 0];
@@ -826,21 +873,81 @@ fn draw_keyboard<D: DrawTarget<Color = Rgb565>>(
 // ---------------------------------------------------------------------------------------
 
 struct PhraseLayout {
+    /// Tail view of the typed phrase. The FLEXIBLE element of this screen: everything
+    /// below it is a physical minimum, so the well absorbs whatever the panel has left
+    /// (three lines at 720x720, one at 800x480).
     well: Rect,
     advisory_y: i32,
+    /// Always-reserved band for the BIP39 completion chips, so the keyboard cannot jump
+    /// under a finger when suggestions appear or disappear.
+    strip: Rect,
     kb: Rect,
+}
+
+/// Height of the suggestion strip, and therefore of a completion chip. A physical floor
+/// like [`crate::layout::DICE_KEY_MIN`] - fingers do not scale with the panel; 60 px is
+/// ~6.7 mm on the 229 PPI primary panel.
+const SUGGEST_H: i32 = 60;
+/// Gap between chips (tighter than `Metrics::gap` so four chips keep their width on the
+/// narrower body).
+const SUGGEST_GAP: i32 = 8;
+/// Chips offered at once. The strip is ONE row, not a stack: five stacked 60 px rows
+/// (300 px) do not exist on the 800x480 panel, whose whole body is 377 px and whose
+/// keyboard alone needs 184. Four is what fits side by side at the 8-character
+/// worst case of the wordlist on the narrower of the two shipped geometries.
+const MAX_SUGGEST: usize = 4;
+/// Vertical padding inside the phrase well (8 px above and below the text lines).
+const WELL_PAD: i32 = 16;
+
+/// The chips the strip offers for `text`: wordlist completions of the word being typed.
+///
+/// Single source of truth for the strip - `regions` hit-tests it, `draw_phrase` paints
+/// it, and the tap handler indexes it - so a chip can never resolve to a different word
+/// than the one under the finger.
+///
+/// Empty while no word is in progress, and empty when the fragment is already the only
+/// word it can be: there is nothing left to complete, and the strip stays out of the way
+/// so the checksum advisory is what the user reads at the end of a phrase.
+pub(crate) fn suggestions(text: &str) -> Vec<&'static str> {
+    let fragment = current_word_fragment(text);
+    let words = words_with_prefix(fragment, MAX_SUGGEST);
+    if words.len() == 1 && words[0] == fragment {
+        return Vec::new();
+    }
+    words
+}
+
+/// Chip `i` of the strip. Chips keep a fixed width whatever the match count is, so the
+/// row does not reflow letter by letter as the user types.
+fn suggest_chip(strip: Rect, i: usize) -> Rect {
+    let n = MAX_SUGGEST as i32;
+    let w = (strip.w - (n - 1) * SUGGEST_GAP) / n;
+    Rect::new(strip.x + i as i32 * (w + SUGGEST_GAP), strip.y, w, strip.h)
+}
+
+/// Lines of the phrase the well can show at the height it was given.
+fn well_lines(well: Rect) -> usize {
+    ((well.h - WELL_PAD) / SMALL_LINE).max(1) as usize
 }
 
 fn phrase_layout(m: &Metrics) -> PhraseLayout {
     let body = m.body();
     let g = m.gap;
-    let well_h = 3 * SMALL_LINE + 16;
+    // Laid out from the bottom up. The keyboard floor and the chip height are physical
+    // minimums; the advisory is one line; the well takes what remains, capped at the
+    // three lines it wants and floored at one. On the 800x480 panel this budget is
+    // exact to a few pixels, which is why the well - not the keyboard - is the part
+    // that gives (the layout tests pin both ends of it).
+    let spare = body.h - keyboard_min_h() - SUGGEST_H - LINE - 3 * g;
+    let well_h = spare.clamp(SMALL_LINE + WELL_PAD, 3 * SMALL_LINE + WELL_PAD);
     let well = Rect::new(body.x, body.y, body.w, well_h);
     let advisory_y = well.bottom() + g;
-    let kb_top = advisory_y + LINE + g;
+    let strip = Rect::new(body.x, advisory_y + LINE + g, body.w, SUGGEST_H);
+    let kb_top = strip.bottom() + g;
     PhraseLayout {
         well,
         advisory_y,
+        strip,
         kb: Rect::new(body.x, kb_top, body.w, body.bottom() - kb_top),
     }
 }
@@ -883,7 +990,7 @@ fn draw_phrase<D: DrawTarget<Color = Rgb565>>(
         let lines: Vec<String> = chars.chunks(per_line).map(|c| c.iter().collect()).collect();
         PhraseTemps { chars, lines }
     };
-    let visible = tmp.lines.len().min(3);
+    let visible = tmp.lines.len().min(well_lines(l.well));
     for (i, line) in tmp.lines[tmp.lines.len() - visible..].iter().enumerate() {
         text(
             t,
@@ -895,7 +1002,33 @@ fn draw_phrase<D: DrawTarget<Color = Rgb565>>(
             PAPER_3,
         )?;
     }
+
+    // Caret: a short bar after the last character, so it is obvious where the next
+    // keypress lands. Static, not blinking - the panel repaints on input only, and a
+    // caret that needs a timer would be a lie about how this screen works. It rides the
+    // LAST VISIBLE line, which is where the tail view always puts the end of the phrase.
+    {
+        let n = tmp.chars.len();
+        let lines_total = n.div_ceil(per_line).max(1);
+        let row = lines_total.min(visible.max(1)) - 1;
+        let col = n - (lines_total - 1) * per_line;
+        let cx = inner.x + col as i32 * adv;
+        let cy = inner.y + row as i32 * SMALL_LINE + SMALL_LINE - 4;
+        fill(t, Rect::new(cx, cy, 2, 3), ACCENT)?;
+    }
     drop(tmp);
+
+    // BIP39 completion chips. Cobalt-on-tint, the crate's "interactive" grammar, so they
+    // read as buttons rather than as part of the phrase; each label is pixel-clipped to
+    // its chip for the same reason the masked field is - a wide word must crop, never
+    // bleed into the neighbouring target.
+    for (i, word) in suggestions(&s.text).iter().enumerate() {
+        let chip = suggest_chip(l.strip, i);
+        fill(t, chip, ACCENT_TINT)?;
+        frame(t, chip, ACCENT)?;
+        let mut clip = t.clipped(&chip.to_eg());
+        text_centered(&mut clip, word, chip, MONO_SMALL, ACCENT, ACCENT_TINT)?;
+    }
 
     // Advisory only, never a veto: the desktop derives from any phrase and warns beside
     // it, and this screen reports the same three findings.
@@ -933,6 +1066,11 @@ fn draw_phrase<D: DrawTarget<Color = Rgb565>>(
 // Passphrase entry
 // ---------------------------------------------------------------------------------------
 
+/// Width floor of the Show/Hide button. The measured widths of "Show" and "Hide" set the
+/// real floor (see `pass_layout`); this keeps it a comfortable target rather than a label
+/// with a border round it.
+const SHOW_LABEL_W: i32 = 120;
+
 struct PassLayout {
     toggle_label_y: i32,
     toggle: Rect,
@@ -951,10 +1089,12 @@ fn pass_layout(m: &Metrics) -> PassLayout {
     let toggle_h = 48;
     let toggle_w = (body.w / 3).max(200);
     let toggle = Rect::new(body.right() - toggle_w, body.y, toggle_w, toggle_h);
-    // Show/Hide button sits to the LEFT of the Off/On toggle: same height, a compact
-    // label width, at the left edge of the body. The toggle keeps its right-anchored
-    // position, so the two cannot overlap on either shipped geometry.
-    let show_btn = Rect::new(body.x, body.y, 120, toggle_h);
+    // Header row, right to left: the Off/On toggle is right-anchored, the Show/Hide
+    // button sits immediately left of it, and the "Use passphrase" label takes the
+    // remaining space from the left edge. Anchoring Show to the LEFT edge instead put it
+    // straight on top of that label on both shipped geometries.
+    let show_w = SHOW_LABEL_W.max(HEADING.text_width("Hide") as i32 + 2 * m.gap);
+    let show_btn = Rect::new(toggle.x - m.gap - show_w, body.y, show_w, toggle_h);
     let fields_y = body.y + toggle_h + g;
     let (entry, confirm, status_y) = if m.landscape() {
         let fw = (body.w - g) / 2;
@@ -989,7 +1129,12 @@ fn draw_passphrase<D: DrawTarget<Color = Rgb565>>(
     let l = pass_layout(m);
     let body = m.body();
 
-    text(t, "Use passphrase", body.x, l.toggle_label_y, BODY, INK_PRIMARY, PAPER_1)?;
+    // Clipped to the space the header row leaves it: the label is the only element here
+    // that can grow with wording, so it is the one that must crop rather than run under
+    // the Show button. `pass_layout_fits` pins that it never has to.
+    let label = Rect::new(body.x, l.toggle_label_y, l.show_btn.x - m.gap - body.x, LINE);
+    let mut clip = t.clipped(&label.to_eg());
+    text(&mut clip, "Use passphrase", label.x, label.y, BODY, INK_PRIMARY, PAPER_1)?;
     toggle(t, l.toggle, ["Off", "On"], usize::from(s.enabled))?;
     // Show/Hide the passphrase fields (default Hidden): an unseen typo silently derives
     // a different wallet, which is the worse failure. Plain button, no confirm.
@@ -1015,8 +1160,8 @@ fn draw_passphrase<D: DrawTarget<Color = Rgb565>>(
         return Ok(());
     }
 
-    // Entry and confirm fields. Both masked with the house FIXED bullet run - the char
-    // counter below gives typing feedback, as the desktop's NFKD counter does.
+    // Entry and confirm fields. Masked one bullet per typed character (the INPUT rule -
+    // see `canvas::field`), or literal with spaces marked while Show is on.
     canvas::field(t, l.entry, &s.entry, !s.show, s.focus == PassFocus::Entry)?;
     if s.entry.is_empty() {
         let y = l.entry.y + (l.entry.h - LINE) / 2;
@@ -1056,6 +1201,40 @@ fn draw_passphrase<D: DrawTarget<Color = Rgb565>>(
     }
 
     draw_keyboard(t, l.kb, s.page, !differ)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// Deriving interstitial
+// ---------------------------------------------------------------------------------------
+
+/// The frame that must be on the panel before `Ui::tick` starts PBKDF2. Everything here
+/// is static: a screen that promises a spinner it cannot animate (the panel repaints on
+/// input only) would be a worse lie than a still one, so this says what is happening,
+/// how long it takes, and what not to do meanwhile.
+fn draw_deriving<D: DrawTarget<Color = Rgb565>>(t: &mut D, m: &Metrics) -> Result<(), D::Error> {
+    draw_bar_no_back(t, m, "Deriving")?;
+    let body = m.body();
+    let card_h = 3 * LINE + 4 * m.gap;
+    let card = Rect::new(body.x, body.y + (body.h - card_h) / 2, body.w, card_h);
+    panel(t, card, PAPER_2, BORDER_STRONG)?;
+    let mut y = card.y + m.gap;
+    text_centered(
+        t,
+        "Deriving keys...",
+        Rect::new(card.x, y, card.w, LINE),
+        HEADING,
+        INK_PRIMARY,
+        PAPER_2,
+    )?;
+    y += LINE + m.gap;
+    for line in [
+        "2048 rounds of PBKDF2, then every scheme.",
+        "This takes a few seconds. Do not power off.",
+    ] {
+        text_centered(t, line, Rect::new(card.x, y, card.w, LINE), BODY, INK_SECONDARY, PAPER_2)?;
+        y += LINE;
+    }
     Ok(())
 }
 

@@ -61,8 +61,11 @@ pub const BORDER: Rgb565 = rgb(0xE1D9C4);
 pub const BORDER_STRONG: Rgb565 = rgb(0xC3BCA8);
 
 // --- Masking convention (desktop BigDice house law; survey section 5) -----------------
-/// Bullets in a masked value. FIXED, so a mask never reveals how long the secret is.
-pub const MASK_BULLETS: usize = 24;
+// Two rules, and the difference between them is who chose the secret. A DERIVED secret
+// masks as a FIXED run: its length is information the user never supplied and must not
+// leak. TYPED input masks one bullet per character ([`canvas::field`]): the user knows
+// what they typed, the byte counter states it anyway, and a fixed run on a field being
+// edited reads as a bug. There is deliberately no fixed-run constant for input fields.
 /// Bullets standing in for one hidden mnemonic word. Fixed for the same reason: BIP39
 /// words run three to eight letters, and a mask cut to each word would narrow the
 /// dictionary per slot.

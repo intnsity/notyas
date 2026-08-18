@@ -169,9 +169,19 @@ pub fn strength_meter<D: DrawTarget<Color = Rgb565>>(
     Ok(())
 }
 
-/// An input field: white (paper-3, "white = editable"), strong border, mono content.
-/// `masked` draws the house fixed-length bullet run instead of the value - by design the
-/// drawn text is then independent of the secret, length included.
+/// An INPUT field: white (paper-3, "white = editable"), strong border, mono content.
+///
+/// Masking here is the input rule, not the derived-secret rule (see the crate-level
+/// secrecy note): ONE bullet per typed character. The user already knows how much they
+/// typed, the byte counter beside the field states the length outright, and a fixed run
+/// would read as a rendering bug on a field the user is actively editing. The fixed run
+/// belongs to DERIVED secrets - `theme::mask_word` - whose length is itself information.
+///
+/// Unmasked (the Show toggle), each SPACE is drawn as a muted bullet instead of blank
+/// paper. Leading and trailing spaces are exactly the characters a literal rendering
+/// hides and PBKDF2 still consumes, so "revealed" has to mean revealed; the on-screen
+/// keyboard is ASCII-only (test-asserted), so a bullet in a revealed field can only ever
+/// mean a space.
 pub fn field<D: DrawTarget<Color = Rgb565>>(
     t: &mut D,
     r: Rect,
@@ -190,19 +200,25 @@ pub fn field<D: DrawTarget<Color = Rgb565>>(
     if value.is_empty() {
         return Ok(());
     }
-    let shown: String = if masked {
-        core::iter::repeat_n(BULLET, MASK_BULLETS).collect()
-    } else {
-        // Clip from the left so the tail being typed stays visible.
-        let cap = ((inner.w - 2 * pad) / MONO.glyph('m').advance as i32).max(0) as usize;
-        let n = value.chars().count();
-        value.chars().skip(n.saturating_sub(cap)).collect()
-    };
-    // Pixel-clip to the field: the mask is a FIXED run (house law), so on a narrow field
-    // (e.g. the 800x480 landscape pair) it is wider than the rect and must crop, not
-    // bleed into the neighboring field.
+    // Clip from the left so the tail being typed stays visible. One bullet per character
+    // means the masked run is exactly as long as the value, so both renderings scroll
+    // identically and the field never changes shape when Show is toggled.
+    let cap = ((inner.w - 2 * pad) / MONO.glyph('m').advance as i32).max(0) as usize;
+    let n = value.chars().count();
+    // Pixel-clip to the field: on the narrow side-by-side fields of the 800x480 landscape
+    // pair the tail can still overrun by a fraction of a glyph, and it must crop rather
+    // than bleed into the neighboring field.
     let mut clip = t.clipped(&inner.to_eg());
-    text(&mut clip, &shown, inner.x + pad, y, MONO, INK_PRIMARY, PAPER_3)?;
+    let mut pen = inner.x + pad;
+    let mut buf = [0u8; 4];
+    for c in value.chars().skip(n.saturating_sub(cap)) {
+        let (glyph, ink) = match (masked, c) {
+            (true, _) => (BULLET, INK_PRIMARY),
+            (false, ' ') => (BULLET, INK_MUTED),
+            (false, c) => (c, INK_PRIMARY),
+        };
+        pen = text(&mut clip, glyph.encode_utf8(&mut buf), pen, y, MONO, ink, PAPER_3)?;
+    }
     Ok(())
 }
 

@@ -3,10 +3,14 @@
 
 //! notyas-ui - the board-independent UI layer of the notyas device.
 //!
-//! One deep module with a three-call interface: construct [`Ui`] with the display size,
-//! feed it [`TouchEvent`]s, and ask it to [`Ui::draw`] into any `Rgb565`
-//! [`DrawTarget`] - the device framebuffer and the host simulator (tools/uisim) are the
-//! same code path. Every screen repaints in full (no dirty rectangles in 0.1.0), every
+//! One deep module with a four-call interface: construct [`Ui`] with the display size,
+//! feed it [`TouchEvent`]s, ask it to [`Ui::draw`] into any `Rgb565` [`DrawTarget`], and
+//! call [`Ui::tick`] after the frame is published - the device framebuffer and the host
+//! simulator (tools/uisim) are the same code path. `tick` exists for one reason: the
+//! seed derivation blocks for seconds, and the frame that says so has to reach the panel
+//! BEFORE it starts, so `touch` parks the work and `tick` runs it. It is a no-op on every
+//! screen but [`ScreenId::Deriving`], so the embedder's loop calls it unconditionally.
+//! Every screen repaints in full (no dirty rectangles in 0.1.0), every
 //! rectangle derives from the display size through [`layout::Metrics`] (no absolute
 //! coordinates; the primary panel is 720x720 but 800x480 must lay out correctly too),
 //! and the pipeline itself is [`notyas_core`] - this crate renders what the core
@@ -195,6 +199,12 @@ pub enum RegionId {
     ModalClose,
     /// Mainnet / testnet toggle on the Home screen.
     NetToggle,
+    /// BIP39 completion chip `n` (0-based) in the phrase-entry suggestion strip.
+    /// Tapping replaces the word fragment being typed with the full word and appends
+    /// the separating space. Offered on the phrase screen only: it completes the user's
+    /// OWN typed input against a public wordlist, which is not a path any derived or
+    /// masked value can reach.
+    Suggest(u8),
 }
 
 // ---------------------------------------------------------------------------------------
@@ -357,6 +367,44 @@ pub(crate) enum SeedSource {
     Phrase(Zeroizing<String>),
 }
 
+impl SeedSource {
+    /// A self-wiping copy, for handing the seed material to the Deriving state while the
+    /// passphrase screen keeps its own (Back must restore that screen intact). Not a
+    /// `Clone` impl on purpose: duplicating secret material is a decision each call site
+    /// should have to write out.
+    fn duplicate(&self) -> SeedSource {
+        match self {
+            SeedSource::Dice { dice, mode } => {
+                SeedSource::Dice { dice: dice.clone(), mode: *mode }
+            }
+            // Exact-capacity allocation, so the copy cannot grow and strand a partial
+            // phrase outside the Zeroizing wrapper.
+            SeedSource::Phrase(p) => SeedSource::Phrase(Zeroizing::new(String::from(&**p))),
+        }
+    }
+
+    /// The mnemonic mode the pipeline should run in. The phrase path does not use one;
+    /// it takes the same placeholder the core does.
+    fn mode(&self) -> MnemonicMode {
+        match self {
+            SeedSource::Dice { mode, .. } => *mode,
+            SeedSource::Phrase(_) => MnemonicMode::Raw,
+        }
+    }
+}
+
+/// Everything the pending derivation needs, parked while the interstitial is on screen.
+///
+/// The seed material lives HERE rather than being read back off the passphrase screen so
+/// that [`Ui::tick`] is a pure function of this state: the blocking work cannot depend on
+/// anything the user might have changed between the frame being painted and the compute
+/// starting.
+pub(crate) struct DerivingState {
+    pub source: SeedSource,
+    /// Empty when the user did not opt in, which is exactly what the pipeline wants.
+    pub passphrase: Zeroizing<String>,
+}
+
 pub(crate) struct PassState {
     pub source: SeedSource,
     /// The desktop's explicit opt-in: off means the seed derives with an empty
@@ -367,7 +415,7 @@ pub(crate) struct PassState {
     pub focus: PassFocus,
     pub page: Page,
     /// Show/Hide toggle (default hidden). When true the passphrase fields render
-    /// unmasked so the user can verify what they typed — an unseen typo silently
+    /// unmasked so the user can verify what they typed - an unseen typo silently
     /// derives a different wallet, which is the worse failure.
     pub show: bool,
 }
@@ -397,6 +445,7 @@ pub(crate) enum State {
     Mnemonic(MnemonicState),
     Phrase(PhraseState),
     Passphrase(PassState),
+    Deriving(DerivingState),
     Schemes(SchemesState),
     Verify { scroll: i32 },
 }
@@ -429,6 +478,12 @@ pub struct Ui {
     /// Navigation stack: each forward transition pushes the prior screen here,
     /// so Back restores it exactly (user's rolls, mnemonic, passphrase survive).
     /// One level per forward step; Back pops. Empty stack + Back -> Home.
+    ///
+    /// Boxed on purpose (clippy's `vec_box` reads only the size, not the contents): a
+    /// `State` holds rolls, a mnemonic and a passphrase, and storing them inline would
+    /// memcpy those bytes on every push, pop and Vec regrow - each copy leaving an
+    /// unwiped duplicate behind at the old address. A pointer move copies no secret.
+    #[allow(clippy::vec_box)]
     prior: Vec<Box<State>>,
     /// Exit-confirmation modal is open over the current screen. When true, only
     /// the modal's Cancel/Confirm are tappable; the sheet below is inert.
@@ -474,6 +529,7 @@ impl Ui {
             State::Mnemonic(_) => ScreenId::MnemonicDisplay,
             State::Phrase(_) => ScreenId::PhraseEntry,
             State::Passphrase(_) => ScreenId::PassphraseEntry,
+            State::Deriving(_) => ScreenId::Deriving,
             State::Schemes(_) => ScreenId::Schemes,
             State::Verify { .. } => ScreenId::VerifyDevice,
         }
@@ -502,6 +558,11 @@ impl Ui {
     /// encoding, which is std-only - see [`UiRequest`]). Dropping a request loses
     /// nothing but the response; the state machine has already moved on cleanly.
     pub fn touch(&mut self, ev: TouchEvent) -> Option<UiRequest> {
+        // The Deriving screen has no tappable regions, so an event arriving in that
+        // state is a stray - finishing the pending work first is the only sane response,
+        // and it means an embedder that has not yet added `tick` to its loop recovers on
+        // the next touch instead of wedging on the interstitial forever.
+        self.tick();
         match ev {
             TouchEvent::Down { x, y } => {
                 let id = self.hit(x, y);
@@ -529,6 +590,44 @@ impl Ui {
                 }
             }
         }
+    }
+
+    /// Run the pending blocking computation, if the current screen has one.
+    ///
+    /// The embedder's loop is `touch -> draw -> tick`. Only the Deriving screen has
+    /// pending work (the seed stretch and the whole scheme derivation, seconds of PBKDF2
+    /// on this silicon), and it exists precisely so that the "Deriving" frame is painted
+    /// and published BEFORE that work starts - a synchronous derivation behind the
+    /// passphrase screen is indistinguishable from a hung device.
+    ///
+    /// A no-op returning `false` on every other screen, so the loop can call it
+    /// unconditionally; `true` means the state advanced and the screen needs a repaint.
+    pub fn tick(&mut self) -> bool {
+        let State::Deriving(d) = &self.state else {
+            return false;
+        };
+        let params = Parameters {
+            mode: d.source.mode(),
+            passphrase: &d.passphrase,
+            network: self.network,
+            schemes: &Scheme::ALL,
+            account: ChildIndex::ZERO,
+            change: ChildIndex::ZERO,
+            count: ADDRESS_ROWS,
+            script_type: 2,
+        };
+        let report = match &d.source {
+            SeedSource::Dice { dice, .. } => Report::build(dice, &params).ok(),
+            SeedSource::Phrase(text) => Report::from_phrase(text, &params),
+        };
+        self.state = match report {
+            Some(report) => State::Schemes(SchemesState { report, tab: 0, scroll: 0, qr: None }),
+            // Both arms were validated before the passphrase screen, so a None here is a
+            // core bug. Falling back to the screen the user came from beats wedging on an
+            // interstitial that will never finish, and beats panicking in the input path.
+            None => self.prior.pop().map(|p| *p).unwrap_or(State::Home),
+        };
+        true
     }
 
     /// Install the finished QR symbol for a [`UiRequest::Qr`] and open the modal.
@@ -710,6 +809,24 @@ impl Ui {
             (State::Phrase(s), RegionId::KeyBackspace) => {
                 s.text.pop();
             }
+            // Completing a word: replace the fragment being typed with the chosen word
+            // and append the separating space, so the next word can be typed straight
+            // away. The list comes from `screens::suggestions` - the same call the strip
+            // drew and `regions` hit-tested - so index `i` cannot resolve to a different
+            // word than the one under the finger.
+            (State::Phrase(s), RegionId::Suggest(i)) => {
+                if let Some(word) = screens::suggestions(&s.text).get(i as usize) {
+                    let keep = s.text.len() - bip39::current_word_fragment(&s.text).len();
+                    s.text.truncate(keep);
+                    // The truncate freed at least one byte per fragment character, so
+                    // this only declines at a phrase that was already at the cap.
+                    // (`+ 1` is the separating space, folded into the comparison.)
+                    if s.text.len() + word.len() < PHRASE_MAX {
+                        s.text.push_str(word);
+                        s.text.push(' ');
+                    }
+                }
+            }
             (State::Phrase(s), RegionId::Shift) => {
                 s.page = if s.page == Page::Lower { Page::Upper } else { Page::Lower };
             }
@@ -755,36 +872,22 @@ impl Ui {
             (State::Passphrase(s), RegionId::PageDigits) => s.page = Page::Digits,
             (State::Passphrase(s), RegionId::PageLetters) => s.page = Page::Lower,
             (State::Passphrase(s), RegionId::PageSymbols) => s.page = Page::Symbols,
+            // Done on the passphrase screen does NOT derive. It parks the seed material
+            // in the Deriving state and returns, so the embedder's next draw puts the
+            // interstitial on the panel BEFORE [`Ui::tick`] spends several seconds in
+            // PBKDF2. Deriving inline here is what made this transition feel like a
+            // freeze: the last passphrase keypress stayed on screen for the whole stretch.
             (State::Passphrase(s), RegionId::KeyDone) => {
                 if s.enabled && *s.entry != *s.confirm {
                     return None; // Mismatch shown in danger ink; Done is drawn disabled.
                 }
-                let passphrase: &str = if s.enabled { &s.entry } else { "" };
-                let params = Parameters {
-                    mode: match &s.source {
-                        SeedSource::Dice { mode, .. } => *mode,
-                        // Unused on the phrase path, same placeholder the core uses.
-                        SeedSource::Phrase(_) => MnemonicMode::Raw,
-                    },
-                    passphrase,
-                    network: self.network,
-                    schemes: &Scheme::ALL,
-                    account: ChildIndex::ZERO,
-                    change: ChildIndex::ZERO,
-                    count: ADDRESS_ROWS,
-                    script_type: 2,
-                };
-                let report = match &s.source {
-                    SeedSource::Dice { dice, .. } => Report::build(dice, &params).ok(),
-                    SeedSource::Phrase(text) => Report::from_phrase(text, &params),
-                };
-                // Both arms were validated before this screen; a None here would be a
-                // core bug, and staying put beats panicking in the input path.
-                if let Some(report) = report {
-                    self.prior.push(Box::new(core::mem::replace(&mut self.state, State::Home)));
-                    self.state =
-                        State::Schemes(SchemesState { report, tab: 0, scroll: 0, qr: None });
+                let mut passphrase = secret_buf(PASS_MAX);
+                if s.enabled {
+                    passphrase.push_str(&s.entry);
                 }
+                let source = s.source.duplicate();
+                self.prior.push(Box::new(core::mem::replace(&mut self.state, State::Home)));
+                self.state = State::Deriving(DerivingState { source, passphrase });
             }
 
             // --- schemes ----------------------------------------------------------------
