@@ -49,8 +49,10 @@ The warning shown when disabling wipe must be computed from the user's **actual*
 length, which the device knows, rather than stated in the abstract. A 4-digit PIN and a
 12-character PIN are not the same decision and should not produce the same sentence.
 
-OPEN: should disabling wipe require a PIN longer than the 4-digit floor? Recommended
-yes, with the floor raised to 8 for this state only. Not imposed - the owner decides.
+DECIDED 2026-08-17 by the owner: disabling wipe does NOT require a longer PIN. The
+4-digit floor applies in every state. The warning still states the concrete guess count
+for the PIN length in use, so the user makes the trade knowingly; the device does not
+withhold the setting from them.
 
 ## Non-negotiable: the policy lives inside the AEAD
 
