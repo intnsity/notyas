@@ -65,6 +65,14 @@ jobs:
       - name: Clippy every host crate
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
+      # The m3 exit gate. It is ignored by default because it is minutes long and
+      # would otherwise sit on every developer's inner loop, so CI is the place
+      # that must not skip it: a cut at every step boundary of every storage
+      # operation, with the eleven invariants of ESP-SEAL.md 8.1 asserted after
+      # each one. Release, because the same corpus in debug is over half an hour.
+      - name: Power-loss fuzzer (notyas-wallet, the storage exit gate)
+        run: cargo test --locked --release -p notyas-wallet --test powerloss -- --ignored --nocapture
+
       # docs/screenshots/ui is a build output that happens to be committed.
       # Regenerate it and demand byte-identical bytes: that catches a stale
       # picture after a UI change, and it catches a render path that has stopped
@@ -105,6 +113,13 @@ jobs:
       # proves the qr/std feature cannot leak into the UI graph.
       - name: Check notyas-ui (no_std)
         run: cargo check --locked -p notyas-ui --target riscv32imac-unknown-none-elf
+
+      # The sealing engine is no_std + alloc and holds key material, so a crate
+      # that quietly acquired std would be a regression even if nothing failed.
+      # Default features, i.e. without testkit: the simulator and the fuzz
+      # harness are host code and are not supposed to build for bare metal.
+      - name: Check notyas-wallet (no_std + alloc)
+        run: cargo check --locked -p notyas-wallet --target riscv32imac-unknown-none-elf
 
   invariants:
     name: build-graph invariants (SECURITY.md 1 and 3)

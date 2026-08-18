@@ -39,7 +39,16 @@
 //! guarantee. I8 is asserted by [`SimFlash`] itself, which panics on a second program of a
 //! cipher block rather than emulating the garbage real XTS hardware would produce.
 
-#![allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+// The harness is host test code. It SHOULD stop loudly on an impossible input rather
+// than pick a plausible value and carry on reporting numbers nobody can trust, which is
+// the opposite of the rule the sealing engine itself lives under.
+#![allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::panic,
+    clippy::expect_used,
+    clippy::unwrap_used
+)]
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -47,15 +56,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::config::{Config, KdfParams, Layout, Occupancy, Policy, PolicyRequest};
-use crate::hal::{Geometry, KeyProvenance};
+use crate::hal::{Flash, Geometry, KeyProvenance, Region};
 use crate::probe::{observed_seals, DerivationLog, SealRecord};
 use crate::session::Session;
-use crate::sim::{CutMode, SimFlash, SimImage, SoftMac, VecScratch};
+use crate::sim::{CutMode, SimError, SimFlash, SimImage, SoftMac, VecScratch};
 use crate::slot::{Identity, Side, SlotClass, SlotId};
 use crate::vault::{StoreState, Vault};
 use crate::{Pin, TamperFlags};
 
-type V = Vault<SimFlash, SoftMac>;
+type V<'a> = Vault<Lent<'a>, SoftMac>;
 
 /// Provenance set the harness accepts.
 ///
@@ -132,25 +141,20 @@ pub struct Pins {
 impl Default for Pins {
     fn default() -> Self {
         Pins {
-            // `from_normalized_bytes` refuses only an empty or over-long PIN, and neither
-            // literal is either, so the fallback branch is unreachable and exists to keep
-            // this module panic-free like the rest of the crate.
-            old: Pin::from_normalized_utf8("135790").unwrap_or_else(|_| empty_pin()),
-            new: Pin::from_normalized_utf8("246802").unwrap_or_else(|_| empty_pin()),
+            old: fixed_pin("135790"),
+            new: fixed_pin("246802"),
         }
     }
 }
 
-fn empty_pin() -> Pin {
-    Pin::from_normalized_bytes(&[0u8]).unwrap_or_else(|_| unreachable_pin())
-}
-
-fn unreachable_pin() -> Pin {
-    // A one-byte PIN is always accepted, so this is never reached. Written as a loop
-    // rather than a panic because the crate does not panic.
-    loop {
-        core::hint::spin_loop();
-    }
+/// A PIN from a literal the harness controls.
+///
+/// `from_normalized_utf8` refuses only an empty or over-long PIN, so this cannot fail for
+/// any caller in this module. If it somehow did, stopping is the only honest answer: a
+/// fuzz run that quietly substituted a different PIN would report a clean corpus that
+/// tested nothing.
+fn fixed_pin(s: &str) -> Pin {
+    Pin::from_normalized_utf8(s).expect("a fuzz PIN literal is 1..=64 bytes")
 }
 
 /// The operations the corpus covers, each with the pre-state it needs.
@@ -478,29 +482,70 @@ fn run_one(cfg: &Config, op: Op, modes: &[CutMode], report: &mut Report) {
 // Driving the store
 // ---------------------------------------------------------------------------
 
-fn fresh(cfg: &Config) -> (SimFlash, SoftMac) {
-    (
-        SimFlash::new(geometry_for(&cfg.layout)),
-        SoftMac::new(),
-    )
+/// The flash the harness keeps, lent to the store for the duration of one mount.
+///
+/// [`Vault::mount`] takes its backends by value and, when it refuses, they go with it.
+/// For an embedder that is the right shape: a store that will not mount has no business
+/// handing back a flash handle it may be mid-write on. For the fuzzer it is fatal. A mount
+/// that fails BECAUSE the rail dropped part-way through it is one of the cases under test,
+/// and the image the cut left behind is the evidence; an earlier version of this harness
+/// could not recover that image and substituted the pre-state instead, which would have
+/// reported "nothing changed" for exactly the cases most likely to be wrong. Lending the
+/// backend keeps the image with the harness whatever the store decides to do.
+#[derive(Debug)]
+struct Lent<'a>(&'a mut SimFlash);
+
+impl Flash for Lent<'_> {
+    type Error = SimError;
+
+    fn geometry(&self) -> Geometry {
+        self.0.geometry()
+    }
+    fn read(&mut self, region: Region, offset: u32, buf: &mut [u8]) -> Result<(), SimError> {
+        self.0.read(region, offset, buf)
+    }
+    fn write(&mut self, region: Region, offset: u32, data: &[u8]) -> Result<(), SimError> {
+        self.0.write(region, offset, data)
+    }
+    fn erase_sector(&mut self, region: Region, sector: u32) -> Result<(), SimError> {
+        self.0.erase_sector(region, sector)
+    }
+    fn is_erased(&mut self, region: Region, offset: u32, len: u32) -> Result<bool, SimError> {
+        self.0.is_erased(region, offset, len)
+    }
 }
 
-fn mount(cfg: &Config, image: &SimImage) -> Option<V> {
-    let (mut flash, mac) = fresh(cfg);
-    flash.restore(image);
-    Vault::mount(flash, mac, cfg).ok()
+impl Lent<'_> {
+    fn arm(&mut self, after: u32, mode: CutMode) {
+        self.0.arm(after, mode);
+    }
+    fn reset_steps(&mut self) {
+        self.0.reset_steps();
+    }
+    fn steps(&self) -> u32 {
+        self.0.steps()
+    }
 }
 
-fn unmount(v: V) -> SimImage {
-    let (flash, _) = v.into_parts();
-    flash.snapshot()
+fn blank_flash(cfg: &Config) -> SimFlash {
+    SimFlash::new(geometry_for(&cfg.layout))
+}
+
+fn restored(cfg: &Config, image: &SimImage) -> SimFlash {
+    let mut f = blank_flash(cfg);
+    f.restore(image);
+    f
+}
+
+fn mount<'a>(cfg: &Config, flash: &'a mut SimFlash) -> Option<V<'a>> {
+    Vault::mount(Lent(flash), SoftMac::new(), cfg).ok()
 }
 
 fn scratch_for(cfg: &Config) -> VecScratch {
     VecScratch::for_params(&cfg.kdf)
 }
 
-fn unlock(v: &mut V, pin: &Pin, cfg: &Config) -> Option<Session> {
+fn unlock(v: &mut V<'_>, pin: &Pin, cfg: &Config) -> Option<Session> {
     let mut s = scratch_for(cfg);
     v.unlock(pin, s.scratch()).ok()
 }
@@ -508,126 +553,115 @@ fn unlock(v: &mut V, pin: &Pin, cfg: &Config) -> Option<Session> {
 /// The pre-state each operation starts from, as an image that can be restored any number
 /// of times.
 fn build_pre_state(cfg: &Config, op: Op, pins: &Pins) -> Option<SimImage> {
-    let (flash, mac) = fresh(cfg);
-    let mut v = Vault::mount(flash, mac, cfg).ok()?;
+    let mut flash = blank_flash(cfg);
+    {
+        let mut v = mount(cfg, &mut flash)?;
 
-    match op {
-        Op::Format => return Some(unmount(v)),
-        Op::Reformat => {
-            format_store(&mut v, cfg, pins)?;
-            v.wipe().ok()?;
-            return Some(unmount(v));
-        }
-        Op::MountCleanup => {
-            // A store left exactly as an interrupted seal leaves it: a body written into
-            // the inactive side with no header, which mount must erase and ignore.
-            format_store(&mut v, cfg, pins)?;
-            let session = unlock(&mut v, &pins.old, cfg)?;
-            let slot = user_slot(cfg, 0)?;
-            v.write(&session, slot, b"the record that must survive").ok()?;
-            let mut image = unmount(v);
-            // Re-run the same write with a cut two steps in, which lands inside the body
-            // program of the inactive side.
-            let (mut flash, mac) = fresh(cfg);
-            flash.restore(&image);
-            let mut v2 = Vault::mount(flash, mac, cfg).ok()?;
-            let s2 = unlock(&mut v2, &pins.old, cfg)?;
-            v2.backend_mut().arm(2, CutMode::PartialPrefix);
-            let _ = v2.write(&s2, slot, b"the torn record that must not");
-            let (mut flash, _) = v2.into_parts();
-            flash.power_on();
-            image = flash.snapshot();
-            return Some(image);
-        }
-        _ => {}
-    }
-
-    format_store(&mut v, cfg, pins)?;
-
-    match op {
-        Op::SealNew | Op::Clear | Op::UnlockGood | Op::UnlockBad | Op::Wipe => {}
-        Op::SealOverwrite | Op::SealRepeated => {
-            let session = unlock(&mut v, &pins.old, cfg)?;
-            v.write(&session, user_slot(cfg, 0)?, b"the record being replaced")
-                .ok()?;
-        }
-        Op::ChangePin { records } => {
-            let session = unlock(&mut v, &pins.old, cfg)?;
-            for i in 0..records {
-                let Some(slot) = user_slot(cfg, i) else {
-                    break;
-                };
-                let payload = vec![0xa0u8.wrapping_add(i); 64];
-                v.write(&session, slot, &payload).ok()?;
+        match op {
+            Op::Format => {}
+            Op::Reformat => {
+                format_store(&mut v, cfg, pins)?;
+                v.wipe().ok()?;
+            }
+            Op::MountCleanup => {
+                // A store left exactly as an interrupted seal leaves it: a body written
+                // into the inactive side with no header, which mount must erase and
+                // ignore while the committed side goes on serving reads.
+                format_store(&mut v, cfg, pins)?;
+                let session = unlock(&mut v, &pins.old, cfg)?;
+                let slot = user_slot(cfg, 0)?;
+                v.write(&session, slot, b"the record that must survive").ok()?;
+                drop(session);
+                drop(v);
+                let mut v2 = mount(cfg, &mut flash)?;
+                let s2 = unlock(&mut v2, &pins.old, cfg)?;
+                v2.backend_mut().arm(2, CutMode::PartialPrefix);
+                let _ = v2.write(&s2, slot, b"the torn record that must not");
+                drop(s2);
+                drop(v2);
+                flash.power_on();
+                return Some(flash.snapshot());
+            }
+            _ => {
+                format_store(&mut v, cfg, pins)?;
+                match op {
+                    Op::SealNew | Op::Clear | Op::UnlockGood | Op::UnlockBad | Op::Wipe => {}
+                    Op::SealOverwrite | Op::SealRepeated => {
+                        let session = unlock(&mut v, &pins.old, cfg)?;
+                        v.write(&session, user_slot(cfg, 0)?, b"the record being replaced")
+                            .ok()?;
+                    }
+                    Op::ChangePin { records } => {
+                        let session = unlock(&mut v, &pins.old, cfg)?;
+                        for i in 0..records {
+                            let Some(slot) = user_slot(cfg, i) else {
+                                break;
+                            };
+                            let payload = vec![0xa0u8.wrapping_add(i); 64];
+                            v.write(&session, slot, &payload).ok()?;
+                        }
+                    }
+                    Op::UnlockToWipe => {
+                        // One failure short of the limit, so the operation under test is
+                        // the attempt that trips the wipe from inside the counted region.
+                        let limit = v.policy().wipe_after;
+                        for _ in 0..limit.saturating_sub(1) {
+                            let mut s = scratch_for(cfg);
+                            let _ = v.unlock(&wrong_pin(), s.scratch());
+                        }
+                    }
+                    Op::PolicyTighten | Op::PolicyDisable | Op::RemovePin => {}
+                    Op::PolicyEnable => {
+                        disable_wipe(&mut v, cfg, pins)?;
+                    }
+                    Op::Rotation => {
+                        // Drive the attempt log to one short of the tail reserve, so the
+                        // operation under test is the successful unlock that rotates.
+                        drive_attempts(&mut v, cfg, 104);
+                    }
+                    Op::RotationOnFailure => {
+                        disable_wipe(&mut v, cfg, pins)?;
+                        drive_attempts(&mut v, cfg, 127);
+                    }
+                    Op::Format | Op::Reformat | Op::MountCleanup => {}
+                }
             }
         }
-        Op::UnlockToWipe => {
-            // One failure short of the limit, so the operation under test is the attempt
-            // that trips the wipe from inside the counted region.
-            let limit = v.policy().wipe_after;
-            for _ in 0..limit.saturating_sub(1) {
-                let mut s = scratch_for(cfg);
-                let _ = v.unlock(&wrong_pin(), s.scratch());
-            }
-        }
-        Op::PolicyTighten | Op::PolicyDisable => {}
-        Op::PolicyEnable => {
-            let session = unlock(&mut v, &pins.old, cfg)?;
-            let mut s = scratch_for(cfg);
-            v.set_policy(
-                &session,
-                PolicyRequest {
-                    wipe_after: 0,
-                    min_pin_len: 4,
-                },
-                &pins.old,
-                s.scratch(),
-            )
-            .ok()?;
-        }
-        Op::Rotation => {
-            // Drive the attempt log to one short of the tail reserve so the operation
-            // under test is the successful unlock that rotates.
-            drive_attempts(&mut v, cfg, 104)?;
-        }
-        Op::RotationOnFailure => {
-            let session = unlock(&mut v, &pins.old, cfg)?;
-            let mut s = scratch_for(cfg);
-            v.set_policy(
-                &session,
-                PolicyRequest {
-                    wipe_after: 0,
-                    min_pin_len: 4,
-                },
-                &pins.old,
-                s.scratch(),
-            )
-            .ok()?;
-            drop(session);
-            drive_attempts(&mut v, cfg, 127)?;
-        }
-        Op::RemovePin => {}
-        Op::Format | Op::Reformat | Op::MountCleanup => {}
     }
-    Some(unmount(v))
+    Some(flash.snapshot())
 }
 
-/// Spend `n` failed attempts, remounting as the store demands.
-fn drive_attempts(v: &mut V, cfg: &Config, n: u32) -> Option<()> {
+fn disable_wipe(v: &mut V<'_>, cfg: &Config, pins: &Pins) -> Option<()> {
+    let session = unlock(v, &pins.old, cfg)?;
+    let mut s = scratch_for(cfg);
+    v.set_policy(
+        &session,
+        PolicyRequest {
+            wipe_after: 0,
+            min_pin_len: 4,
+        },
+        &pins.old,
+        s.scratch(),
+    )
+    .ok()
+    .map(|_| ())
+}
+
+/// Spend `n` failed attempts.
+fn drive_attempts(v: &mut V<'_>, cfg: &Config, n: u32) {
     for _ in 0..n {
         let mut s = scratch_for(cfg);
         let _ = v.unlock(&wrong_pin(), s.scratch());
     }
-    Some(())
 }
 
-fn format_store(v: &mut V, cfg: &Config, pins: &Pins) -> Option<()> {
+fn format_store(v: &mut V<'_>, cfg: &Config, pins: &Pins) -> Option<()> {
     let mut s = scratch_for(cfg);
     v.format(&pins.old, b"fuzz", s.scratch()).ok().map(|_| ())
 }
 
 fn wrong_pin() -> Pin {
-    Pin::from_normalized_utf8("000000").unwrap_or_else(|_| empty_pin())
+    fixed_pin("000000")
 }
 
 fn user_slot(cfg: &Config, i: u8) -> Option<SlotId> {
@@ -635,7 +669,7 @@ fn user_slot(cfg: &Config, i: u8) -> Option<SlotId> {
     if i < payloads {
         SlotId::new(SlotClass::Payload, i, &cfg.layout)
     } else {
-        SlotId::new(SlotClass::Registry, i - payloads, &cfg.layout)
+        SlotId::new(SlotClass::Registry, i.saturating_sub(payloads), &cfg.layout)
     }
 }
 
@@ -656,7 +690,7 @@ fn all_user_slots(cfg: &Config) -> Vec<SlotId> {
 
 /// Prepare whatever the operation needs before the cut window opens, so the cut lands
 /// inside the operation and not inside the unlock that authorised it.
-fn prepare(v: &mut V, cfg: &Config, op: Op, pins: &Pins) -> Option<Session> {
+fn prepare(v: &mut V<'_>, cfg: &Config, op: Op, pins: &Pins) -> Option<Session> {
     match op {
         Op::SealNew
         | Op::SealOverwrite
@@ -671,7 +705,7 @@ fn prepare(v: &mut V, cfg: &Config, op: Op, pins: &Pins) -> Option<Session> {
     }
 }
 
-fn execute(v: &mut V, cfg: &Config, op: Op, session: Option<Session>, pins: &Pins) {
+fn execute(v: &mut V<'_>, cfg: &Config, op: Op, session: Option<Session>, pins: &Pins) {
     let mut s = scratch_for(cfg);
     match op {
         Op::Format | Op::Reformat => {
@@ -760,19 +794,22 @@ fn execute(v: &mut V, cfg: &Config, op: Op, session: Option<Session>, pins: &Pin
             }
         }
         Op::MountCleanup => {
-            // The mount that happened to get here IS the operation.
+            // The mount that got us here IS the operation.
         }
     }
 }
 
 /// Run the operation with no cut and report how many step boundaries it had.
 fn measure(cfg: &Config, op: Op, image: &SimImage, pins: &Pins) -> Option<(u32, SimImage)> {
-    let mut v = mount(cfg, image)?;
-    let session = prepare(&mut v, cfg, op, pins);
-    v.backend_mut().reset_steps();
-    execute(&mut v, cfg, op, session, pins);
-    let steps = v.backend_mut().steps();
-    Some((steps, unmount(v)))
+    let mut flash = restored(cfg, image);
+    let steps = {
+        let mut v = mount(cfg, &mut flash)?;
+        let session = prepare(&mut v, cfg, op, pins);
+        v.backend_mut().reset_steps();
+        execute(&mut v, cfg, op, session, pins);
+        v.backend_mut().steps()
+    };
+    Some((steps, flash.snapshot()))
 }
 
 /// Restore the pre-state, arm the cut, run the operation, power the device back on, and
@@ -787,60 +824,45 @@ fn cut_and_observe(
     cut_after: u32,
     mode: CutMode,
 ) -> (View, bool, usize) {
-    let (mut flash, mac) = fresh(cfg);
-    flash.restore(image);
+    let mut flash = restored(cfg, image);
 
-    // MountCleanup arms before the mount, because mount's own erases are the operation
-    // under test. Everything else arms after, so the cut lands in the operation rather
-    // than in the unlock that authorised it.
-    let cut_image = if op == Op::MountCleanup {
+    if op == Op::MountCleanup {
+        // Arm BEFORE the mount: mount's own erases are the operation under test. The mount
+        // may well refuse, because after the cut every read fails too, and that refusal is
+        // a legitimate outcome rather than a harness problem - the device simply died
+        // while booting. The image it left behind is still here, because the flash was
+        // lent rather than given.
         flash.arm(cut_after, mode);
-        match Vault::mount(flash, mac, cfg) {
-            Ok(v) => {
-                let (mut f, _) = v.into_parts();
-                f.power_on();
-                f.snapshot()
-            }
-            Err(_) => {
-                // Mount refused mid-cut. The image is whatever the cut left behind, and
-                // the harness cannot get it back out of the moved value, so rebuild it.
-                let (mut f, _) = fresh(cfg);
-                f.restore(image);
-                f.arm(cut_after, mode);
-                let _ = Vault::mount(f, SoftMac::new(), cfg);
-                // A refused mount performs no write beyond the tidy erases it already
-                // attempted, so the pre-state image is the honest reconstruction.
-                let (mut f2, _) = fresh(cfg);
-                f2.restore(image);
-                f2.snapshot()
-            }
-        }
+        drop(mount(cfg, &mut flash));
     } else {
-        let Ok(mut v) = Vault::mount(flash, mac, cfg) else {
-            let (mut f, _) = fresh(cfg);
-            f.restore(image);
-            return (observe_image(cfg, &f.snapshot(), pins), false, 0);
+        let cut = {
+            match mount(cfg, &mut flash) {
+                Some(mut v) => {
+                    let session = prepare(&mut v, cfg, op, pins);
+                    v.backend_mut().arm(cut_after, mode);
+                    execute(&mut v, cfg, op, session, pins);
+                    true
+                }
+                None => false,
+            }
         };
-        let session = prepare(&mut v, cfg, op, pins);
-        v.backend_mut().arm(cut_after, mode);
-        execute(&mut v, cfg, op, session, pins);
-        let (mut f, _) = v.into_parts();
-        let fired = f.is_cut();
-        f.power_on();
-        let img = f.snapshot();
-        let (view, upto) = observe_split(cfg, &img, pins);
-        return (view, fired, upto);
-    };
+        if !cut {
+            // The pre-state itself will not mount. That is a setup problem rather than a
+            // finding about this cut, and the observation below reports it as one.
+            let img = flash.snapshot();
+            let (view, upto) = observe_split(cfg, &img, pins);
+            return (view, false, upto);
+        }
+    }
 
-    let (view, upto) = observe_split(cfg, &cut_image, pins);
-    (view, true, upto)
+    let fired = flash.is_cut();
+    flash.power_on();
+    let img = flash.snapshot();
+    let (view, upto) = observe_split(cfg, &img, pins);
+    (view, fired, upto)
 }
 
 fn observe(cfg: &Config, image: &SimImage, pins: &Pins) -> View {
-    observe_split(cfg, image, pins).0
-}
-
-fn observe_image(cfg: &Config, image: &SimImage, pins: &Pins) -> View {
     observe_split(cfg, image, pins).0
 }
 
@@ -864,48 +886,51 @@ fn observe_split(cfg: &Config, image: &SimImage, pins: &Pins) -> (View, usize) {
 
     // The canonical mount. This is the one that has to be clean, and it is the one whose
     // seals count toward I6.
-    let Some(v) = mount(cfg, image) else {
-        return (view, observed_seals());
-    };
-    view.mounted = true;
-    view.state = v.state();
-    view.failures = v.failures();
-    view.epoch = v.wipe_epoch();
-    view.policy = v.policy();
-    view.pin_gen = v.pin_gen(Identity(0));
-    view.tamper = v.tamper_flags();
-    let settled = unmount(v);
-    // Everything after this point is a probe on a throwaway clone. Probes legitimately
+    let mut settled_flash = restored(cfg, image);
+    {
+        let Some(v) = mount(cfg, &mut settled_flash) else {
+            return (view, observed_seals());
+        };
+        view.mounted = true;
+        view.state = v.state();
+        view.failures = v.failures();
+        view.epoch = v.wipe_epoch();
+        view.policy = v.policy();
+        view.pin_gen = v.pin_gen(Identity(0));
+        view.tamper = v.tamper_flags();
+    }
+    let settled = settled_flash.snapshot();
+    // Everything after this point is a probe on a throwaway copy. Probes legitimately
     // re-derive what the canonical mount already derived, so they must not count toward
     // the no-repeated-nonce check.
     let split = observed_seals();
 
     // Probes, each on its own copy of the settled image so one probe cannot perturb the
     // next. An unlock costs an attempt, which is exactly why they cannot share.
-    if let Some(mut v) = mount(cfg, &settled) {
+    let mut probe = restored(cfg, &settled);
+    if let Some(mut v) = mount(cfg, &mut probe) {
         let mut s = scratch_for(cfg);
         if let Ok(session) = v.unlock(&pins.old, s.scratch()) {
             view.old_pin_opens = true;
             view.slots = read_all(&mut v, &session, cfg);
         }
     }
-    if !view.old_pin_opens {
-        if let Some(mut v) = mount(cfg, &settled) {
-            let mut s = scratch_for(cfg);
-            if let Ok(session) = v.unlock(&pins.new, s.scratch()) {
-                view.new_pin_opens = true;
+    let mut probe = restored(cfg, &settled);
+    if let Some(mut v) = mount(cfg, &mut probe) {
+        let mut s = scratch_for(cfg);
+        if let Ok(session) = v.unlock(&pins.new, s.scratch()) {
+            view.new_pin_opens = true;
+            if !view.old_pin_opens {
                 view.slots = read_all(&mut v, &session, cfg);
             }
         }
-    } else if let Some(mut v) = mount(cfg, &settled) {
-        let mut s = scratch_for(cfg);
-        view.new_pin_opens = v.unlock(&pins.new, s.scratch()).is_ok();
     }
 
     // I7's scan: every side anywhere on flash whose ciphertext still opens under the old
-    // PIN. `unlock` succeeding is not the same question - a non-elected side can hold
-    // old-PIN ciphertext that no unlock would ever reach.
-    if let Some(mut v) = mount(cfg, &settled) {
+    // PIN. `unlock` succeeding is not the same question, because a non-elected side can
+    // hold old-PIN ciphertext that no unlock would ever reach.
+    let mut probe = restored(cfg, &settled);
+    if let Some(mut v) = mount(cfg, &mut probe) {
         let mut s = scratch_for(cfg);
         view.old_pin_sides = v
             .open_any_side(&pins.old, s.scratch())
@@ -916,7 +941,7 @@ fn observe_split(cfg: &Config, image: &SimImage, pins: &Pins) -> (View, usize) {
     (view, split)
 }
 
-fn read_all(v: &mut V, session: &Session, cfg: &Config) -> Vec<Option<Vec<u8>>> {
+fn read_all(v: &mut V<'_>, session: &Session, cfg: &Config) -> Vec<Option<Vec<u8>>> {
     let mut out = Vec::new();
     for slot in all_user_slots(cfg) {
         let cap = slot.class().max_payload(&cfg.layout) as usize;

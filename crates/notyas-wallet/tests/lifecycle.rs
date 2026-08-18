@@ -953,3 +953,130 @@ fn the_policy_encoding_orders_strictness_the_way_the_fuzzer_assumes() {
     assert!(!off.at_least_as_strict_as(&loose));
     assert!(off.at_least_as_strict_as(&off));
 }
+
+// ---------------------------------------------------------------------------
+// Sparse occupancy, the mode notyas does not ship but the layer supports
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sparse_leaves_unoccupied_slots_erased_and_the_format_is_otherwise_identical() {
+    // Q2 pins AlwaysFilled for the product, and the mode switch is still built because the
+    // sealing layer is general. The property that makes that safe is that the ON-FLASH
+    // FORMAT is byte-identical between the two modes: only the content of an unoccupied
+    // slot differs, so the choice can be made after the format is frozen.
+    let cfg = Config {
+        occupancy: Occupancy::Sparse,
+        ..fuzz_config()
+    };
+    let (mut v, session) = formatted(&cfg);
+    v.write(&session, payload(&cfg, 0), b"the only record")
+        .expect("write");
+    drop(session);
+    let mut v = remount(v, &cfg);
+    assert_eq!(v.occupancy().count(), 1);
+
+    let mut s = scratch(&cfg);
+    let session = v.unlock(&pin("135790"), s.scratch()).expect("unlock");
+    let mut out = vec![0u8; 4096];
+    let n = v.read(&session, payload(&cfg, 0), &mut out).expect("read");
+    assert_eq!(&out[..n], b"the only record");
+    // The unoccupied slots really are erased, which is the whole difference and the whole
+    // leak: a flash dump now counts the wallets.
+    v.clear(&session, payload(&cfg, 0)).expect("clear");
+    drop(session);
+    let v = remount(v, &cfg);
+    let (flash, _) = v.into_parts();
+    let records = flash.raw(notyas_wallet::Region::Records);
+    let payload_pair = &records[10 * 4096..12 * 4096];
+    assert!(
+        payload_pair.iter().all(|b| *b == 0xff),
+        "under Sparse a cleared slot is erased on both sides"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The device-bound derivation the product builds anti-phishing words on
+// ---------------------------------------------------------------------------
+
+#[test]
+fn device_derive_is_device_bound_label_separated_and_needs_no_pin() {
+    let cfg = fuzz_config();
+    let mut v = blank(&cfg);
+    let mut words = [0u8; 32];
+    v.device_derive(b"antiphishing", b"12", &mut words)
+        .expect("no PIN required");
+
+    let mut same = [0u8; 32];
+    v.device_derive(b"antiphishing", b"12", &mut same)
+        .expect("derive");
+    assert_eq!(words, same, "the derivation is a pure function of its inputs");
+
+    let mut other_label = [0u8; 32];
+    v.device_derive(b"lockscreen", b"12", &mut other_label)
+        .expect("derive");
+    assert_ne!(words, other_label);
+
+    let mut other_data = [0u8; 32];
+    v.device_derive(b"antiphishing", b"13", &mut other_data)
+        .expect("derive");
+    assert_ne!(words, other_data);
+
+    // The separation that matters: the label and the data are length-prefixed, so moving a
+    // byte from one to the other cannot produce the same message. Without this an attacker
+    // choosing the input to an embedder-facing derivation could steer it.
+    let mut shifted = [0u8; 32];
+    v.device_derive(b"antiphishing1", b"2", &mut shifted)
+        .expect("derive");
+    assert_ne!(
+        words, shifted,
+        "concatenation without a length prefix would make these two calls identical"
+    );
+
+    let flash = SimFlash::new(geometry_for(&cfg.layout));
+    let mut other_board = Vault::mount(flash, SoftMac::other_board(), &cfg).expect("mount");
+    let mut elsewhere = [0u8; 32];
+    other_board
+        .device_derive(b"antiphishing", b"12", &mut elsewhere)
+        .expect("derive");
+    assert_ne!(
+        words, elsewhere,
+        "the words must be different on a different board or they defend nothing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Caller-supplied working memory
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_scratch_buffer_that_is_too_small_is_named_rather_than_guessed_at() {
+    let cfg = fuzz_config();
+    let (v, _s) = formatted(&cfg);
+    let mut v = remount(v, &cfg);
+    let mut tiny = VecScratch::with_blocks(1);
+    match v.unlock(&pin("135790"), tiny.scratch()) {
+        Err(UnlockError::Scratch { required_blocks }) => {
+            assert_eq!(required_blocks, cfg.kdf.scratch_blocks());
+        }
+        other => panic!("expected a Scratch refusal naming the size, got {other:?}"),
+    }
+    assert_eq!(
+        v.failures(),
+        0,
+        "a refusal before the counted region must not cost the user an attempt"
+    );
+}
+
+#[test]
+fn the_pin_entropy_estimate_is_advisory_and_monotonic() {
+    let four_digits = pin("1234").estimated_bits();
+    let six_digits = pin("123456").estimated_bits();
+    let mixed = pin("Tr0ub4dor").estimated_bits();
+    assert!(six_digits > four_digits);
+    assert!(mixed > six_digits);
+    assert_eq!(
+        pin("1").estimated_bits(),
+        3,
+        "one digit out of ten is log2(10) rounded down, and the number is an upper bound          on a keyspace rather than a claim about what the user chose"
+    );
+}
