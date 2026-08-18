@@ -50,19 +50,27 @@ impl SlotClass {
     }
 
     /// Bytes in one side, header included.
+    ///
+    /// Saturating throughout this block rather than wrapping. A layout whose arithmetic
+    /// overflows is refused by `Config::validate` long before a record is written, and
+    /// until then every consumer of these numbers treats them as an upper bound, so
+    /// clamping is the reading that stays safe.
     pub const fn side_bytes(self, layout: &Layout) -> u32 {
-        self.side_sectors(layout) * layout.sector_size
+        self.side_sectors(layout).saturating_mul(layout.sector_size)
     }
 
     /// Bytes available to the body after the 80-byte header.
     pub const fn body_capacity(self, layout: &Layout) -> u32 {
-        self.side_bytes(layout) - crate::format::HEADER_LEN as u32
+        self.side_bytes(layout)
+            .saturating_sub(crate::format::HEADER_LEN as u32)
     }
 
     /// Largest plaintext this class can hold: body minus the AEAD tag and the in-AEAD
     /// length prefix.
     pub const fn max_payload(self, layout: &Layout) -> u32 {
-        self.body_capacity(layout) - crate::format::TAG_LEN as u32 - 4
+        self.body_capacity(layout)
+            .saturating_sub(crate::format::TAG_LEN as u32)
+            .saturating_sub(4)
     }
 }
 
@@ -113,20 +121,20 @@ impl SlotId {
     /// First sector of the A side of this slot.
     fn first_sector(self, layout: &Layout) -> Option<u32> {
         let per_slot = self.class.side_sectors(layout).checked_mul(2)?;
+        let sectors_of = |class: SlotClass| -> u32 {
+            (class.count(layout) as u32)
+                .saturating_mul(class.side_sectors(layout))
+                .saturating_mul(2)
+        };
         let base = match self.class {
             SlotClass::Superblock => 0,
-            SlotClass::Canary => SlotClass::Superblock.count(layout) as u32 * 2,
+            SlotClass::Canary => sectors_of(SlotClass::Superblock),
             SlotClass::Payload => {
-                SlotClass::Superblock.count(layout) as u32 * 2
-                    + SlotClass::Canary.count(layout) as u32 * 2
+                sectors_of(SlotClass::Superblock).saturating_add(sectors_of(SlotClass::Canary))
             }
-            SlotClass::Registry => {
-                SlotClass::Superblock.count(layout) as u32 * 2
-                    + SlotClass::Canary.count(layout) as u32 * 2
-                    + SlotClass::Payload.count(layout) as u32
-                        * SlotClass::Payload.side_sectors(layout)
-                        * 2
-            }
+            SlotClass::Registry => sectors_of(SlotClass::Superblock)
+                .saturating_add(sectors_of(SlotClass::Canary))
+                .saturating_add(sectors_of(SlotClass::Payload)),
         };
         base.checked_add(per_slot.checked_mul(self.index as u32)?)
     }
@@ -203,7 +211,7 @@ impl SlotMap {
     fn bit(slot: SlotId) -> Option<u32> {
         match slot.class() {
             SlotClass::Payload if slot.index() < 8 => Some(slot.index() as u32),
-            SlotClass::Registry if slot.index() < 8 => Some(slot.index() as u32 + 8),
+            SlotClass::Registry if slot.index() < 8 => Some((slot.index() as u32).saturating_add(8)),
             _ => None,
         }
     }

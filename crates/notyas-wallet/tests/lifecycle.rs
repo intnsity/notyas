@@ -812,7 +812,7 @@ fn the_shipped_v1_geometry_round_trips() {
         StoreState::Formatted { identities_present: 1, occupied_slots: 0 }
     ));
     for i in 0..8u8 {
-        v.write(&session, payload(&cfg, i), &vec![i; 100])
+        v.write(&session, payload(&cfg, i), &[i; 100])
             .expect("write every payload slot");
     }
     drop(session);

@@ -113,7 +113,10 @@ impl Pin {
         // approximated by the integer bit length plus a fractional term from the
         // remainder, which is within a bit of the true value over the ranges that occur.
         let bits_per_char_x100 = log2_x100(alphabet);
-        let total = (self.len as u32).saturating_mul(bits_per_char_x100) / 100;
+        let total = (self.len as u32)
+            .saturating_mul(bits_per_char_x100)
+            .checked_div(100)
+            .unwrap_or(0);
         total.min(u16::MAX as u32) as u16
     }
 }
@@ -126,7 +129,11 @@ fn log2_x100(n: u32) -> u32 {
     }
     let floor = 31u32.saturating_sub(n.leading_zeros());
     let low = 1u32 << floor;
-    let frac = n.saturating_sub(low).saturating_mul(100) / low.max(1);
+    let frac = n
+        .saturating_sub(low)
+        .saturating_mul(100)
+        .checked_div(low.max(1))
+        .unwrap_or(0);
     floor.saturating_mul(100).saturating_add(frac)
 }
 

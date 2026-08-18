@@ -368,7 +368,7 @@ impl Report {
             self.cases,
             self.operations,
             self.step_boundaries,
-            if self.step_boundaries == 0 { 0 } else { self.cases / self.step_boundaries.max(1) },
+            self.cases.checked_div(self.step_boundaries.max(1)).unwrap_or(0),
             self.cuts_fired,
             self.seals_observed,
             self.findings.len()

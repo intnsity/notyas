@@ -197,13 +197,27 @@ fn ensure_erased<F: Flash, M: DeviceMac>(
     Ok(())
 }
 
+/// A body that came off flash: secret until proven otherwise, so it is `Zeroizing` even
+/// when it turns out to be filler.
+pub(crate) type Body<F, M> =
+    Result<Zeroizing<Vec<u8>>, StorageError<<F as Flash>::Error, <M as DeviceMac>::Error>>;
+
+/// A body that came off flash and was then either opened or rejected. The outer result is
+/// "could the flash be read", the inner one is "did the record make sense": two different
+/// questions with two different answers for the product, which is why they are not
+/// flattened into one.
+pub(crate) type OpenedBody<F, M> = Result<
+    Result<Zeroizing<Vec<u8>>, Corruption>,
+    StorageError<<F as Flash>::Error, <M as DeviceMac>::Error>,
+>;
+
 /// Read the body region of one side.
 fn read_body<F: Flash, M: DeviceMac>(
     flash: &mut F,
     cfg: &Config,
     slot: SlotId,
     side: Side,
-) -> Result<Zeroizing<Vec<u8>>, StorageError<F::Error, M::Error>> {
+) -> Body<F, M> {
     let off = side_offset::<F, M>(cfg, slot, side)?;
     let cap = slot.class().body_capacity(&cfg.layout);
     let mut buf = Zeroizing::new(vec![0u8; cap as usize]);
@@ -311,6 +325,7 @@ pub(crate) fn write_sealed<F: Flash, M: DeviceMac>(
 /// The superblock's body is plaintext: there is no PIN at mount time, so there is nothing
 /// to seal it under. Its integrity comes from `body_digest` and `header_mac`, both keyed
 /// by the device-bound `hdr_key`, so it cannot be edited offline either.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_plain<F: Flash, M: DeviceMac>(
     flash: &mut F,
     keys: &DeviceKeys,
@@ -490,7 +505,7 @@ pub(crate) fn read_record<F: Flash, M: DeviceMac>(
     side: Side,
     header: &RecordHeader,
     key_source: &[u8; 32],
-) -> Result<Result<Zeroizing<Vec<u8>>, Corruption>, StorageError<F::Error, M::Error>> {
+) -> OpenedBody<F, M> {
     let body = read_body::<F, M>(flash, cfg, slot, side)?;
     if !verify_body_digest::<F, M>(flash, keys, cfg, slot, side, header)? {
         return Ok(Err(Corruption::BodyDigest));
@@ -506,7 +521,7 @@ pub(crate) fn read_plain_body<F: Flash, M: DeviceMac>(
     slot: SlotId,
     side: Side,
     header: &RecordHeader,
-) -> Result<Result<Zeroizing<Vec<u8>>, Corruption>, StorageError<F::Error, M::Error>> {
+) -> OpenedBody<F, M> {
     let body = read_body::<F, M>(flash, cfg, slot, side)?;
     if !verify_body_digest::<F, M>(flash, keys, cfg, slot, side, header)? {
         return Ok(Err(Corruption::BodyDigest));

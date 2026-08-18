@@ -40,7 +40,7 @@ BUILD_DEP_EXEMPT="embuild tempfile getrandom"
 # The crates that link into the device image and are no_std by contract. Their
 # dependency SUBTREES admit no exemption at all - see the strict section at the
 # bottom of this script for why the rule lives there rather than here.
-STRICT_PACKAGES="notyas-core notyas-ui notyas-fonts"
+STRICT_PACKAGES="notyas-core notyas-ui notyas-fonts notyas-wallet"
 
 # Find all Cargo.lock files (workspace + any stragglers).
 LOCKS=$(find . -name Cargo.lock -not -path './.git/*' -not -path '*/target/*')
@@ -143,6 +143,30 @@ else
             fi
         done
     done
+fi
+
+# --- the sealing engine's host-only feature must never enter the firmware -----
+#
+# notyas-wallet's `testkit` feature pulls in the NOR simulator, the power-loss harness and
+# `extern crate std`. A firmware build that enabled it would link a fake flash backend and
+# a compiled-in test MAC key beside the real ones, which is the shape of ESP-SEAL.md 6.4's
+# development-key hazard. Cargo feature unification means a transitive dependency could
+# turn it on without anyone editing the firmware manifest, so it is checked rather than
+# assumed. The default feature set is the one the firmware links, so that is the one asked.
+if command -v cargo >/dev/null 2>&1; then
+    if TREE=$(cargo tree --locked --package notyas-wallet --edges normal --prefix none               --format '{p} {f}' 2>&1); then
+        if printf '%s
+' "$TREE" | grep -q '^notyas-wallet .*testkit'; then
+            echo "VIOLATION: notyas-wallet's 'testkit' feature is enabled in the default"
+            echo "           graph - the host simulator and its fixed MAC key must never"
+            echo "           be linkable into a firmware image"
+            VIOLATIONS=$((VIOLATIONS + 1))
+        fi
+    else
+        echo "VIOLATION: cannot resolve notyas-wallet's feature set:"
+        echo "$TREE" | sed 's/^/           /'
+        VIOLATIONS=$((VIOLATIONS + 1))
+    fi
 fi
 
 # Also check that secp256k1 IS present (invariant 4: equivalence requires the

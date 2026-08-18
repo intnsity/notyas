@@ -248,7 +248,6 @@ pub(crate) fn device_derive<M: DeviceMac>(
     push(label);
     push(&dlen);
     push(data);
-    drop(push);
 
     let mut root = Zeroizing::new([0u8; 32]);
     let framed = msg.get(..n).unwrap_or(&[]);

@@ -316,7 +316,7 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
                 // generations device-globally unique per identity - which `pin_gen_next`
                 // already provides - and to reserve 0 for an identity that does not exist.
                 if slot.class() != SlotClass::Superblock
-                    && (header.pin_gen == 0 || !pin_gen.iter().any(|g| *g == header.pin_gen))
+                    && (header.pin_gen == 0 || !pin_gen.contains(&header.pin_gen))
                 {
                     continue;
                 }
@@ -621,9 +621,9 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
 
     /// The flash backend, so the power-loss harness can arm a cut mid-operation.
     ///
-    /// Compiled out of every firmware build. It is not a back door into the state machine
-    /// - it hands out the backend the caller already owned before `mount` took it - and
-    /// without it the fuzzer could only cut between operations, which is the one place a
+    /// Compiled out of every firmware build. It is not a back door into the state
+    /// machine: it hands out the backend the caller already owned before `mount` took it.
+    /// Without it the fuzzer could only cut between operations, which is the one place a
     /// cut is uninteresting.
     #[cfg(feature = "testkit")]
     pub fn backend_mut(&mut self) -> &mut F {
