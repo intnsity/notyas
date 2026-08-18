@@ -88,7 +88,13 @@ pub struct Jtag {
 pub struct RomLog {
     /// `UART_PRINT_CONTROL` (bit 134, **2 bits**), raw. `0` force on,
     /// `1` on when GPIO8 is low at reset, `2` on when high, `3` force off.
-    pub uart_print_control: u8,
+    ///
+    /// `None` if the field read failed. It cannot fail for a BLK0 field on a
+    /// non-virtual build - the eFuse controller auto-loads BLK0 into read
+    /// registers at reset, so this is a `REG_READ` - but `0` is a meaningful
+    /// value of this field ("force enable printing"), so a failed read must
+    /// not be able to look like one.
+    pub uart_print_control: Option<u8>,
     /// `DIS_USB_SERIAL_JTAG_ROM_PRINT` (bit 130).
     pub usb_serial_jtag_print_disabled: bool,
 }
@@ -218,19 +224,11 @@ mod imp {
 
     /// Read the ROM logging configuration.
     pub fn rom_log() -> RomLog {
-        let mut raw = 0u8;
-        // SAFETY: UART_PRINT_CONTROL is a 2-bit field; the API clamps the read
-        // to the field width, so one byte is more than enough and the
-        // descriptor pointer is the generated table's own.
-        unsafe {
-            sys::esp_efuse_read_field_blob(
-                core::ptr::addr_of_mut!(sys::ESP_EFUSE_UART_PRINT_CONTROL).cast(),
-                (&mut raw as *mut u8).cast(),
-                2,
-            );
-        }
         RomLog {
-            uart_print_control: raw,
+            uart_print_control: crate::efuse_blob_u8(
+                core::ptr::addr_of_mut!(sys::ESP_EFUSE_UART_PRINT_CONTROL),
+                2,
+            ),
             usb_serial_jtag_print_disabled: efuse_bit(core::ptr::addr_of_mut!(
                 sys::ESP_EFUSE_DIS_USB_SERIAL_JTAG_ROM_PRINT
             )),

@@ -136,6 +136,31 @@ pub(crate) fn efuse_bit<const N: usize>(
     unsafe { esp_idf_sys::esp_efuse_read_field_bit(field.cast()) }
 }
 
+/// Read a narrow multi-bit eFuse field as a raw value.
+///
+/// `None` on a failed read rather than a zero, because zero is a meaningful
+/// value of every field this is used for and a failure must not be able to
+/// impersonate one.
+#[cfg(target_os = "espidf")]
+pub(crate) fn efuse_blob_u8<const N: usize>(
+    field: *mut [*const esp_idf_sys::esp_efuse_desc_t; N],
+    bits: usize,
+) -> Option<u8> {
+    debug_assert!(bits <= 8, "efuse_blob_u8 reads at most one byte");
+    let mut value: u8 = 0;
+    // SAFETY: `field` points at one of the generated descriptor tables; the
+    // destination is a valid byte and the API clamps the read to the smaller
+    // of the field width and the requested size.
+    let err = unsafe {
+        esp_idf_sys::esp_efuse_read_field_blob(
+            field.cast(),
+            core::ptr::from_mut(&mut value).cast(),
+            bits,
+        )
+    };
+    (err == esp_idf_sys::ESP_OK).then_some(value)
+}
+
 /// Count the programmed bits of a multi-bit eFuse field.
 ///
 /// The right read for the thermometer-encoded fields - `SPI_BOOT_CRYPT_CNT`,

@@ -361,7 +361,7 @@ impl Readout {
 
         kv(
             "uart_print_control",
-            self.rom_log.uart_print_control.to_string(),
+            opt_num(self.rom_log.uart_print_control.map(u64::from)),
         );
         kv(
             "dis_usb_serial_jtag_rom_print",
@@ -514,10 +514,18 @@ fn bootloader_description() -> Option<(String, String)> {
 /// A fixed-size, NUL-padded C char array as a String. Stops at the first NUL
 /// and drops anything that is not valid UTF-8 rather than propagating a
 /// failure: this is a label, and a mangled label is more useful than no label.
+///
+/// Reinterpreted rather than cast element by element, because `c_char` is
+/// signed on some targets and unsigned on RISC-V, so a per-element `as u8` is
+/// either a no-op the linter objects to or a sign conversion, depending on the
+/// target. The two types always share size and alignment, which is what makes
+/// the reinterpretation valid everywhere.
 fn c_array_string(bytes: &[core::ffi::c_char]) -> String {
     let end = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
-    let as_u8: Vec<u8> = bytes[..end].iter().map(|&c| c as u8).collect();
-    String::from_utf8_lossy(&as_u8).into_owned()
+    // SAFETY: c_char is a one-byte integer with u8's layout on every target;
+    // `end` is within `bytes`, whose allocation outlives this borrow.
+    let as_u8: &[u8] = unsafe { core::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), end) };
+    String::from_utf8_lossy(as_u8).into_owned()
 }
 
 /// SHA-256 of the running app image, from flash through the partition API, so
