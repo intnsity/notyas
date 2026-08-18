@@ -41,11 +41,15 @@ compile_error!("board features are mutually exclusive; enable exactly one");
 /// proceeding in an unknown pin state is worse than a visible abort.
 /// Note gpio_config enables the output with the output register still at its
 /// reset value (0), so claiming a pin low never glitches high.
+/// INPUT_OUTPUT, not OUTPUT: the input buffer stays enabled so the Verify
+/// screen's radio readback (gpio_get_level on the kill line) reports the
+/// ACTUAL pad level - an input-disabled pad reads as a constant 0, which
+/// would fake exactly the value the screen exists to prove.
 pub(crate) fn claim_output(gpio: i32, level: u32) {
     use esp_idf_svc::sys;
     let config = sys::gpio_config_t {
         pin_bit_mask: 1u64 << gpio,
-        mode: sys::gpio_mode_t_GPIO_MODE_OUTPUT,
+        mode: sys::gpio_mode_t_GPIO_MODE_INPUT_OUTPUT,
         ..Default::default()
     };
     let err = unsafe { sys::gpio_config(&config) };

@@ -82,6 +82,30 @@ if (-not $env:LIBCLANG_PATH) {
 }
 Write-Host "LIBCLANG_PATH = $env:LIBCLANG_PATH"
 
+# secp256k1-sys (via notyas-core -> bitcoin) compiles its C library for the espidf
+# target with cc-rs, which cannot find the ESP toolchain on its own (esp-idf-sys
+# exports it only inside its own build script, and secp256k1-sys does not depend on
+# it). Point cc-rs at the embuild-installed RISC-V GCC explicitly. The CFLAGS pin the
+# P4's hard-float ABI (ilp32f): cc-rs's own guess links soft-float objects that the
+# linker rejects against the IDF build.
+if (-not $env:CC_riscv32imafc_esp_espidf) {
+    $gcc = Get-ChildItem "$env:USERPROFILE\.espressif\tools\riscv32-esp-elf" -Recurse `
+        -Filter "riscv32-esp-elf-gcc.exe" -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending | Select-Object -First 1
+    if ($gcc) {
+        $env:CC_riscv32imafc_esp_espidf = $gcc.FullName
+        $env:AR_riscv32imafc_esp_espidf = Join-Path $gcc.DirectoryName "riscv32-esp-elf-ar.exe"
+        # -fno-pic: cc-rs defaults to PIC objects, which the static IDF link script
+        # rejects ("discarded output section: .got.plt" at final link).
+        $env:CFLAGS_riscv32imafc_esp_espidf = "-march=rv32imafc_zicsr_zifencei -mabi=ilp32f -fno-pic"
+    } else {
+        Write-Warning ("riscv32-esp-elf-gcc not found under ~\.espressif\tools - the " +
+            "secp256k1 C build will fail. A first build installs the toolchain via " +
+            "esp-idf-sys; re-run this script afterwards.")
+    }
+}
+Write-Host "CC_riscv32imafc_esp_espidf = $env:CC_riscv32imafc_esp_espidf"
+
 Push-Location $firmwareDir
 try {
     # cargo logs progress to stderr; under EAP=Stop a stream-redirecting caller

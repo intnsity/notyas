@@ -32,6 +32,15 @@ board-elecrow-101 = []
 log = "0.4"
 esp-idf-svc = { version = "0.52", features = ["binstart"] }
 embedded-graphics = "0.8"
+# The product crates, path-pinned to this repo. default-features = false on the core
+# drops the "qr" feature to match notyas-ui's own pin (0.1.0 ships no QR screen; the
+# feature would come back through cargo's feature union otherwise, growing the image
+# and the audit surface for nothing).
+notyas-core = { path = "../crates/notyas-core", default-features = false }
+notyas-ui = { path = "../crates/notyas-ui" }
+# Used directly for the selftest-failure screen (main.rs), which is deliberately NOT a
+# notyas-ui screen: it must render even when the crate under test is the one that failed.
+notyas-fonts = { path = "../crates/notyas-fonts" }
 
 [build-dependencies]
 embuild = "0.33"
@@ -58,3 +67,9 @@ bindings_header = "bindings/gt911.h"
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/esp_lcd_ek79007", version = "^1" }
 bindings_header = "bindings/elecrow.h"
+
+# Verify-screen surface (SECURITY.md invariant 5). No component is built - the entry
+# only widens the bindgen surface with the running-partition hash and the secure-boot /
+# flash-encryption / chip-revision eFuse readout APIs (see the header's comments).
+[[package.metadata.esp-idf-sys.extra_components]]
+bindings_header = "bindings/verify.h"
