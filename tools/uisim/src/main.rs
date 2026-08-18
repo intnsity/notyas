@@ -130,6 +130,16 @@ fn type_keys(ui: &mut Ui, s: &str) {
     }
 }
 
+/// The embedder's `touch -> draw -> tick` loop, which is what the Deriving interstitial
+/// exists for: the frame is captured BEFORE the blocking derivation, exactly as the
+/// firmware publishes it before spending seconds in PBKDF2.
+fn done_and_derive(ui: &mut Ui, out_dir: &Path, name: &str) {
+    tap(ui, RegionId::KeyDone);
+    assert_eq!(ui.screen(), notyas_ui::ScreenId::Deriving, "Done must park on the interstitial");
+    shot(out_dir, name, ui);
+    assert!(ui.tick(), "tick must run the pending derivation");
+}
+
 // ---------------------------------------------------------------------------------------
 // PNG output
 // ---------------------------------------------------------------------------------------
@@ -212,6 +222,8 @@ fn main() {
     shot(&out_dir, "05-mnemonic-revealed", &ui);
 
     // Passphrase: opt in, type the official test-vector passphrase in both fields.
+    // Masked one bullet per character (the INPUT rule), then revealed through the
+    // Show toggle - the two frames the passphrase QA round is about.
     tap(&mut ui, RegionId::Next);
     tap(&mut ui, RegionId::PassToggle);
     tap(&mut ui, RegionId::Shift); // TREZOR is uppercase
@@ -219,9 +231,13 @@ fn main() {
     tap(&mut ui, RegionId::PassConfirm);
     type_keys(&mut ui, "TREZOR");
     shot(&out_dir, "06-passphrase", &ui);
+    tap(&mut ui, RegionId::PassShow);
+    shot(&out_dir, "13-passphrase-shown", &ui);
+    tap(&mut ui, RegionId::PassShow);
 
-    // Schemes: BIP44 default tab, plus the BIP84 tab.
-    tap(&mut ui, RegionId::KeyDone);
+    // Schemes: BIP44 default tab, plus the BIP84 tab. Done paints the interstitial
+    // first; `tick` is where PBKDF2 actually runs.
+    done_and_derive(&mut ui, &out_dir, "14-deriving");
     shot(&out_dir, "07-schemes-bip44", &ui);
     tap(&mut ui, RegionId::Tab(2));
     shot(&out_dir, "08-schemes-bip84", &ui);
@@ -258,5 +274,14 @@ fn main() {
     type_keys(&mut ui, "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong");
     shot(&out_dir, "11-phrase-entry", &ui);
 
-    println!("done: 13 screens, deterministic (each frame rendered twice, byte-identical)");
+    // ...and the same screen mid-word, where the BIP39 completion strip is live. "ab"
+    // has more matches than the strip shows, so this is the strip at full width.
+    type_keys(&mut ui, " ab");
+    shot(&out_dir, "15-phrase-autocomplete", &ui);
+
+    let shots = std::fs::read_dir(&out_dir)
+        .expect("read output dir")
+        .filter(|e| e.as_ref().is_ok_and(|e| e.path().extension().is_some_and(|x| x == "png")))
+        .count();
+    println!("done: {shots} screens, deterministic (each frame rendered twice, byte-identical)");
 }
