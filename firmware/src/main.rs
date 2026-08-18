@@ -38,7 +38,7 @@ use embedded_graphics::prelude::*;
 use esp_idf_svc::sys;
 use notyas_core::selftest::{self, SelfTest};
 use notyas_fonts::{draw_text, TextStyle, MONO_REGULAR_32, SANS_REGULAR_32, SANS_SEMIBOLD_44};
-use notyas_ui::{TouchEvent, Ui};
+use notyas_ui::{QrData, TouchEvent, Ui, UiRequest};
 
 use crate::display::Display;
 
@@ -151,6 +151,7 @@ fn main() {
     // after point = Move, none after point = Up (at the last seen point).
     let mut last_point: Option<(u16, u16)> = None;
     let mut last_screen = ui.screen();
+    let mut last_network = ui.network();
     let mut last_heartbeat = Instant::now();
     // Total repaints since boot, reported in every heartbeat: an untouched
     // device must show the same number for the whole idle stretch - the
@@ -163,31 +164,39 @@ fn main() {
         // resting finger re-reports the same point every poll - repainting
         // an identical frame 40x/s would be flicker-free but pointless).
         let mut dirty = false;
-        match (last_point, point) {
+        let request = match (last_point, point) {
             (None, Some((x, y))) => {
                 log::info!("touch down x={x} y={y}");
-                ui.touch(TouchEvent::Down { x: x as i32, y: y as i32 });
                 dirty = true;
+                ui.touch(TouchEvent::Down { x: x as i32, y: y as i32 })
             }
             (Some(prev), Some((x, y))) => {
-                ui.touch(TouchEvent::Move { x: x as i32, y: y as i32 });
                 dirty = prev != (x, y);
+                ui.touch(TouchEvent::Move { x: x as i32, y: y as i32 })
             }
             (Some((x, y)), None) => {
                 log::info!("touch up x={x} y={y}");
-                ui.touch(TouchEvent::Up { x: x as i32, y: y as i32 });
                 dirty = true;
+                ui.touch(TouchEvent::Up { x: x as i32, y: y as i32 })
             }
-            (None, None) => {}
-        }
+            (None, None) => None,
+        };
         last_point = point;
 
+        answer_qr_request(&mut ui, request);
+
         // Screen transitions are the UI's audit trail (ScreenId carries no
-        // data, so this is safe to log - notyas-ui's Debug discipline).
+        // data, so this is safe to log - notyas-ui's Debug discipline). The
+        // network setting is public state and logged the same way.
         let screen = ui.screen();
         if screen != last_screen {
             last_screen = screen;
             log::info!("screen: {screen:?}");
+        }
+        let network = ui.network();
+        if network != last_network {
+            last_network = network;
+            log::info!("network: {network:?}");
         }
 
         if dirty {
@@ -206,6 +215,34 @@ fn main() {
         }
 
         thread::sleep(Duration::from_millis(POLL_MS));
+    }
+}
+
+/// Answer a [`UiRequest`] from `Ui::touch`. The UI never computes a QR (it is
+/// no_std; the encoder needs std): a tap on a QR button surfaces here as a
+/// request naming a PUBLIC value - receive address or account xpub, the only
+/// QR targets that exist in 0.1.0 - and the finished matrix goes back in
+/// before the same iteration's repaint. The label is a derivation path /
+/// caption (safe to log); the payload is not logged, as a matter of general
+/// log hygiene even for public values.
+fn answer_qr_request(ui: &mut Ui, request: Option<UiRequest>) {
+    let Some(UiRequest::Qr(target)) = request else { return };
+    match notyas_core::qr::matrix(&target.payload) {
+        Ok(matrix) => match QrData::from_matrix(&matrix) {
+            Some(data) => {
+                log::info!(
+                    "qr: open '{}' ({} chars -> {} modules/side)",
+                    target.label,
+                    target.payload.len(),
+                    data.size()
+                );
+                ui.show_qr(target, data);
+            }
+            // Unreachable with the core encoder (always square); surfaced
+            // rather than silently dropped, per the no-silent-failure rule.
+            None => log::error!("qr: encoder returned a non-square matrix"),
+        },
+        Err(e) => log::error!("qr: '{}': {e}", target.label),
     }
 }
 

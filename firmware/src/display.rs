@@ -18,10 +18,10 @@
 //! Why a back buffer + copy rather than the drivers' own double buffering
 //! (`num_fbs = 2` + flip): the flip APIs differ per bus (DPI and RGB expose
 //! different config knobs and semantics), enabling them is per-board config
-//! - the board modules' territory - and the copy is one board-agnostic
-//! mechanism that behaves identically on both paths. The copy cost is paid
-//! only when a frame actually changes (the main loop repaints on input, not
-//! on a timer), measured and logged once at startup.
+//! and therefore the board modules' territory, while the copy is one
+//! board-agnostic mechanism that behaves identically on both paths. The copy
+//! cost is paid only when a frame actually changes (the main loop repaints
+//! on input, not on a timer), measured and logged once at startup.
 //!
 //! Board modules construct `Display` via [`Display::over_panel_fb`] after
 //! their bus-specific bring-up; everything above this layer (theme, screens)
@@ -69,11 +69,11 @@ impl Display {
     /// Wrap a panel whose bring-up the board module just finished. `fb` is the
     /// driver-owned framebuffer pointer the board fetched
     /// (`esp_lcd_dpi_panel_get_frame_buffer` /
-    /// `esp_lcd_rgb_panel_get_frame_buffer`); it is validated but not retained
-    /// - drawing goes through the back buffer and the driver's own copy path,
-    /// never through this pointer (see the module docs). The parameter stays
-    /// so the board-module contract (and its proof that the driver allocated
-    /// a framebuffer at all) is unchanged.
+    /// `esp_lcd_rgb_panel_get_frame_buffer`); it is validated but not
+    /// retained, because drawing goes through the back buffer and the
+    /// driver's own copy path, never through this pointer (see the module
+    /// docs). The parameter stays so the board-module contract (and its proof
+    /// that the driver allocated a framebuffer at all) is unchanged.
     ///
     /// Safety contract (callers are the board modules only): the panel is
     /// initialized and streaming, and `fb` came from its driver.

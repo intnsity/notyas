@@ -37,11 +37,14 @@ board-elecrow-101 = []
 log = "0.4"
 esp-idf-svc = { version = "0.52", features = ["binstart"] }
 embedded-graphics = "0.8"
-# The product crates, path-pinned to this repo. default-features = false on the core
-# drops the "qr" feature to match notyas-ui's own pin (0.1.0 ships no QR screen; the
-# feature would come back through cargo's feature union otherwise, growing the image
-# and the audit surface for nothing).
-notyas-core = { path = "../crates/notyas-core", default-features = false }
+# The product crates, path-pinned to this repo. The core's "qr" feature is enabled
+# HERE and only here: the qrcode encoder needs std, which this firmware has and
+# notyas-ui (no_std, it renders precomputed matrices only) must never grow - the UI
+# crate keeps default-features = false, and its bare-metal riscv32imac check proves
+# the feature does not leak into that graph. m4 QR flow: Ui::touch returns
+# UiRequest::Qr, main.rs encodes the (public) payload with qr::matrix and hands the
+# finished matrix back via Ui::show_qr.
+notyas-core = { path = "../crates/notyas-core", default-features = false, features = ["qr"] }
 notyas-ui = { path = "../crates/notyas-ui" }
 # Used directly for the selftest-failure screen (main.rs), which is deliberately NOT a
 # notyas-ui screen: it must render even when the crate under test is the one that failed.
