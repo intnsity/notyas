@@ -1,6 +1,12 @@
 /target/
 **/target/
 
+# Release artifacts from the container build (tools/repro/build.sh writes /out,
+# check-repro.sh writes out/check-repro/). They are published from a release page,
+# never committed: a binary in git is a second copy of the thing the whole
+# reproducibility exercise exists to make unnecessary.
+/out/
+
 # Enclosure models are kept out of the published repo until their provenance and
 # licence are settled - third-party models (e.g. Makerworld) carry their own terms
 # that may not permit redistribution under GPL-3.0. Revisit for 0.2.0.
@@ -12,8 +18,39 @@
 # carries the design record that superseded it.
 /plan.md
 
+# Python bytecode, from running tools/repro/verify-manifest.py.
+__pycache__/
+*.pyc
+
 **/*.rs.bk
 *.swp
 *.swo
 .DS_Store
 Thumbs.db
+
+# Host operations tooling. tools/ops is about the DEVELOPMENT WORKSTATION - a NAS mirror,
+# a kernel-pool watcher, a handle-leak hunt - not about the device, the firmware or the
+# release. Every script in it hardcodes this machine's UNC paths and addresses and does
+# nothing for anyone who clones the repository. docs/OPS-HOST.md is the same material in
+# prose. Both are kept on the working tree, and out of the published one.
+/tools/ops/
+/docs/OPS-HOST.md
+
+# The mirror hook, for the same reason: it fires tools/ops/mirror-to-nas.ps1, which does
+# not exist in a clone. The other two hooks in that directory are repository policy and
+# are tracked.
+/tools/git-hooks/post-commit
+
+# poolwatch.ps1 output: kernel pool samples from this host, rewritten on every boot.
+/poolwatch/
+
+# Superseded draft, replaced by docs/VERIFYING.md, which is what tools/release.sh and
+# tools/ci/check-repro-pins.sh both name. Kept on the working tree until its removal is
+# confirmed, and out of the repository meanwhile: it teaches a signature check that does
+# not pin the key, which is the one mistake a verifier cannot afford.
+/VERIFYING.md
+
+# A point-in-time readiness snapshot of this workstation's tree: it records gate results
+# that are already superseded, and local build paths that mean nothing in a clone. Kept on
+# the working tree; publishing it is the owner's call, not this tree's default.
+/docs/release-readiness-0.2.0.md
