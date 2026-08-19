@@ -38,6 +38,19 @@ cd "$(dirname "$0")/../.."
 FW=firmware
 BOARDDIR=$FW/src/board
 
+# tools/build.ps1 is the source of truth for per-board target directories; the
+# image tier reads its $boardMap rather than keeping a second copy of it.
+BUILDPS1=tools/build.ps1
+
+# A Windows path out of that map (C:\nb\ws) as this shell sees it (/c/nb/ws).
+win_to_posix() {
+    printf '%s' "$1" | awk '{
+        gsub(/\\/, "/")
+        if (match($0, /^[A-Za-z]:/)) { $0 = "/" tolower(substr($0, 1, 1)) substr($0, 3) }
+        print
+    }'
+}
+
 FAILURES=0
 CHECKS=0
 ok()   { CHECKS=$((CHECKS + 1)); printf '  ok    %s\n' "$*"; }
@@ -250,14 +263,40 @@ if [ "$SOURCE_ONLY" -eq 1 ]; then
     printf '  against a real build before believing invariant 1 of a release.\n'
 else
     if [ -z "$IMAGES" ]; then
-        # Per-board target dirs, from tools/build.ps1's board map.
-        for d in /c/nyt-ws /c/nyt-w5 /c/nyt-w7b /c/nyt-w7x /c/nyt-w8x /c/nyt-w101x \
-                 /c/nyt-e5 /c/nyt-e7 /c/nyt-e9 /c/nyt-e101; do
-            for p in debug release; do
-                e="$d/riscv32imafc-esp-espidf/$p/notyas-firmware"
-                [ -f "$e" ] && IMAGES="$IMAGES $e"
-            done
-        done
+        # WHERE a build lands is not a list this gate keeps. tools/build.ps1's
+        # $boardMap is the single place that decides a board's target directory, so
+        # this reads that map instead of restating it. The restated copy that used to
+        # live here outlived a rename of every directory in it, and the failure mode
+        # was the worst one available: no image found is reported as "the image tier
+        # could not run", which silently demotes invariant 1 to the source tier - the
+        # tier that cannot see a linked radio at all.
+        #
+        # A map that cannot be read is therefore a FAILURE, never an empty search.
+        if [ ! -f "$BUILDPS1" ]; then
+            bad "$BUILDPS1 is missing - the image tier cannot know where a build lands"
+            note "this gate reads the target directories out of that file's \$boardMap."
+        else
+            MAPDIRS=$(sed -n 's/.*TargetDir *= *"\([^"]*\)".*/\1/p' "$BUILDPS1")
+            if [ -z "$MAPDIRS" ]; then
+                bad "no TargetDir entry parsed out of $BUILDPS1 - the board map changed shape"
+                note "expected lines of the form: TargetDir = \"<path>\""
+            fi
+            # build.ps1 lets NOTYAS_TARGET_DIR override the map for one build, so a
+            # build made that way is searched too rather than reported as missing.
+            SEARCH=$(printf '%s\n%s\n' "$MAPDIRS" "${NOTYAS_TARGET_DIR:-}" | grep . | sort -u)
+            while IFS= read -r d; do
+                [ -n "$d" ] || continue
+                d=$(win_to_posix "$d")
+                for p in release debug; do
+                    e="$d/riscv32imafc-esp-espidf/$p/notyas-firmware"
+                    if [ -f "$e" ]; then
+                        IMAGES="$IMAGES $e"
+                    fi
+                done
+            done <<EOF
+$SEARCH
+EOF
+        fi
     fi
 
     if [ -z "$IMAGES" ]; then
