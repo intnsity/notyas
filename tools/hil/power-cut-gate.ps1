@@ -185,6 +185,18 @@ function Write-Log {
     Write-Output $line
 }
 
+# Write-Log for use INSIDE a function that returns a value. Write-Output would put the
+# message into that function's return value, so `$r = Get-Something` would come back as an
+# array of log lines with the answer buried at the end, and every property access on it
+# would silently read the wrong thing. Write-Host cannot do that, which is the whole point
+# of choosing it here; the transcript still gets the line either way.
+function Write-Note {
+    param([string] $Text)
+    $line = '{0} {1}' -f (Get-Date -Format 'HH:mm:ss.fff'), $Text
+    try { Add-Content -Path $transcript -Value $line -Encoding utf8 } catch { }
+    Write-Host $line
+}
+
 function Test-PortPresent {
     param([string] $Name)
     return ([System.IO.Ports.SerialPort]::GetPortNames() -contains $Name)
@@ -653,7 +665,7 @@ function Get-ConsoleReadiness {
     $r = @{ Verdict = 'ok'; Have = @(); Missing = @(); Lines = 0; Hil = 0; Tail = @(); Error = '' }
 
     if (-not (Test-PortPresent $Name)) {
-        Write-Log "waiting up to 60 s for $Name - connect the board"
+        Write-Note "waiting up to 60 s for $Name - connect the board"
         if (-not (Wait-PortBack $Name 60000)) { $r.Verdict = 'port_absent'; return $r }
     }
     $sp = $null
@@ -727,8 +739,8 @@ function Move-EvidenceAside {
         return (Join-Path (Split-Path -Parent $Dir) $leaf)
     } catch {
         # The rename is the belt; NOT-A-RUN.txt is the braces. Say which one held.
-        Write-Output "WARNING: could not rename $Dir out of the powercut-* namespace ($($_.Exception.Message))."
-        Write-Output '         It carries NOT-A-RUN.txt instead. Do not read it as a run.'
+        Write-Note "WARNING: could not rename $Dir out of the powercut-* namespace ($($_.Exception.Message))."
+        Write-Note '         It carries NOT-A-RUN.txt instead. Do not read it as a run.'
         return $Dir
     }
 }
