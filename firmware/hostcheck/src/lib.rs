@@ -27,3 +27,14 @@ pub mod record;
 /// can see.
 #[path = "../../src/flow/model.rs"]
 pub mod model;
+
+/// `firmware/src/flow/replace.rs`, verbatim.
+///
+/// The registry-replacement ordering rule. It is storage-agnostic by construction - a trait
+/// with four methods and one function that sequences them - which is the only reason any of
+/// it can be exercised here: the real implementation of that trait is a `Store`, an ESP-IDF
+/// flash partition, and the rollback path is by definition the path a working store never
+/// takes. Behind the trait it is a registry that can be told to fail on demand, and the
+/// sequencing under test is the device's own.
+#[path = "../../src/flow/replace.rs"]
+pub mod replace;

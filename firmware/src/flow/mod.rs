@@ -56,6 +56,11 @@
 
 pub mod model;
 
+/// The ordering and rollback rule a registry replacement obeys, kept storage-agnostic so
+/// the rollback path can be tested on a host (firmware/hostcheck).
+mod replace;
+
+use notyas_core::multisig::RegistrationId;
 use notyas_ui::{
     Artifact, CardListing, CardOutcome, CosignerRow, FileFilter, FileKind, FileRow, ImportOutcome,
     PsbtOutcome, RefusalCode, RefusalNotice, RegistrationInfo, RegistrationOutcome,
@@ -67,6 +72,7 @@ use crate::sd::{self, Card, CardError, FsError};
 use crate::signing::{self, Review, Signed};
 use crate::store::Store;
 use crate::wallet::{RegisterError, Wallet};
+use replace::{RegistrySlots, Replaced};
 
 /// Everything held between one screen and the next.
 ///
@@ -860,24 +866,71 @@ fn approve(store: &mut Option<Store>, flow: &mut Flow, replace: bool) -> Registr
         return RegistrationOutcome::Refused(no_wallet("this registration"));
     };
 
-    // A replace is an erase and then a write, in that order and never the other way round:
-    // the registry has eight slots, and writing first would refuse for want of a free one on
-    // a device that is about to have one.
-    if replace {
-        if let Some(slot) = duplicate {
-            if let Err(e) = wallet.deregister(store, slot) {
-                log::error!("multisig: replacing the registration in slot {slot} failed: {e}");
-                return RegistrationOutcome::Refused(register_refusal(&e));
-            }
-            log::info!("multisig: registry slot {slot} erased to make room for the replacement");
-        }
-    }
+    // A replace is an erase and then a write, in that order because no other order is
+    // available (flow::replace states why in full: the one write path refuses a duplicate
+    // id, the registry is a fixed slot count, and the store has no multi-slot write). What
+    // makes that order safe is that the old record is READ OUT first and put back if the
+    // write fails - without which a failed replacement lost the existing registration AND
+    // the replacement, which for a multisig wallet is the difference between one this
+    // device can sign for and one it cannot.
+    let outcome = match duplicate.filter(|_| replace) {
+        Some(slot) => replace::replace_in_slot(
+            &mut SlotSwap { wallet: &mut *wallet, store: &mut *store, label: &label, text: &text },
+            slot,
+        ),
+        None => match wallet.register(store, &label, &text) {
+            Ok(id) => Replaced::Done(id),
+            Err(e) => Replaced::Untouched(e),
+        },
+    };
 
-    let id = match wallet.register(store, &label, &text) {
-        Ok(id) => id,
-        Err(e) => {
-            log::error!("multisig: {label} not registered: {e}");
+    let id = match outcome {
+        Replaced::Done(id) => id,
+        Replaced::Untouched(e) => {
+            log::error!("multisig: {label} not registered, device unchanged: {e}");
             return RegistrationOutcome::Refused(register_refusal(&e));
+        }
+        // Loud on purpose, and not folded into the generic write refusal: the record is
+        // safe and the OPEN wallet is not, so the one sentence that matters is the one that
+        // tells the owner how to get it back. The pending review is dropped with it - the
+        // restored record is in storage but not in this wallet's list, and re-approving
+        // would write a SECOND copy of the same descriptor into another slot.
+        Replaced::RolledBack { slot, cause } => {
+            log::error!(
+                "multisig: replacement for slot {slot} not written ({cause}); the record that \
+                 was there has been restored to storage and is absent from the open wallet"
+            );
+            flow.pending = None;
+            return RegistrationOutcome::Refused(RefusalNotice {
+                code: RefusalCode::WriteFailed,
+                happened: String::from(
+                    "The replacement was not stored. The registration it would have replaced \
+                     is still on this device, but you must lock the device and unlock it \
+                     again before you can use that wallet.",
+                ),
+                details: format!("replace registry slot {slot} failed: {cause}; record restored"),
+                after_signing: false,
+            });
+        }
+        // The only path on which something is actually gone. It says so.
+        Replaced::Lost { slot, cause, restore } => {
+            log::error!(
+                "multisig: replacement for slot {slot} not written ({cause}) AND the record \
+                 that was there could not be restored ({restore}) - registration lost"
+            );
+            flow.pending = None;
+            return RegistrationOutcome::Refused(RefusalNotice {
+                code: RefusalCode::WriteFailed,
+                happened: String::from(
+                    "The replacement was not stored and the registration it would have \
+                     replaced could not be put back. That wallet is no longer registered on \
+                     this device: import its file again from your coordinator.",
+                ),
+                details: format!(
+                    "replace registry slot {slot} failed: {cause}; restore failed: {restore}"
+                ),
+                after_signing: false,
+            });
         }
     };
     flow.pending = None;
@@ -950,6 +1003,50 @@ pub fn delete_registration(
     };
     install_registrations(ui, flow);
     ui.registration_deleted(erased)
+}
+
+/// [`RegistrySlots`] over the real wallet and the real store.
+///
+/// Four one-line methods and no decisions: the ordering lives in [`replace::replace_in_slot`]
+/// so that the device and the host test run the same one.
+struct SlotSwap<'a> {
+    wallet: &'a mut Wallet,
+    store: &'a mut Store,
+    label: &'a str,
+    text: &'a str,
+}
+
+impl RegistrySlots for SlotSwap<'_> {
+    type Id = RegistrationId;
+    type Error = RegisterError;
+
+    fn snapshot(&mut self, slot: u8) -> Result<Vec<u8>, RegisterError> {
+        // The plaintext record, which is exactly what `restore` would write back. Read
+        // through the store rather than re-encoded from the open wallet: a re-encode would
+        // restore what this firmware thinks the record should be, and the whole job here is
+        // to put back the bytes that were actually there.
+        let mut buf = vec![0u8; Store::max_registry_bytes()];
+        let n = self
+            .store
+            .read_registry(slot, &mut buf)
+            .map_err(RegisterError::Storage)?;
+        buf.truncate(n);
+        Ok(buf)
+    }
+
+    fn erase(&mut self, slot: u8) -> Result<(), RegisterError> {
+        self.wallet.deregister(self.store, slot)
+    }
+
+    fn install(&mut self) -> Result<RegistrationId, RegisterError> {
+        self.wallet.register(self.store, self.label, self.text)
+    }
+
+    fn restore(&mut self, slot: u8, bytes: &[u8]) -> Result<(), RegisterError> {
+        self.store
+            .write_registry(slot, bytes)
+            .map_err(RegisterError::Storage)
+    }
 }
 
 /// A `RegisterError` as the screen renders it.
