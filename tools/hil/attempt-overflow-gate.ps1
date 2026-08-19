@@ -43,28 +43,96 @@ param(
     # prompted once, and the count is compared across the reboot.
     [int]    $RebootAt = 0,
     [string] $OutDir   = 'C:\nb\hil',
-    [switch] $DryRun
+    [switch] $DryRun,
+    # Preflight. Reads the board's command surface and stops there: no wrong PIN, no
+    # policy read that changes anything, no run-shaped directory left behind.
+    [switch] $Probe
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Exit codes, shared with power-cut-gate.ps1 so a wrapper can read either the same way.
+# The rule behind them: no path out of this script is allowed to end without a verdict on
+# stdout and a matching code. A gate that returns quietly having done nothing is worse than
+# one that crashes, because a crash gets investigated (2026-08-19, an evening).
+$EXIT_OK               = 0   # the soak ran and recorded attempts
+$EXIT_HARNESS          = 1   # bad arguments, or an unhandled harness error
+$EXIT_PORT_ABSENT      = 2   # the port never enumerated
+$EXIT_SILENT           = 3   # the port opened and nothing at all came back
+$EXIT_NO_CONSOLE       = 4   # the board talks, but carries no HIL console
+$EXIT_MISSING_COMMANDS = 5   # the console is there and lacks what this gate drives
+$EXIT_REFUSED          = 6   # a precondition or a blocking finding ended it
+$EXIT_NO_EVIDENCE      = 7   # it ended having measured nothing
+
+# The console commands this gate drives. Read from `help` before a single wrong PIN is
+# typed, because a console that swallows `unlock` would produce 136 rows of nothing and
+# look exactly like a soak.
+$NEEDS = @('unlock','status','scan')
+
+trap {
+    Write-Output ''
+    Write-Output ('=' * 72)
+    Write-Output 'THE GATE DID NOT COMPLETE - unhandled harness error.'
+    Write-Output ''
+    Write-Output "  $($_.Exception.Message)"
+    Write-Output "  at line $($_.InvocationInfo.ScriptLineNumber): $(($_.InvocationInfo.Line).Trim())"
+    Write-Output ''
+    Write-Output ('=' * 72)
+    Write-Output ''
+    Write-Output 'VERDICT: NOT RUN (harness_error), exit 1'
+    exit 1
+}
+
+$BOARD_BY_PORT = @{
+    'COM6' = @{ Board = 'elecrow-5';    Features = 'hil-console' }
+    'COM3' = @{ Board = 'waveshare-4b'; Features = 'hil-console,unsafe-emulated-key' }
+}
+
+function Get-BoardForPort {
+    param([string] $Name)
+    if ($BOARD_BY_PORT.ContainsKey($Name)) { return $BOARD_BY_PORT[$Name] }
+    return @{ Board = 'elecrow-5'; Features = 'hil-console'; Guessed = $true }
+}
 
 if ($OutDir -match '^(\\\\|//)') { throw "OutDir must be a local path, not a UNC path: $OutDir" }
 
 $stamp  = Get-Date -Format 'yyyyMMdd-HHmmss'
 $runDir = Join-Path $OutDir "overflow-$stamp"
+# A probe creates a log FILE and never a run-shaped directory: an `overflow-*` directory
+# with no attempts.csv in it is the shape this bench has already learned to misread.
 if (-not $DryRun) {
     if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
-    New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    if (-not $Probe) { New-Item -ItemType Directory -Path $runDir -Force | Out-Null }
 }
 $transcript = Join-Path $runDir 'console.log'
 $recordCsv  = Join-Path $runDir 'attempts.csv'
 $recordJson = Join-Path $runDir 'attempts.json'
+if ($Probe) { $transcript = Join-Path $OutDir "probe-overflow-$stamp.log" }
 
 function Write-Log {
     param([string] $Text)
     $line = '{0} {1}' -f (Get-Date -Format 'HH:mm:ss.fff'), $Text
     Add-Content -Path $transcript -Value $line -Encoding utf8
     Write-Output $line
+}
+
+# Write-Log for use inside a function that returns a value: Write-Output would append the
+# message to that function's return value and every property read off it afterwards would
+# quietly be reading a log line.
+function Write-Note {
+    param([string] $Text)
+    $line = '{0} {1}' -f (Get-Date -Format 'HH:mm:ss.fff'), $Text
+    try { Add-Content -Path $transcript -Value $line -Encoding utf8 } catch { }
+    Write-Host $line
+}
+
+function Write-Loud {
+    param([string[]] $Lines)
+    $bar = '=' * 72
+    foreach ($l in (@('', $bar) + $Lines + @($bar, ''))) {
+        Write-Output $l
+        try { Add-Content -Path $transcript -Value $l -Encoding utf8 } catch { }
+    }
 }
 
 function Test-PortPresent {
@@ -180,6 +248,216 @@ function Invoke-Unlock {
     }
 }
 
+# -------------------------------------------------------------------------------------
+# The capability probe, and the four ways a board can fail to be drivable
+# -------------------------------------------------------------------------------------
+#
+# Four rather than one because they need four different actions from the person at the
+# bench, and a single "cannot talk to the board" sends them checking the cable when the
+# answer is a rebuild:
+#
+#   port_absent      - nothing enumerates. Cable, power, or the wrong COM name.
+#   silent           - the port opens and NOTHING arrives, not even a log line. Wrong baud,
+#                      EN held low, or the ROM bootloader after a failed flash.
+#   no_console       - the board talks and `help` produced no HIL line. The image was built
+#                      without the hil-console feature.
+#   missing_commands - the console answered and lacks what this gate drives.
+#
+# This gate used to have no probe at all. On a console-less image its first `status` came
+# back empty and it threw "no status line: cannot read the policy" - non-zero and loud, but
+# pointing at the policy when the fault was the image, which is a different evening's work.
+function Get-HelpTable {
+    param([System.IO.Ports.SerialPort] $Sp)
+    $lines = @()
+    Send-Cmd $Sp 'help'
+    $null = Read-Until -Sp $Sp -TimeoutMs 6000 -StopOn $null -Lines ([ref]$lines)
+    $cmds = @()
+    foreach ($l in $lines) {
+        if ($l -match 'HIL\|help\|\s*([a-z][a-z0-9_]*)') { $cmds += $matches[1] }
+    }
+    return @{ Commands = @($cmds | Sort-Object -Unique); Lines = @($lines) }
+}
+
+function Get-ConsoleReadiness {
+    param([string] $Name, [int] $Rate, [string[]] $Needs)
+
+    $r = @{ Verdict = 'ok'; Have = @(); Missing = @(); Lines = 0; Hil = 0; Tail = @(); Error = '' }
+
+    if (-not (Test-PortPresent $Name)) {
+        Write-Note "waiting up to 60 s for $Name - connect the board"
+        if (-not (Wait-PortBack $Name 60000)) { $r.Verdict = 'port_absent'; return $r }
+    }
+    $sp = $null
+    try { $sp = Open-Board $Name $Rate }
+    catch { $r.Verdict = 'port_absent'; $r.Error = $_.Exception.Message; return $r }
+    try {
+        $boot = @()
+        $null = Read-Until -Sp $sp -TimeoutMs 12000 -StopOn 'HIL\|(status|boot)' -Lines ([ref]$boot)
+        $help = Get-HelpTable $sp
+        $all  = @($boot) + @($help.Lines)
+        $r.Lines = $all.Count
+        $r.Hil   = @($all | Where-Object { $_ -match 'HIL\|' }).Count
+        $r.Tail  = @($all | Select-Object -Last 3)
+        $r.Have  = @($help.Commands)
+    } finally {
+        try { if ($sp.IsOpen) { $sp.Close() } } catch { }
+        try { $sp.Dispose() } catch { }
+    }
+
+    if ($r.Lines -eq 0)      { $r.Verdict = 'silent';     return $r }
+    if ($r.Have.Count -eq 0) { $r.Verdict = 'no_console'; return $r }
+    $r.Missing = @($Needs | Where-Object { $r.Have -notcontains $_ })
+    if ($r.Missing.Count -gt 0) { $r.Verdict = 'missing_commands' }
+    return $r
+}
+
+# A run that did nothing must not leave a directory that looks like a run. The transcript
+# is kept - it is the proof of what the board said, which is what turns "the gate did not
+# run" into "the gate did not run BECAUSE ..." - so the directory moves out of the
+# overflow-* namespace instead of being deleted, and is stamped with a file whose name is
+# the whole story.
+function Move-EvidenceAside {
+    param([string] $Dir, [string] $Code, [string[]] $Why)
+    if ($DryRun -or $Probe) { return $null }
+    if (-not (Test-Path $Dir)) { return $null }
+    $note = @("NOT A RUN - $Code", '') + $Why + @(
+        '',
+        'No wrong PIN was typed and nothing that changes the device was sent. There is no',
+        'attempts.csv in this directory and there must never be one: this is the record of a',
+        'gate that refused to start, kept so the console transcript can be read, and it is',
+        'not evidence for any exit criterion.'
+    )
+    try { $note | Set-Content -Path (Join-Path $Dir 'NOT-A-RUN.txt') -Encoding utf8 } catch { }
+    # A name collision must not put the directory back in the overflow-* namespace, which
+    # is what giving up here would do. Uniquify instead; only a directory something else
+    # has open reaches the fallback below.
+    $parent = Split-Path -Parent $Dir
+    $base   = 'aborted-' + (Split-Path -Leaf $Dir)
+    try {
+        $leaf = $base
+        $n = 1
+        while (Test-Path (Join-Path $parent $leaf)) { $leaf = "$base-$n"; $n++ }
+        Rename-Item -Path $Dir -NewName $leaf -ErrorAction Stop
+        return (Join-Path $parent $leaf)
+    } catch {
+        Write-Note "WARNING: could not rename $Dir out of the overflow-* namespace ($($_.Exception.Message))."
+        Write-Note '         It carries NOT-A-RUN.txt instead. Do not read it as a run.'
+        return $Dir
+    }
+}
+
+function Stop-Run {
+    param([string] $Code, [int] $ExitCode, [string[]] $Lines)
+    Write-Loud $Lines
+    $moved = Move-EvidenceAside -Dir $runDir -Code $Code -Why $Lines
+    if ($moved) {
+        Write-Output 'The evidence directory was not left looking like a run. It is now:'
+        Write-Output "  $moved"
+        Write-Output ''
+    }
+    Write-Output "VERDICT: NOT RUN ($Code), exit $ExitCode"
+    exit $ExitCode
+}
+
+function Stop-OnReadiness {
+    param($R)
+    $b     = Get-BoardForPort $Port
+    $build = ".\tools\build.ps1 -Board $($b.Board) --features $($b.Features)"
+    $flash = ".\tools\flash.ps1 -Board $($b.Board) -Port $Port"
+    $guess = @()
+    if ($b.ContainsKey('Guessed')) {
+        $guess = @('', "($Port is not one of the two known bench ports, so the board flag above is",
+                       ' this file''s default rather than a fact. Check it before you flash.)')
+    }
+
+    switch ($R.Verdict) {
+        'port_absent' {
+            $present = @([System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object)
+            $list = 'none at all'
+            if ($present.Count -gt 0) { $list = ($present -join ', ') }
+            $why = @()
+            if ($R.Error) { $why = @("The open failed with: $($R.Error)", '') }
+            Stop-Run -Code 'port_absent' -ExitCode $EXIT_PORT_ABSENT -Lines (@(
+                "CANNOT DRIVE THE BOARD: $Port is not usable.",
+                '',
+                "What was missing  : the serial port $Port, after waiting 60 s for it.",
+                "Ports present now : $list") + $why + @(
+                'Most likely cause : the USB cable is out, the board has no power, or this is',
+                '                    the wrong port name for it. If the name is in the list',
+                '                    above, something else already has it open.',
+                '',
+                'Fix: connect the board, close anything holding the port, then re-run:',
+                "     .\tools\hil\attempt-overflow-gate.ps1 -Port <name from the list> -Probe"
+            ))
+        }
+        'silent' {
+            Stop-Run -Code 'silent' -ExitCode $EXIT_SILENT -Lines (@(
+                "CANNOT DRIVE THE BOARD: $Port opened and the board said nothing at all.",
+                '',
+                '  What was missing  : every line. No boot banner, no IDF log, no console',
+                "                      output - zero bytes in 18 s at $Baud baud.",
+                '  Most likely cause : the baud rate is wrong (the firmware logs at 115200),',
+                '                      the board is held in reset, or it is sitting in the ROM',
+                '                      bootloader after a flash that did not finish.',
+                '',
+                'Fix, in this order:',
+                '  1. press reset on the board and re-run the probe;',
+                "  2. confirm -Baud is 115200 (this run used $Baud);",
+                '  3. if it is stuck in the bootloader, reflash it:',
+                "       $build",
+                "       $flash") + $guess
+            )
+        }
+        'no_console' {
+            $tail = @()
+            foreach ($l in $R.Tail) { $tail += "                      $l" }
+            $cause = @(
+                '  Most likely cause : the flashed image was built WITHOUT the hil-console',
+                '                      feature. A product image has no console at all, so',
+                '                      every command this gate sends is swallowed and every',
+                '                      answer it waits for never arrives.')
+            if ($R.Hil -gt 0) {
+                $cause = @(
+                    "  Most likely cause : the image DOES carry a console - $($R.Hil) HIL lines came",
+                    '                      back - but its help table did not parse. That is a',
+                    '                      console defect in firmware/src/hil.rs, not a missing',
+                    '                      feature, and this gate will not type wrong PINs at a',
+                    '                      command surface it could not read.')
+            }
+            Stop-Run -Code 'no_console' -ExitCode $EXIT_NO_CONSOLE -Lines (@(
+                "CANNOT DRIVE THE BOARD: $Port answers, and there is no HIL console on it.",
+                '',
+                '  What was missing  : the help table. The command help produced no HIL|help|',
+                "                      line. The board is alive - $($R.Lines) lines arrived - and",
+                '                      none of them came from a console. The last of them:') + $tail + @(
+                '') + $cause + @(
+                '',
+                'Fix - rebuild with the feature and reflash, then probe again:',
+                "    $build",
+                "    $flash",
+                "    .\tools\hil\attempt-overflow-gate.ps1 -Port $Port -Probe") + $guess
+            )
+        }
+        'missing_commands' {
+            Stop-Run -Code 'missing_commands' -ExitCode $EXIT_MISSING_COMMANDS -Lines @(
+                'CANNOT DRIVE THE BOARD: the console is there and does not carry what this gate drives.',
+                '',
+                "  Missing commands  : $($R.Missing -join ', ')",
+                "  This gate needs   : $($NEEDS -join ', ')",
+                "  The device has    : $($R.Have -join ' ')",
+                '',
+                '  Most likely cause : a firmware gap rather than a bench problem. If this',
+                '                      board was flashed from an older tree, reflash it:',
+                "                        $build",
+                "                        $flash",
+                '                      If the commands are absent from firmware/src/hil.rs',
+                '                      altogether, the gate is blocked on firmware and no',
+                '                      amount of bench time closes it.'
+            )
+        }
+    }
+}
+
 if ($DryRun) {
     Write-Output 'DRY RUN - nothing is sent to the board.'
     Write-Output "  port      : $Port at $Baud"
@@ -222,51 +500,96 @@ if ($DryRun) {
     Write-Output ''
     Write-Output '  setpolicy <wipe_after|off> <min_pin_len> <pin>'
     Write-Output '      -> HIL|setpolicy|ok=true|wipe_after=N|min_pin_len=N|policy_gen=N'
-    return
+    Write-Output ''
+    Write-Output 'VERDICT: DRY RUN, nothing was sent, exit 0'
+    exit $EXIT_OK
 }
 
 Write-Log "run $stamp port=$Port attempts=$Attempts bad_pin=$BadPin"
-Write-Log "evidence: $runDir"
+if ($Probe) {
+    Write-Log 'PROBE ONLY - reads the board, types no PIN, sends nothing that changes it'
+    Write-Log "probe log: $transcript"
+} else {
+    Write-Log "evidence: $runDir"
+}
 
-if (-not (Test-PortPresent $Port)) {
-    Write-Log "waiting for $Port - connect the board"
-    if (-not (Wait-PortBack $Port 300000)) { throw "port $Port never appeared" }
+# --- The capability probe, before a single wrong PIN. ---
+$ready = Get-ConsoleReadiness -Name $Port -Rate $Baud -Needs $NEEDS
+if ($ready.Verdict -ne 'ok') { Stop-OnReadiness $ready }
+Write-Log "device exposes $($ready.Have.Count) console commands; all $($NEEDS.Count) this gate needs are present"
+
+if ($Probe) {
+    Write-Loud @(
+        "READY: $Port can be driven for the attempt-overflow gate.",
+        '',
+        "  Console commands present : $($ready.Have.Count)",
+        "  This gate needs          : $($NEEDS -join ', ')",
+        '  All present.',
+        '',
+        'This says the console can be driven. It does NOT say the gate can run: that also',
+        'needs wipe_after=0, which the run itself checks and refuses without. Nothing that',
+        'changes the device was sent, and no evidence directory was created.'
+    )
+    Write-Output "Probe log: $transcript"
+    Write-Output ''
+    Write-Output 'VERDICT: READY, exit 0'
+    exit $EXIT_OK
 }
 
 $records = @()
+# Why the soak ended, when it did not end by finishing its attempts. The summary at the
+# bottom has to be able to say "this stopped at attempt 40 of 136" rather than printing a
+# tidy table that reads like a completed run.
+$stopReason = ''
 $sp = Open-Board $Port $Baud
 try {
     $boot = @()
     $null = Read-Until -Sp $sp -TimeoutMs 12000 -StopOn 'HIL\|(status|boot)' -Lines ([ref]$boot)
     $before = Get-Status $sp
-    if ($null -eq $before) { throw 'no status line: cannot read the policy, so the precondition cannot be checked' }
+    if ($null -eq $before) {
+        # The probe already proved `status` exists on this image, so an unparseable status
+        # line here is a genuine anomaly rather than the wrong firmware. Say which, or the
+        # operator reflashes a board that did not need it.
+        Stop-Run -Code 'no_status_line' -ExitCode $EXIT_REFUSED -Lines @(
+            "REFUSED: $Port has a working console and would not answer status.",
+            '',
+            '  What was missing  : the HIL|status| line, within 4 s of asking.',
+            '  Most likely cause : the console is present - the probe read its help table a',
+            '                      moment ago - so this is the store failing to report, not a',
+            '                      missing feature. A board mid-boot, or a store that cannot',
+            '                      mount, both look like this.',
+            '',
+            'The policy cannot be read, so the precondition below cannot be checked, so this',
+            'gate must not type its first wrong PIN. Read console.log, then re-probe:',
+            '',
+            "    .\tools\hil\attempt-overflow-gate.ps1 -Port $Port -Probe"
+        )
+    }
 
     # --- The precondition. This is the most important check in the file. ---
     $wipeAfter = Get-Field $before 'wipe_after'
     if ($wipeAfter -ne '0') {
-        Write-Log "REFUSED: the device reports wipe_after=$wipeAfter, so the wipe is ENABLED."
-        Write-Log "This run types $Attempts wrong PINs. On this device the wipe would fire at attempt"
-        Write-Log "$wipeAfter and destroy every record. Nothing has been sent."
-        Write-Log ''
-        Write-Log 'The gate needs a wipe-DISABLED device, and no path on the current firmware can'
-        Write-Log 'produce one: Vault::set_policy is the only route to it and neither the UI nor the'
-        Write-Log 'HIL console publishes one. See tools/hil/RUNBOOK.md, "What is blocked and why".'
-        $blocked = Join-Path $runDir 'BLOCKED.txt'
-        @(
-            "refused: wipe_after=$wipeAfter, the wipe is enabled",
+        Stop-Run -Code 'wipe_enabled' -ExitCode $EXIT_REFUSED -Lines @(
+            "REFUSED: the device reports wipe_after=$wipeAfter, so the wipe is ENABLED.",
             '',
-            'This gate requires wipe_after=0. Nothing was sent to the device.',
+            "  What was missing  : the wipe-DISABLED precondition. This gate types $Attempts wrong",
+            "                      PINs; on this device the wipe fires at attempt $wipeAfter and",
+            '                      destroys every record. Not one PIN was sent.',
+            '  Most likely cause : nothing on the current firmware can reach the wipe-disabled',
+            '                      state. Vault::set_policy is the only route to it,',
+            '                      firmware/src/store/mod.rs publishes none, firmware/src/main.rs',
+            '                      refuses UiRequest::SetWipePolicy and says why, and',
+            '                      firmware/src/hil.rs has no setpolicy command.',
             '',
-            'Blocked on a firmware surface, not on the bench: the store publishes no route to',
-            'Vault::set_policy, so the device cannot be put into the wipe-disabled state at all.',
-            'Required console command:',
+            'Fix - this one is firmware, not bench time. The console command that unblocks it:',
             '',
-            '  setpolicy <wipe_after|off> <min_pin_len> <pin>',
-            '      -> HIL|setpolicy|ok=true|wipe_after=N|min_pin_len=N|policy_gen=N'
-        ) | Set-Content -Path $blocked -Encoding utf8
-        Write-Output ''
-        Write-Output "Recorded as a gap, not a run: $blocked"
-        return
+            '    setpolicy <wipe_after|off> <min_pin_len> <pin>',
+            '        -> HIL|setpolicy|ok=true|wipe_after=N|min_pin_len=N|policy_gen=N',
+            '',
+            'See tools/hil/RUNBOOK.md, "What is blocked, and why". Until it lands, what covers',
+            'this property is the host fuzzer Op::RotationOnFailure, which is a different claim',
+            'from hardware and must be written as one.'
+        )
     }
 
     $scanBefore = @()
@@ -316,6 +639,7 @@ try {
         # produce 130 more rows of a store whose authentication has already failed.
         if ($u.ok) {
             Write-Log 'STOP: the WRONG PIN opened the device. Nothing after this point is worth measuring.'
+            $stopReason = "the wrong PIN opened the device at attempt $i - authentication failed, so every row after it would describe a store that is already broken"
             break
         }
 
@@ -405,3 +729,58 @@ Write-Output "Evidence: $recordCsv"
 Write-Output "Console : $transcript"
 Write-Output ''
 Write-Output 'Read this against the m4a exit gate. This script does not declare it passed.'
+
+# --- How the soak ended. Three outcomes, three exit codes, none of them silence. ---
+#
+# This block used to be absent: the table above printed and the script exited zero, whether
+# it had measured 136 attempts or none. "Count continuity: NOT CHECKED - this is not a pass"
+# followed by exit 0 is a sentence that says one thing to a reader and the opposite to
+# anything that reads the exit code, and only one of those two gets read at 2am.
+if ($stopReason) {
+    Write-Loud @(
+        'THE SOAK DID NOT FINISH.',
+        '',
+        "  $stopReason",
+        '',
+        "  Attempts requested : $Attempts",
+        "  Attempts made      : $($rows.Count)",
+        '',
+        'The rows already written are real. The gate is not closed by them: it asks for 128+',
+        'consecutive failures, and this run did not get there.'
+    )
+    Write-Output "VERDICT: STOPPED EARLY after $($rows.Count) of $Attempts attempt(s), exit $EXIT_REFUSED"
+    exit $EXIT_REFUSED
+}
+
+if ($counted.Count -eq 0) {
+    Write-Loud @(
+        'THE SOAK MEASURED NOTHING.',
+        '',
+        "  Attempts made   : $($rows.Count)",
+        '  With a readable count on both sides : 0',
+        '',
+        'Nothing here evidences the rotation path, and the one column this gate exists to',
+        'watch was never read. Not a pass, not a finding - read console.log, then re-probe:',
+        '',
+        "    .\tools\hil\attempt-overflow-gate.ps1 -Port $Port -Probe"
+    )
+    Write-Output "VERDICT: NO EVIDENCE, exit $EXIT_NO_EVIDENCE"
+    exit $EXIT_NO_EVIDENCE
+}
+
+if ($off.Count -gt 0) {
+    Write-Output ''
+    Write-Output "VERDICT: BLOCKING FINDING - the count did not rise by one on attempt(s) $(($off | ForEach-Object { $_.attempt }) -join ', '), exit $EXIT_REFUSED"
+    exit $EXIT_REFUSED
+}
+
+Write-Output ''
+if ($maxFailures -le 128) {
+    Write-Output "VERDICT: INCOMPLETE - $($counted.Count) attempt(s) all continuous, but the highest count"
+    Write-Output "         reached was $maxFailures and the 128-cell boundary was never crossed, so the"
+    Write-Output "         rotation path this gate exists to measure is unmeasured. exit $EXIT_NO_EVIDENCE"
+    exit $EXIT_NO_EVIDENCE
+}
+Write-Output "VERDICT: MEASURED - $($counted.Count) attempt(s), continuous past the 128-cell boundary, exit $EXIT_OK"
+Write-Output '         This is the observation, not a verdict on the gate. A human reads it against m4a.'
+exit $EXIT_OK

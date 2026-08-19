@@ -27,6 +27,33 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Exit codes, shared with the gates. The rule is the same one: a summary that prints
+# "Blocking." or "NOT CHECKED - this is not a pass" and then exits zero is telling a human
+# one thing and any wrapper the opposite, and the wrapper is what gets believed when
+# nobody is reading.
+$EXIT_OK        = 0   # every criterion for this mode was checked and none was blocking
+$EXIT_HARNESS   = 1   # bad arguments, or an unhandled error
+$EXIT_NOT_A_RUN = 2   # the target is a run that never happened
+$EXIT_BLOCKING  = 6   # at least one blocking finding
+$EXIT_UNCHECKED = 7   # at least one criterion had no data behind it
+
+trap {
+    Write-Output ''
+    Write-Output ('=' * 72)
+    Write-Output 'THE SUMMARY DID NOT COMPLETE - unhandled error.'
+    Write-Output ''
+    Write-Output "  $($_.Exception.Message)"
+    Write-Output ('=' * 72)
+    Write-Output ''
+    Write-Output 'VERDICT: NO SUMMARY, exit 1'
+    exit 1
+}
+
+# Every criterion this summary judges lands in exactly one of these before the verdict is
+# printed, appended at the line that prints it so the two cannot drift apart.
+$blocking  = @()
+$unchecked = @()
+
 if (-not $RunDir) {
     if (-not (Test-Path $EvidenceRoot)) { throw "no evidence root at $EvidenceRoot" }
     # The newest run that actually recorded something. A run aborted before its first cut
@@ -39,22 +66,63 @@ if (-not $RunDir) {
                   (Test-Path (Join-Path $_.FullName 'cuts.csv')) -or
                   (Test-Path (Join-Path $_.FullName 'BLOCKED.txt'))
               } | Select-Object -First 1
-    if (-not $newest) { throw "no powercut-* run under $EvidenceRoot has a cuts.csv or a BLOCKED.txt" }
+    if (-not $newest) {
+        # Before complaining that there is nothing to summarise, look for the runs that
+        # refused to start. They are the likeliest reason there is nothing here, and an
+        # operator told only "no run found" goes looking for a path rather than at the
+        # board. aborted-* is where the gates put a run that did not happen.
+        $aborted = Get-ChildItem $EvidenceRoot -Directory -Filter 'aborted-*' |
+                   Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($aborted) {
+            Write-Output ''
+            Write-Output 'NOTHING TO SUMMARISE - the most recent thing here is a run that did not happen.'
+            Write-Output ('=' * 72)
+            Write-Output ''
+            Write-Output "  $($aborted.FullName)"
+            Write-Output ''
+            $abortNote = Join-Path $aborted.FullName 'NOT-A-RUN.txt'
+            if (Test-Path $abortNote) { Get-Content $abortNote | ForEach-Object { Write-Output "  $_" } }
+            Write-Output ''
+            Write-Output 'Fix whatever that says, run the gate again, then come back here.'
+            Write-Output ''
+            Write-Output "VERDICT: NOT A RUN, exit $EXIT_NOT_A_RUN"
+            exit $EXIT_NOT_A_RUN
+        }
+        throw "no powercut-* run under $EvidenceRoot has a cuts.csv or a BLOCKED.txt"
+    }
     $RunDir = $newest.FullName
+}
+
+# An explicit -RunDir can still point at a run that never happened, and that has to be said
+# rather than answered with a bare "no cuts.csv".
+$notARun = Join-Path $RunDir 'NOT-A-RUN.txt'
+if (Test-Path $notARun) {
+    Write-Output ''
+    Write-Output "THIS IS NOT A RUN - $RunDir"
+    Write-Output ('=' * 72)
+    Write-Output ''
+    Get-Content $notARun | ForEach-Object { Write-Output $_ }
+    Write-Output ''
+    Write-Output 'Nothing was cut, so there is nothing to summarise and no exit criterion this'
+    Write-Output 'directory speaks to.'
+    Write-Output ''
+    Write-Output "VERDICT: NOT A RUN, exit $EXIT_NOT_A_RUN"
+    exit $EXIT_NOT_A_RUN
 }
 
 $blocked = Join-Path $RunDir 'BLOCKED.txt'
 if (Test-Path $blocked) {
-    # A blocked run is not an empty run, and it must not be summarised as one. The harness
-    # writes this file when the firmware does not expose what the mode drives; the gate is
-    # outstanding for a reason that has nothing to do with the bench.
+    # A blocked run is not an empty run, and it must not be summarised as one. The gate is
+    # outstanding for a reason that has nothing to do with the bench. (Newer runs write
+    # NOT-A-RUN.txt instead; this arm reads the directories from before that change.)
     Write-Output ''
     Write-Output "This run was BLOCKED before anything was cut - $RunDir"
     Write-Output ('=' * 72)
     Write-Output ''
     Get-Content $blocked | ForEach-Object { Write-Output $_ }
     Write-Output ''
-    return
+    Write-Output "VERDICT: NOT A RUN, exit $EXIT_NOT_A_RUN"
+    exit $EXIT_NOT_A_RUN
 }
 
 $csv = Join-Path $RunDir 'cuts.csv'
@@ -113,15 +181,18 @@ if ($noStatus.Count -eq 0) {
     Write-Output "  Remount after cut   : all $detected cuts remounted and answered status."
 } else {
     Write-Output "  Remount after cut   : $($noStatus.Count) cut(s) produced NO status after the cut - cuts $(($noStatus | ForEach-Object { $_.cut }) -join ', ')"
+    $blocking += "$($noStatus.Count) cut(s) produced no status after the cut"
 }
 
 $epochComparable = @($rows | Where-Object { $_.epoch_before -ne '' -and $_.epoch_after -ne '' })
 if ($epochComparable.Count -eq 0) {
     Write-Output '  Epoch stability     : NOT CHECKED - no row carried both epoch values.'
+    $unchecked += 'epoch stability'
 } elseif ($epochChanges.Count -eq 0) {
     Write-Output "  Epoch stability     : no epoch change across $($epochComparable.Count) comparable cut(s). No cut triggered a wipe."
 } else {
     Write-Output "  Epoch stability     : EPOCH CHANGED on cut(s) $(($epochChanges | ForEach-Object { $_.cut }) -join ', ') - a cut caused a wipe or an epoch bump. Investigate before claiming the gate."
+    $blocking += 'the epoch changed across a cut'
 }
 
 # A check with no data is not a passing check. The first run of this gate recorded
@@ -132,10 +203,12 @@ $seqComparable = @($rows | Where-Object { $_.next_seq_before -ne '' -and $_.next
 if ($seqComparable.Count -eq 0) {
     Write-Output '  Ledger monotonicity : NOT CHECKED - no row carried both next_seq values.'
     Write-Output '                        This is not a pass. The sequence property is unverified.'
+    $unchecked += 'ledger monotonicity'
 } elseif ($seqRegressions.Count -eq 0) {
     Write-Output "  Ledger monotonicity : next_seq never went backwards across $($seqComparable.Count) comparable cut(s). No committed record was lost."
 } else {
     Write-Output "  Ledger monotonicity : next_seq REGRESSED on cut(s) $(($seqRegressions | ForEach-Object { $_.cut }) -join ', ') - records were lost. This is a blocking finding."
+    $blocking += 'next_seq regressed - committed records were lost'
 }
 
 $bootCounts = @($rows | Where-Object { $_.boot_count_after -match '\d' })
@@ -157,6 +230,7 @@ if ($mode -eq 'pin') {
     if ($probed.Count -eq 0) {
         Write-Output '  Which PIN opens     : NOT CHECKED - no row recorded a post-cut PIN probe.'
         Write-Output '                        This is not a pass. The whole gate is unverified.'
+        $unchecked += 'which PIN opens the device after a cut'
     } else {
         $both = @($probed | Where-Object { $_.pin_after -eq 'BOTH' })
         $none = @($probed | Where-Object { $_.pin_after -eq 'NEITHER' })
@@ -169,10 +243,12 @@ if ($mode -eq 'pin') {
         if ($both.Count -gt 0) {
             Write-Output "  Which PIN opens     : BOTH PINs opened the device after cut(s) $(($both | ForEach-Object { $_.cut }) -join ', ')."
             Write-Output '                        Two live sealing keys for one store. Blocking.'
+            $blocking += 'both PINs opened the device after a cut'
         }
         if ($none.Count -gt 0) {
             Write-Output "  Which PIN opens     : NEITHER PIN opened the device after cut(s) $(($none | ForEach-Object { $_.cut }) -join ', ')."
             Write-Output '                        The store is unreachable with either PIN. Blocking.'
+            $blocking += 'neither PIN opened the device after a cut'
         }
     }
     $digest = @($rows | Where-Object { $_.payload_sha_before -ne '' -and $_.payload_sha_after -ne '' })
@@ -180,6 +256,7 @@ if ($mode -eq 'pin') {
     if ($digest.Count -eq 0) {
         Write-Output '  Record survival     : NOT CHECKED - no row carried a payload digest on both sides.'
         Write-Output '                        "no record may be lost" is unverified by this run.'
+        $unchecked += 'record survival across a PIN change'
     } elseif ($moved.Count -eq 0) {
         Write-Output "  Record survival     : the slot's SHA-256 was identical before and after across"
         Write-Output "                        $($digest.Count) cut(s). The record was re-sealed under the surviving"
@@ -187,10 +264,12 @@ if ($mode -eq 'pin') {
     } else {
         Write-Output "  Record survival     : the payload digest CHANGED on cut(s) $(($moved | ForEach-Object { $_.cut }) -join ', ')."
         Write-Output '                        A record was lost or altered by the cut. Blocking.'
+        $blocking += 'a payload digest changed across a cut'
     }
     $unread = @($rows | Where-Object { $_.payload_ok_before -eq 'True' -and $_.payload_ok_after -ne 'True' })
     if ($unread.Count -gt 0) {
         Write-Output "  Readback            : the slot read before the cut and NOT after, on cut(s) $(($unread | ForEach-Object { $_.cut }) -join ', ')."
+        $blocking += 'a record read before a cut and not after it'
     }
     Write-Output ''
     Write-Output '  Note: the stale-ciphertext half of the same exit-gate clause - "a PIN change'
@@ -207,6 +286,7 @@ if ($mode -eq 'attempt') {
     if ($counted.Count -eq 0) {
         Write-Output '  Count continuity    : NOT CHECKED - no row carried the count on both sides.'
         Write-Output '                        This is not a pass. The decrement property is unverified.'
+        $unchecked += 'attempt-count continuity'
     } else {
         $lost   = @($counted | Where-Object { [int]$_.failures_after -lt [int]$_.failures_before })
         $double = @($counted | Where-Object { [int]$_.failures_after -gt ([int]$_.failures_before + 1) })
@@ -217,9 +297,11 @@ if ($mode -eq 'attempt') {
         if ($lost.Count -gt 0) {
             Write-Output "                        WENT BACKWARDS on cut(s) $(($lost | ForEach-Object { $_.cut }) -join ', '). Blocking:"
             Write-Output '                        a lost count is a free guess for whoever pulled the power.'
+            $blocking += 'the attempt count went backwards across a cut'
         }
         if ($double.Count -gt 0) {
             Write-Output "                        COUNTED MORE THAN ONCE on cut(s) $(($double | ForEach-Object { $_.cut }) -join ', ')."
+            $blocking += 'one attempt was counted more than once'
         }
         if ($lost.Count -eq 0 -and $double.Count -eq 0) {
             Write-Output '                        No count was lost and none was charged twice.'
@@ -238,6 +320,7 @@ if ($mode -eq 'attempt') {
     } else {
         Write-Output "  Completed attempts  : cut(s) $(($uncharged | ForEach-Object { $_.cut }) -join ', ') completed the unlock and lost the count."
         Write-Output '                        That is an uncounted verification. Blocking.'
+        $blocking += 'a completed attempt was not counted'
     }
     $cleared = @($rows | Where-Object { $_.failures_after_clear -match '^\d+$' })
     $notCleared = @($cleared | Where-Object { [int]$_.failures_after_clear -ne 0 })
@@ -246,6 +329,7 @@ if ($mode -eq 'attempt') {
             Write-Output "  Success clears      : the correct PIN reset the count to 0 after all $($cleared.Count) cut(s)."
         } else {
             Write-Output "  Success clears      : the count did NOT reset on cut(s) $(($notCleared | ForEach-Object { $_.cut }) -join ', ')."
+            $blocking += 'a correct PIN did not clear the attempt count'
         }
     }
     $phases = @($rows | Where-Object { $_.cut_phase -ne '' }) | Group-Object cut_phase |
@@ -285,12 +369,14 @@ if ($mode -eq 'policy') {
         Write-Output "                        NOT COVERED: $($missing -join ', '). The exit gate asks for a cut"
         Write-Output '                        at each of the seven steps, so it is not closed yet. Run more'
         Write-Output '                        cuts, or widen the delay window to reach the later steps.'
+        $unchecked += "SET-POLICY step coverage ($($missing -join ', ') took no cut)"
     }
     $weaker = @($rows | Where-Object { $_.flags -match 'policy_weaker_than_both' })
     $odd    = @($rows | Where-Object { $_.flags -match 'policy_value_unexpected' })
     $effective = @($rows | Where-Object { $_.wipe_after_after -match '^\d+$' })
     if ($effective.Count -eq 0) {
         Write-Output '  Effective policy    : NOT CHECKED - no row read a wipe threshold after the cut.'
+        $unchecked += 'the effective policy after a cut'
     } elseif ($weaker.Count -eq 0 -and $odd.Count -eq 0) {
         $vals = ($effective | Group-Object wipe_after_after | ForEach-Object { "$($_.Name) x$($_.Count)" }) -join ', '
         Write-Output "  Effective policy    : after every cut the threshold was one of the two values in"
@@ -298,19 +384,23 @@ if ($mode -eq 'policy') {
     } else {
         if ($weaker.Count -gt 0) {
             Write-Output "  Effective policy    : WEAKER THAN BOTH values on cut(s) $(($weaker | ForEach-Object { $_.cut }) -join ', '). Blocking."
+            $blocking += 'the effective policy was weaker than both values in play'
         }
         if ($odd.Count -gt 0) {
             Write-Output "  Effective policy    : a value neither side asked for on cut(s) $(($odd | ForEach-Object { $_.cut }) -join ', ')."
+            $blocking += 'the effective policy was a value neither side asked for'
         }
     }
     $genRows = @($rows | Where-Object { $_.policy_gen_before -match '^\d+$' -and $_.policy_gen_after -match '^\d+$' })
     $genBack = @($genRows | Where-Object { [int]$_.policy_gen_after -lt [int]$_.policy_gen_before })
     if ($genRows.Count -eq 0) {
         Write-Output '  Policy generation   : NOT CHECKED - no row carried policy_gen on both sides.'
+        $unchecked += 'policy generation monotonicity'
     } elseif ($genBack.Count -eq 0) {
         Write-Output "  Policy generation   : never went backwards across $($genRows.Count) comparable cut(s)."
     } else {
         Write-Output "  Policy generation   : REGRESSED on cut(s) $(($genBack | ForEach-Object { $_.cut }) -join ', '). Blocking."
+        $blocking += 'policy_gen regressed'
     }
     $floor = @($rows | Where-Object { $_.min_pin_len_after -match '^\d+$' })
     if ($floor.Count -eq 0) {
@@ -320,6 +410,7 @@ if ($mode -eq 'policy') {
         Write-Output '                        characters and the UI must never enforce more than the'
         Write-Output '                        store does, which makes this worth reporting rather than'
         Write-Output '                        dropping.'
+        $unchecked += 'the PIN floor after a cut (status does not report min_pin_len)'
     }
 }
 
@@ -343,3 +434,38 @@ if ($flagged -gt 0) {
     }
     Write-Output ''
 }
+
+# --- The verdict line, which is still not a verdict on the gate. ---
+#
+# This script refuses to print PASS, and that refusal is right: a human reads these numbers
+# against the m4a exit criteria. But refusing to judge is not the same as having nothing to
+# say, and it used to exit zero whether it had printed "Blocking." twelve times or nothing
+# at all. What follows is a statement about THE DATA - was every criterion checked, and did
+# any check come back bad - which the script can answer without deciding whether the
+# milestone is closed.
+if ($blocking.Count -gt 0) {
+    Write-Output 'BLOCKING FINDINGS in this run:'
+    foreach ($b in $blocking) { Write-Output "  - $b" }
+    Write-Output ''
+    if ($unchecked.Count -gt 0) {
+        Write-Output 'and these criteria had no data behind them:'
+        foreach ($u in $unchecked) { Write-Output "  - $u" }
+        Write-Output ''
+    }
+    Write-Output "VERDICT: BLOCKING FINDINGS, exit $EXIT_BLOCKING"
+    Write-Output '         The milestone note must not be written around this run.'
+    exit $EXIT_BLOCKING
+}
+if ($unchecked.Count -gt 0) {
+    Write-Output 'NOT CHECKED by this run - each of these had no data behind it, and an absent'
+    Write-Output 'check is not a passing check:'
+    foreach ($u in $unchecked) { Write-Output "  - $u" }
+    Write-Output ''
+    Write-Output "VERDICT: INCOMPLETE, exit $EXIT_UNCHECKED"
+    Write-Output '         No blocking finding, and not enough data to claim the gate either.'
+    exit $EXIT_UNCHECKED
+}
+Write-Output "VERDICT: EVERY CRITERION CHECKED, NONE BLOCKING, exit $EXIT_OK"
+Write-Output '         That is a statement about the data, not about the gate. Read the numbers'
+Write-Output '         above against the m4a exit criteria and decide that yourself.'
+exit $EXIT_OK

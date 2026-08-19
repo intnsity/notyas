@@ -30,21 +30,68 @@ Board B is the only eFuse-provisioned unit on the bench. **Nothing in this runbo
 it into a wipe.** The harness enforces that (see "The wipe rail"), but the rule is yours,
 not the tool's.
 
-## Before the first run
+## Step 1 - prove the board can be driven, before anything else
 
-The board must be running a `hil-console` image. A product image has no console and every
-command below fails silently in the same way.
+**This is the first thing you type, every session, before any gate.** It takes about
+twenty seconds, it cuts nothing and changes nothing on the device, and it is the only step
+that distinguishes a board that is ready from a board that will swallow every command you
+send it for the next hour.
 
 ```
-# Board B (real key, no emulation feature)
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\hil\power-cut-gate.ps1 `
+    -Port COM6 -Mode attempt -Probe
+```
+
+Use the `-Mode` you are about to run: each mode drives different console commands, and the
+probe checks the ones that mode needs. On board A it is `-Port COM3 -Mode seal -Probe`.
+
+A ready board prints, and exits 0:
+
+```
+READY: COM6 can be driven for -Mode attempt.
+  Console commands present : 27
+  This mode needs          : unlock, lock, status, scan
+  All present.
+```
+
+Anything else is a refusal, printed in a banner you cannot scroll past, naming what was
+missing, the most likely cause, and the command that fixes it. There are four, and they
+want four different things from you:
+
+| Verdict | Exit | What it means | What you do |
+|---|---|---|---|
+| `port_absent` | 2 | The port never enumerated, or would not open. | Cable, board power, or the wrong COM name. The refusal lists the ports that ARE present. |
+| `silent` | 3 | The port opened and not one byte came back. | Wrong baud, board held in reset, or the ROM bootloader after a flash that did not finish. Press reset; if that fails, reflash. |
+| `no_console` | 4 | The board talks - banner, heartbeats - and `help` produced no `HIL\|help\|` line. | **The image was built without `hil-console`.** Rebuild and reflash, below. |
+| `missing_commands` | 5 | The console answered and does not carry what this mode drives. | A firmware gap, not a bench problem. The refusal names the missing commands. |
+
+`no_console` is the one that has already cost an evening on this bench: on 2026-08-19 board
+B was flashed with a product image, the gate probed `help`, read back nothing but
+heartbeats, printed two lines and exited 0. It looked like a run. Nothing had happened. The
+fix, and what the refusal now prints at you:
+
+```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Board elecrow-5 --features hil-console
-
-# Board A (emulated key)
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Board waveshare-4b --features hil-console,unsafe-emulated-key
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\flash.ps1 -Board elecrow-5 -Port COM6
 ```
 
-Smoke check before you spend an evening on cuts. Open the port in any serial terminal at
-115200 and type `status`, then `help`. Two things to read:
+Board A takes the emulated key as well:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\build.ps1 -Board waveshare-4b --features hil-console,unsafe-emulated-key
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\flash.ps1 -Board waveshare-4b -Port COM3
+```
+
+The attempt-overflow gate has the same switch, and reports on its own precondition too:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\hil\attempt-overflow-gate.ps1 -Port COM6 -Probe
+```
+
+## Step 2 - two things the probe cannot check
+
+The probe answers "can this console be driven". It does not answer "is this the right board
+in the right state". Open the port in any serial terminal at 115200 and type `status`:
 
 - `provenance=EfuseReadProtected` on board B. If it says `Emulated`, you are on the wrong
   image or the wrong board and every result would be about the wrong ladder.
@@ -52,13 +99,35 @@ Smoke check before you spend an evening on cuts. Open the port in any serial ter
   to clear it before starting. A run that begins at `failures=12` will stop itself three
   cuts later, which is correct behaviour and a waste of your evening.
 
-Every harness below takes `-DryRun`, which sends nothing to the board and prints exactly
-what the run would do. Use it once per mode to confirm the port and the PIN before the
-first pull.
+Every harness below also takes `-DryRun`, which sends nothing to the board and prints
+exactly what the run would do. Use it once per mode to confirm the port and the PIN before
+the first pull.
+
+## What the exit codes mean
+
+Every gate here ends with a `VERDICT:` line and an exit code that agrees with it. There is
+no path out of any of them that ends quietly - that was the 2026-08-19 defect, and the
+codes are how a wrapper, or you the next morning, can tell a run from a refusal.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Ready, or the run completed and recorded cuts. |
+| 1 | Harness error - bad arguments, or an unhandled exception. Not a device finding. |
+| 2 | The port was absent or would not open. |
+| 3 | The port opened and the board said nothing at all. |
+| 4 | The board answers and carries no HIL console (wrong image). |
+| 5 | The console lacks the commands this gate drives (firmware gap). |
+| 6 | A rail, a precondition, or a blocking finding ended the run early. |
+| 7 | The run ended having recorded nothing usable. Not a pass. |
+
+`summarize-cuts.ps1` uses 2 for "this is not a run", 6 for "blocking findings", and 7 for
+"at least one criterion had no data behind it".
 
 **The gates below are in the order to run them.** They are independent, but a `pin` run can
 leave the board on PIN 5678 and every other command in this file defaults to 1234, so the
-counter gate goes first and you never have to remember which PIN the board is on.
+counter gate goes first and you never have to remember which PIN the board is on. Each one
+runs the same capability probe as step 1 before its first cut, so a board that stopped
+answering between steps refuses at the start rather than twenty minutes in.
 
 ## Gate 1 - board B, cut during the attempt counter
 
@@ -215,7 +284,7 @@ inside the AEAD, so committing it is a re-seal and needs the PIN, which that req
 not carry), and `firmware/src/hil.rs` has no `setpolicy` command.
 
 The harness is written and waiting. It probes `help` before the first cut and refuses with
-a `BLOCKED.txt` rather than cutting into a console that rejects every line:
+exit 5 and a `NOT-A-RUN.txt` rather than cutting into a console that rejects every line:
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\hil\power-cut-gate.ps1 `
@@ -262,9 +331,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\hil\attempt-overflow-g
     -Port COM6 -DryRun
 ```
 
-It refuses to send a single wrong PIN unless the device reports `wipe_after=0`. That check
-is the most important line in the file: on a wipe-enabled board this run destroys every
-record at attempt 15. When the firmware can disable the wipe, the real run is
+It refuses to send a single wrong PIN unless the device reports `wipe_after=0`, and that
+refusal exits 6 rather than returning quietly. That check is the most important line in the
+file: on a wipe-enabled board this run destroys every record at attempt 15. When the
+firmware can disable the wipe, the real run is
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\hil\attempt-overflow-gate.ps1 `
@@ -296,13 +366,27 @@ a check that passed from a check that had no data: "NOT CHECKED" is printed wher
 column was empty, and it is not a pass. If you see it, the property is unverified and the
 milestone note must not claim it.
 
+It still refuses to print PASS, and its closing `VERDICT:` line is a statement about the
+DATA rather than about the gate: exit 6 if any check came back blocking, exit 7 if any
+criterion had no data behind it, exit 0 only when every criterion for that mode was checked
+and none was blocking. Deciding whether m4a is closed is still yours.
+
 Evidence lands in `C:\nb\hil\powercut-<mode>-<stamp>\`, or `overflow-<stamp>\` for the
 attempt-overflow gate, whose per-attempt records are `attempts.csv`:
 
 - `cuts.csv` - one row per cut, the machine-readable record
 - `cuts.json` - the same rows
 - `console.log` - the full transcript, every line sent and received
-- `BLOCKED.txt` - present only when the firmware could not drive that mode
+- `BLOCKED.txt` - only in directories written before 2026-08-19; superseded by the below
+
+**A gate that refused to start does not leave a `powercut-*` directory at all.** It renames
+it to `aborted-powercut-<mode>-<stamp>` and drops a `NOT-A-RUN.txt` in it carrying the
+refusal verbatim. The same happens to `overflow-*` and `e2e-*`. That is deliberate: the
+transcript is the proof of what the board actually said and is worth keeping, but a
+directory named like a run, containing a console log and no `cuts.csv`, is exactly what got
+read as a result on 2026-08-19. Deleting it would destroy the one artifact that identifies
+the fault; leaving it in the run namespace would repeat the mistake. `summarize-cuts.ps1`
+reads `aborted-*` too and refuses to summarise one, with exit 2.
 
 It is local by design. The harness refuses a UNC `-OutDir`: the tree on the NAS is
 canonical, and machine-specific test output does not belong in it.
@@ -340,8 +424,9 @@ on the other side of that number is every record on the only provisioned unit yo
 | `CUT n FAILED (harness error, not a device finding)` | Serial-port transient, usually a board re-enumerating after re-power. | Recorded as a flagged row, excluded from the pass count. The run continues by itself. |
 | `readback attempt 1 of 3 failed` | The port opened and then died on first use. | It retries twice more. Only a third failure gives up on that cut. |
 | `waiting for COM6 - reseat the connector` | The port has not come back. | Reseat it. There is a five minute window. |
-| `neither PIN opened the device` | Blocking finding, and the run ends. | Leave the board alone and read `console.log` before touching it. |
-| Console answers nothing at all | Wrong image (no `hil-console`) or wrong port. | Check `status` in a terminal before spending another pull. |
+| `neither PIN opened the device` | Blocking finding, and the run ends, exit 6. | Leave the board alone and read `console.log` before touching it. |
+| `CANNOT DRIVE THE BOARD` banner | The capability probe refused. The banner names which of the four it is. | Do what the banner says. It prints the exact build and flash commands for this port. |
+| A gate that printed two lines and returned | Should now be impossible. If you ever see it again, that is a defect in this harness, not in the board. | Check the exit code with `$LASTEXITCODE`; every completed path prints a `VERDICT:` line. |
 
 A flagged row is not a failed gate and a harness error is not a device finding. Both are
 recorded rather than hidden, and both are excluded from the counts, because a run that
