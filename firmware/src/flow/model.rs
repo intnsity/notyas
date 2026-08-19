@@ -380,6 +380,23 @@ const FEE_RATE_WARN: u64 = 500;
 /// Outputs past which a transaction is worth calling large (S-30's edge state).
 const MANY_OUTPUTS: usize = 10;
 
+/// Reused addresses written out one by one before the remainder is counted together.
+///
+/// A bound on the PAGE, not on the check. The check sees every duplicate; past this many
+/// distinct reused addresses the page stops naming them individually and states how many
+/// more there are, because a warnings page with a hundred numbered entries on it is a page
+/// nobody reads - and unread warnings are the failure this screen exists to prevent.
+/// `StructuralLimits::max_outputs` is 255, so 127 distinct addresses can each be paid twice
+/// in one legal transaction.
+const DUPLICATE_SCRIPTS_NAMED: usize = 4;
+
+/// Output numbers written out inside one warning before the remainder is counted.
+///
+/// The same bound one level down: 255 outputs paying one address would otherwise put a
+/// 1 KB list of numbers in a headline. The count is always exact and every output has its
+/// own review page, so nothing is hidden by shortening the list.
+const DUPLICATE_OUTPUTS_NAMED: usize = 8;
+
 /// Everything legal but notable about this transaction, numbered by the screen.
 ///
 /// A predicate over ONE review and nothing else, which is the rule S-35 states: this device
@@ -465,15 +482,93 @@ fn unproven_warning(review: &TxReview, out: &mut Vec<TxWarning>) {
 /// Decided by comparing the outputs against each other, which is all one inspection holds.
 /// Reuse against a wallet's PAST is a statement about history, and an airgapped signer has
 /// none.
+///
+/// One warning per reused ADDRESS, never one per pair. The pairwise form this replaces was
+/// quadratic in the thing an attacker chooses. At the structural limit of 255 outputs, all
+/// paying one address, it built a heap-allocated warning for each of the 32,385 PAIRS -
+/// 64,786 allocations and 7 MB, measured - which the review screen then rebuilt as rows on
+/// every frame. Grouping is the honest shape as well as the cheap one: "outputs 3, 9 and 40
+/// pay the same address" is the fact, and the pairs were only ever a way of spelling it.
+///
+/// Nothing is dropped when the bounds bite. Both of them replace names with an exact count,
+/// so a transaction with a hundred reused addresses still says a hundred; on a signing
+/// device a warning that quietly disappears is worse than any amount of slowness.
 fn duplicate_output_warning(review: &TxReview, out: &mut Vec<TxWarning>) {
-    for (i, a) in review.outputs.iter().enumerate() {
-        for b in review.outputs.iter().skip(i + 1) {
-            if a.script_pubkey == b.script_pubkey {
-                out.push(TxWarning {
-                    headline: format!("Outputs {} and {} pay the same address.", a.index, b.index),
-                    detail: String::from("This transaction pays it twice; check that is intended."),
-                });
-            }
+    // Equal scripts brought next to each other, so the groups can be read off in one walk.
+    // A sort rather than a map: this is `no_std`-shaped code with at most 255 outputs of at
+    // most 34 script bytes, where an ordering beats hashing on both size and dependencies.
+    let mut order: Vec<usize> = (0..review.outputs.len()).collect();
+    order.sort_unstable_by(|a, b| {
+        review.outputs[*a].script_pubkey.cmp(&review.outputs[*b].script_pubkey)
+    });
+
+    let mut named = 0usize;
+    let mut unnamed_scripts = 0usize;
+    let mut unnamed_outputs = 0usize;
+    let mut start = 0usize;
+    while start < order.len() {
+        let script = &review.outputs[order[start]].script_pubkey;
+        let mut end = start + 1;
+        while end < order.len() && review.outputs[order[end]].script_pubkey == *script {
+            end += 1;
+        }
+        let group = &order[start..end];
+        start = end;
+        if group.len() < 2 {
+            continue;
+        }
+        if named < DUPLICATE_SCRIPTS_NAMED {
+            named += 1;
+            // The transaction's own numbering, because that is what the output pages are
+            // titled with and what the user will go and look at.
+            let mut indices: Vec<u16> = group.iter().map(|i| review.outputs[*i].index).collect();
+            indices.sort_unstable();
+            out.push(TxWarning {
+                headline: format!(
+                    "Outputs {} pay the same address.",
+                    output_list(&indices, DUPLICATE_OUTPUTS_NAMED)
+                ),
+                detail: format!(
+                    "This transaction pays that address {} times; check that is intended. \
+                     Every one of those outputs has its own page.",
+                    indices.len()
+                ),
+            });
+        } else {
+            unnamed_scripts += 1;
+            unnamed_outputs += group.len();
+        }
+    }
+
+    if unnamed_scripts > 0 {
+        out.push(TxWarning {
+            headline: format!("{unnamed_scripts} more addresses are each paid more than once."),
+            detail: format!(
+                "{unnamed_outputs} outputs pay them, beyond the {DUPLICATE_SCRIPTS_NAMED} \
+                 addresses named above. Every duplicate this device found is counted here, \
+                 and every output has its own page."
+            ),
+        });
+    }
+}
+
+/// Output numbers as a sentence fragment: "0 and 1", "0, 1 and 2", "0, 1 and 253 more".
+///
+/// The tail is a COUNT and not an ellipsis. A list that trails off tells the reader the
+/// device stopped looking; a list that ends in "and 253 more" tells them exactly what it
+/// found and that the page is only shortening the way it is said.
+fn output_list(indices: &[u16], named: usize) -> String {
+    let mut parts: Vec<String> = indices.iter().take(named).map(|i| i.to_string()).collect();
+    let rest = indices.len() - parts.len();
+    if rest > 0 {
+        parts.push(format!("{rest} more"));
+    }
+    match parts.len() {
+        0 => String::new(),
+        1 => parts.swap_remove(0),
+        _ => {
+            let last = parts.pop().expect("two or more parts");
+            format!("{} and {last}", parts.join(", "))
         }
     }
 }

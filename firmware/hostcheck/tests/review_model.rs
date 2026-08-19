@@ -351,6 +351,89 @@ fn two_outputs_paying_the_same_address_are_named() {
     assert!(fires(&review, "Outputs 0 and 1 pay the same address"), "{:?}", headlines(&review));
 }
 
+/// The structural limit, all of it paying one address: ONE warning, not 32,385.
+///
+/// The bound this pins is on the attacker's side of the wire. `StructuralLimits` lets a
+/// file carry 255 outputs, the reader of that file chooses every one of them, and the
+/// pairwise scan this replaces built a heap-allocated warning per PAIR: 32,385 of them,
+/// 64,786 allocations and 7 MB, measured, on a device whose RAM is a fixed budget - and
+/// then the review screen turned all of it into rows on every frame.
+///
+/// Broken version this fails against: the pairwise `for i / for j.skip(i + 1)` scan that
+/// pushed one warning per matching pair. Every assertion below trips - 32,385 duplicate
+/// warnings instead of one, and no count of how many outputs share the address.
+#[test]
+fn two_hundred_and_fifty_five_identical_outputs_are_one_warning() {
+    let mut review = plain();
+    review.outputs = (0..255u16)
+        .map(|i| output(i, 100_000, ScriptKind::P2wpkh, OutputRole::Payment))
+        .collect();
+
+    let warnings = model::warnings(&review);
+    let dups: Vec<&String> = warnings
+        .iter()
+        .map(|w| &w.headline)
+        .filter(|h| h.contains("pay the same address"))
+        .collect();
+    assert_eq!(dups.len(), 1, "one reused address is one warning: {dups:?}");
+    assert_eq!(
+        dups[0], "Outputs 0, 1, 2, 3, 4, 5, 6, 7 and 247 more pay the same address.",
+        "the list is shortened and the remainder is counted, never dropped"
+    );
+    // The count is the fact the shortened list must not cost the reader.
+    assert!(
+        warnings.iter().any(|w| w.detail.contains("pays that address 255 times")),
+        "{:?}",
+        warnings.iter().map(|w| &w.detail).collect::<Vec<_>>()
+    );
+    assert!(
+        warnings.len() <= 8,
+        "the whole warnings page has to stay readable: {} entries",
+        warnings.len()
+    );
+}
+
+/// A reused address the page does not have room to NAME is still counted.
+///
+/// 127 addresses each paid twice is the other end of the same structural limit, and the
+/// bound on how many are written out one by one is the bound most likely to be mistaken for
+/// permission to forget the rest. It is not: the page names four and states the exact number
+/// of addresses and outputs behind them, because on a signing device a warning that quietly
+/// disappears is worse than any amount of slowness.
+///
+/// Broken version this fails against: drop the summary warning, or count anything but the
+/// groups that were not named. The arithmetic below stops adding up to 127.
+#[test]
+fn a_reused_address_the_page_cannot_name_is_still_counted() {
+    let mut review = plain();
+    review.outputs = (0..254u16)
+        .map(|i| {
+            let mut o = output(i, 100_000, ScriptKind::P2wpkh, OutputRole::Payment);
+            // A script of its own per PAIR - lengths 22..148, all distinct - so the file
+            // holds 127 reused addresses rather than one.
+            o.script_pubkey = spk(22 + usize::from(i) / 2);
+            o
+        })
+        .collect();
+
+    let warnings = model::warnings(&review);
+    let named = warnings.iter().filter(|w| w.headline.contains("pay the same address")).count();
+    assert_eq!(named, 4, "{:?}", warnings.iter().map(|w| &w.headline).collect::<Vec<_>>());
+    let rest = warnings
+        .iter()
+        .find(|w| w.headline.contains("addresses are each paid more than once"))
+        .expect("the reused addresses that were not named are counted out loud");
+    assert_eq!(rest.headline, "123 more addresses are each paid more than once.");
+    assert!(rest.detail.starts_with("246 outputs pay them"), "{}", rest.detail);
+    // 4 named + 123 counted is every one of the 127, and 8 + 246 is every one of the 254
+    // outputs involved. Nothing fell between the two.
+    assert!(
+        warnings.len() <= 8,
+        "the whole warnings page has to stay readable: {} entries",
+        warnings.len()
+    );
+}
+
 /// An output of ours on the receive keychain is money SENT, and the page says so.
 #[test]
 fn a_self_send_is_not_quietly_netted_out() {

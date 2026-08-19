@@ -69,6 +69,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::cell::Cell as CoreCell;
+use core::cell::RefCell;
 
 use embedded_graphics::draw_target::{DrawTarget, DrawTargetExt};
 use embedded_graphics::pixelcolor::Rgb565;
@@ -558,6 +559,39 @@ pub(crate) struct ReviewState {
     /// what makes rebuilding it sound rather than merely convenient.
     leaving: CoreCell<bool>,
     phase: Phase,
+    /// The page on the panel, built into rows and measured, for every caller in the frame.
+    ///
+    /// Not an optimisation bolted on top: it is the only place the row set exists. Every
+    /// caller in a frame needs it - `regions` and `draw` each through `layout`, `draw` again
+    /// to paint, and the scroll clamp while a finger is down - and each of them used to
+    /// build every row and measure every height from scratch. On the warnings page of a file
+    /// with 255 outputs paying one address, one `draw` alone measured 2.9 million
+    /// allocations and 162 ms on a host far faster than the panel.
+    ///
+    /// Keyed on everything a row set is a function of rather than invalidated by hand:
+    /// which page, how many pages remain unseen (the warnings page prints that), and the
+    /// width and gap `Row::height` measures against. A key cannot be forgotten by a future
+    /// mutation the way an `invalidate()` call can, and a stale review page is a user
+    /// deciding on numbers that are not there.
+    rows: RefCell<Option<PageRows>>,
+    /// How many row sets this screen has ever built, for the test that pins one build to a
+    /// frame. Test-only because the invariant is the only thing it can be used for.
+    #[cfg(test)]
+    builds: CoreCell<usize>,
+}
+
+/// One page, built and measured once.
+struct PageRows {
+    page: usize,
+    unseen: usize,
+    width: i32,
+    gap: i32,
+    rows: Vec<Row>,
+    /// `rows[i].height(m, width)`, in step with `rows`, so painting walks the measurement
+    /// the scroll clamp was computed from instead of a second one that could disagree.
+    heights: Vec<i32>,
+    /// Their sum: the content height the scroll limit comes from.
+    content: i32,
 }
 
 impl ReviewState {
@@ -582,6 +616,9 @@ impl ReviewState {
             scroll: 0,
             leaving: CoreCell::new(false),
             phase: Phase::Reviewing,
+            rows: RefCell::new(None),
+            #[cfg(test)]
+            builds: CoreCell::new(0),
         }
     }
 
@@ -737,7 +774,39 @@ impl ReviewState {
 
     // -- The pages -----------------------------------------------------------------------
 
-    fn rows(&self) -> Vec<Row> {
+    /// The current page, built and measured, handed to `f` without being copied.
+    ///
+    /// The borrow is held across `f`, so `f` may not reach back into this method. Neither
+    /// caller does: one reads the content height, the other paints. `draw` takes its
+    /// `layout` first for the same reason.
+    fn page_rows<R>(&self, m: &Metrics, width: i32, f: impl FnOnce(&PageRows) -> R) -> R {
+        let mut slot = self.rows.borrow_mut();
+        let stale = !matches!(
+            slot.as_ref(),
+            Some(p) if p.page == self.page
+                && p.unseen == self.unseen()
+                && p.width == width
+                && p.gap == m.gap
+        );
+        if stale {
+            #[cfg(test)]
+            self.builds.set(self.builds.get() + 1);
+            let rows = self.build_rows();
+            let heights: Vec<i32> = rows.iter().map(|r| r.height(m, width)).collect();
+            *slot = Some(PageRows {
+                page: self.page,
+                unseen: self.unseen(),
+                width,
+                gap: m.gap,
+                content: heights.iter().sum(),
+                rows,
+                heights,
+            });
+        }
+        f(slot.as_ref().expect("the slot was filled above"))
+    }
+
+    fn build_rows(&self) -> Vec<Row> {
         match self.kind(self.page) {
             PageKind::Overview => self.overview_rows(),
             PageKind::Input(i) => self.input_rows(i),
@@ -1257,8 +1326,9 @@ impl Screen for ReviewState {
             (viewport, prev, Some(next), None)
         };
 
-        // Content height, measured with the same row walk that paints.
-        let content: i32 = self.rows().iter().map(|r| r.height(m, viewport.w)).sum();
+        // Content height, measured with the same row walk that paints - the same walk in
+        // the literal sense now: both read one cached measurement of one row set.
+        let content = self.page_rows(m, viewport.w, |p| p.content);
         let limit = (content - viewport.h).max(0);
 
         let cw = BODY.text_width(&counter_label(self.page + 1, self.pages())) as i32;
@@ -1316,15 +1386,18 @@ impl Screen for ReviewState {
         {
             let mut clip = t.clipped(&l.viewport.to_eg());
             let mut y = l.viewport.y - scroll;
-            for row in self.rows() {
-                let h = row.height(m, l.viewport.w);
-                // Rows wholly off the viewport are skipped rather than clipped: the panel
-                // has no dirty rectangles, so a full repaint walks every row every frame.
-                if y + h > l.viewport.y && y < l.viewport.bottom() {
-                    draw_row(&mut clip, Rect::new(l.viewport.x, y, l.viewport.w, h), &row)?;
+            self.page_rows(m, l.viewport.w, |p| {
+                for (row, h) in p.rows.iter().zip(&p.heights) {
+                    // Rows wholly off the viewport are skipped rather than clipped: the
+                    // panel has no dirty rectangles, so a full repaint walks every row every
+                    // frame.
+                    if y + h > l.viewport.y && y < l.viewport.bottom() {
+                        draw_row(&mut clip, Rect::new(l.viewport.x, y, l.viewport.w, *h), row)?;
+                    }
+                    y += h;
                 }
-                y += h;
-            }
+                Ok(())
+            })?;
         }
         // C6's edge markers. A review page that silently has more below is a page the user
         // believes they have read, which is the one belief this screen may not create.
@@ -1691,7 +1764,7 @@ pub(crate) mod tests {
     /// description of it.
     fn page_text(s: &ReviewState) -> String {
         let mut out = String::new();
-        for row in s.rows() {
+        for row in s.build_rows() {
             match row {
                 Row::Gap => {}
                 Row::Band { lines, .. } => {
@@ -2282,4 +2355,59 @@ pub(crate) mod tests {
         assert!(l.hold.is_some());
         assert_eq!(HOLD_MS, 1500, "the hold duration is a constant, never a setting");
     }
+    /// A frame builds the page it paints ONCE, however much is on it.
+    ///
+    /// The defect this pins is structural rather than cosmetic. `regions` and `draw` each
+    /// call `layout`, `layout` needs the content height, and `draw` needs the rows again to
+    /// paint them: three builds and three full measurements per frame of a row set whose
+    /// size the file's author chooses. Measured on the warnings page of a 255-output file
+    /// before the fix, one `draw` alone cost 2.9 million allocations and 162 ms on a host
+    /// far faster than the panel; after it, a frame costs 82.
+    ///
+    /// Broken version this fails against: have `layout` and `draw` call `build_rows`
+    /// directly, as they did. The count goes to 3 on the first frame and keeps climbing.
+    #[test]
+    fn a_frame_builds_its_page_once() {
+        let f = Fixture::new(800, 480);
+        let ctx = f.ctx();
+        let mut r = plain_review();
+        r.warnings = (0..255)
+            .map(|i| TxWarning {
+                headline: format!("Outputs {i} and {} pay the same address.", i + 1),
+                detail: String::from("This transaction pays it twice; check that is intended."),
+            })
+            .collect();
+        let mut s = ReviewState::new(r);
+        s.page = s.pages() - 1;
+
+        // One frame, in the order the driver runs it: hit-testing, then painting, then the
+        // scroll clamp a drag asks for.
+        let mut regions = Vec::new();
+        s.regions(&ctx, &mut regions);
+        s.draw(&mut crate::NullTarget, &ctx).expect("the null target never fails");
+        let _ = s.scroll_limit(&ctx);
+        assert_eq!(s.builds.get(), 1, "one page on the panel is one row build");
+
+        // ...and the frame after it costs nothing at all.
+        s.regions(&ctx, &mut regions);
+        s.draw(&mut crate::NullTarget, &ctx).expect("the null target never fails");
+        assert_eq!(s.builds.get(), 1, "an unchanged page must not be rebuilt");
+
+        // What the cache is keyed on, one key at a time. Each of these three changes the
+        // rows, and a screen that showed the previous page's text would be a user deciding
+        // on numbers that are not on the panel.
+        s.page -= 1;
+        s.draw(&mut crate::NullTarget, &ctx).expect("the null target never fails");
+        assert_eq!(s.builds.get(), 2, "a different page is a different row set");
+
+        s.page += 1;
+        s.visited = vec![true; s.pages()];
+        s.draw(&mut crate::NullTarget, &ctx).expect("the null target never fails");
+        assert_eq!(s.builds.get(), 3, "the warnings page prints how many pages are unseen");
+
+        let narrow = Fixture::new(480, 800);
+        s.draw(&mut crate::NullTarget, &narrow.ctx()).expect("the null target never fails");
+        assert_eq!(s.builds.get(), 4, "heights are measured against a body width");
+    }
+
 }
