@@ -1,0 +1,63 @@
+identity
+Device name
+Board
+Chip
+Chip revision
+Boot ROM
+ROM chip id
+MAC
+Die unique ID
+firmware
+Version
+ESP-IDF (app)
+ESP-IDF (bootloader)
+Anti-rollback (image)
+Anti-rollback (efuse)
+Firmware digest
+App image (0x010000, 1 842 176 B)
+Bootloader image (0x002000, 22 352 B)
+Partition table (0x008000, 128 B)
+flash
+Size (header)
+Size (detected)
+JEDEC ID
+Flash unique ID (64 of 128)
+Partitions
+Reserved space
+wallets digest (raw)
+counters digest (raw)
+efuse
+Secure boot
+Aggressive revoke
+Key digest 0
+Key digest 1
+Key digest 2
+Flash encryption
+Encryption mode
+Crypt count
+XTS key read protection
+Manual encrypt
+UART download
+Secure download
+USB-serial-JTAG download
+USB-OTG download
+Forced download
+Direct boot
+JTAG (pad)
+JTAG (USB)
+JTAG (soft)
+JTAG select
+ROM log
+ROM log (USB)
+Key blocks
+state
+Boot count
+Since acknowledged
+Acknowledged at boot
+This writes to the device: boot counter acknowledgement.
+Wipe epoch
+Storage
+operation
+Radio kill GPIO54
+Boot self-test
+These values are read from the chip and from flash by the firmware running on this device.

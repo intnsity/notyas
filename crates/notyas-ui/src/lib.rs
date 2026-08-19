@@ -16,6 +16,27 @@
 //! and the pipeline itself is [`notyas_core`] - this crate renders what the core
 //! computes and computes nothing of its own.
 //!
+//! # Module map
+//!
+//! - `ui` - the [`Ui`] itself: the embedder's interface, the touch bookkeeping, and the
+//!   ONE owner of the live screen state.
+//! - `screens` - one module per screen, and the contract they satisfy. Read
+//!   `screens/mod.rs` first when adding a screen: it states what layout/regions/draw/
+//!   activate receive and return, where a screen may allocate, and how it asks the std
+//!   side for work instead of doing I/O.
+//! - `components` - the widgets more than one screen draws (top bar, modal, keyboard,
+//!   rows, write notice).
+//! - `danger` - the C4 danger sheet: one component, three grades (confirm, hold,
+//!   typed-name), and the one visual grammar every destructive action in the product is
+//!   asked for through. A screen embeds one and forwards regions/draw/activate.
+//! - `guess` - the exhaustive-search arithmetic the wipe-policy screen states at the
+//!   moment the wipe is turned off: keyspace, measured per-guess cost, resulting time.
+//!   Pure integer math with no drawing in it, so the numbers can be checked against the
+//!   table the decision was made on rather than read off a screenshot.
+//! - [`canvas`] - the drawing vocabulary; [`theme`] - the Butter Paper palette and the
+//!   masking constants; [`layout`] - [`layout::Metrics`], [`layout::Rect`] and the
+//!   physical touch floors; [`qr`] - the precomputed-symbol container.
+//!
 //! # Secrecy rules (non-negotiable; desktop BigDice house law, adapted for touch)
 //!
 //! - DERIVED secrets (mnemonic words) mask as a FIXED-length bullet run
@@ -32,9 +53,9 @@
 //!   confirm modal; what the user TYPES (rolls, a phrase they already have) is their own
 //!   input and is not masked, matching the desktop.
 //! - Every buffer that held rolls, words, a phrase or a passphrase is zeroized when its
-//!   screen is left: the state enum owns the secrets, the secrets' types wipe on drop
+//!   screen is left: the screen state owns the secrets, the secrets' types wipe on drop
 //!   ([`zeroize`], plus the self-wiping types of notyas-core), and leaving a screen drops
-//!   the state.
+//!   the state. `screens` checks that field by field at compile time.
 //! - No secret appears in any `Debug` output; [`Ui`]'s impl prints the screen id only.
 //! - There is no clipboard, no export, no persistence: pixels are the only output.
 //!
@@ -72,31 +93,53 @@ extern crate alloc;
 extern crate std;
 
 pub mod canvas;
+mod components;
+mod danger;
+mod guess;
 pub mod layout;
 pub mod qr;
 mod screens;
 pub mod theme;
+mod ui;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 use core::convert::Infallible;
 
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::{Dimensions, Point, Size};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::primitives::Rectangle;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
-use layout::{Metrics, Rect};
+use layout::Rect;
 pub use qr::QrData;
+pub use ui::Ui;
 // `bitcoin` through the core's re-export: the UI names the pipeline's own exact pin
 // (it only needs `Network::Bitcoin`), never a second dependency that could drift.
-use notyas_core::bip39::{self, Mnemonic, MnemonicMode, WordCount, MIN_SECURE_BITS};
 use notyas_core::bitcoin;
-use notyas_core::derive::{ChildIndex, Scheme};
-use notyas_core::entropy::{parse_dice, DiceEntropy};
-use notyas_core::report::{self, Parameters, Report};
+/// The pipeline's own `Network`, re-exported because [`WalletInfo`] carries one and an
+/// embedder that cannot name the type cannot build the struct. One pin, one name: this is
+/// the same `bitcoin` the core derives with, never a second copy of the crate.
+pub use notyas_core::bitcoin::Network;
+/// The pipeline's finished derivation, re-exported for the same reason `Network` is: an
+/// embedder that unseals a stored wallet hands the keys over through
+/// [`Ui::wallet_opened_with_keys`], and a caller that cannot name the type cannot make
+/// the call. Nothing in this crate builds one from outside a screen - the UI holds a
+/// `Report` only while the screen that owns it is alive, and dropping that screen wipes it.
+pub use notyas_core::report::Report;
+/// The pipeline's PSBT facts, re-exported for the reason [`Report`] is: the review screens
+/// render what the engine established, and an embedder that cannot name these types cannot
+/// build the [`TxReview`] that carries them. One pipeline, many renderers - the same
+/// discipline `report.rs` has kept since 0.1.0, applied to the transaction path.
+pub use notyas_core::psbt::{
+    AmountProof, Claim, ClaimedKey, InputFacts, MultisigBinding, OutputFacts, OutputRole, Owner,
+    ScriptKind,
+};
+/// Bitcoin's own amount and lock time, through the core's pin like [`Network`]. The review
+/// pages render both and format neither anywhere else.
+pub use notyas_core::bitcoin::absolute::LockTime;
+pub use notyas_core::bitcoin::Amount;
 
 /// Crate version, shown on the Home screen. The workspace releases in lockstep, so this
 /// is the product version too.
@@ -110,12 +153,108 @@ pub const ADDRESS_ROWS: u32 = 5;
 /// its full capacity pre-reserved (`secret_buf`), so a `push` can never reallocate and
 /// strand an unwiped copy of a partial secret outside the `Zeroizing` wrapper's reach -
 /// the same discipline desktop BigDice applies to its passphrase buffers.
-const PHRASE_MAX: usize = 1024;
-const PASS_MAX: usize = 256;
+pub(crate) const PHRASE_MAX: usize = 1024;
+pub(crate) const PASS_MAX: usize = 256;
+/// PIN length cap in bytes, matching `notyas_wallet::Pin::MAX_BYTES` (ratified Q5). At
+/// the cap further keys are ignored and the hint says so, rather than a `Pin` the
+/// sealing layer would refuse after the user finished typing it.
+pub(crate) const PIN_MAX: usize = 64;
+/// The PIN pad: slot index in reading order -> the digit printed on it. Phone order, which
+/// with the tenth slot centred on the last row draws 1-2-3 / 4-5-6 / 7-8-9 over a 0.
+///
+/// A CONSTANT, and that is the 2026-08-19 reversal of Q35: the per-attempt shuffle C10
+/// specified derived the permutation from the device-bound ladder, and the owner overturned
+/// it after using it on hardware - accepting, in writing, that fixed positions mean one
+/// clear look at the hand yields the PIN, in exchange for the layout every telephone and
+/// cash machine has already taught.
+///
+/// It lives in the crate root because BOTH PIN pads must print the same digit on the same
+/// slot: a device whose create screen and unlock screen disagreed about where the 7 is would
+/// have taught the user one layout and then asked for the PIN on another.
+pub(crate) const PIN_PAD: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
+/// Digits that must be typed before the anti-phishing words are offered. Coldcard's
+/// half-PIN pattern: enough prefix that the words are specific to this user, short
+/// enough that they arrive before the PIN is complete.
+pub(crate) const PIN_WORDS_AT: usize = 4;
+/// The PIN floor this crate assumes about a device whose embedder has not stated one.
+///
+/// The floor belongs to the STORE, not to this crate: `notyas_wallet` writes
+/// `min_pin_len` into the format header and refuses anything shorter, and only the device
+/// knows what its own format was written with. So this is a fallback for
+/// [`LockInfo::default`] and nothing else - the live value arrives through
+/// [`LockInfo::min_pin_len`].
+///
+/// It is the ratified floor (PIN-MODES.md, decided 2026-08-17: "The 4-digit floor applies
+/// in every state"), which is also `WalletConfig`'s default. The invariant that matters is
+/// the direction: this must never sit ABOVE the smallest floor the store will format at.
+/// A UI floor above the store's is a PIN the owner set and the panel refuses to submit,
+/// which is a provisioned device nobody can unlock.
+pub(crate) const PIN_MIN_DEFAULT: u8 = 4;
+
+/// The PIN floor in force on THIS device, as a length a screen can actually reach.
+///
+/// The number is the store's ([`LockInfo::min_pin_len`]); the clamp is this crate's, and
+/// it is here because both ends of the range are states no device should be able to put a
+/// user in. A floor of zero would make the empty entry committable - an unlock attempt
+/// spent on nothing, or worse, a store formatted under no PIN at all; a floor above
+/// [`PIN_MAX`] would make the commit button permanently dead, which is the defect
+/// `PIN_MIN_DEFAULT` replaced, reached from the other side. Clamped rather than refused
+/// because a device carrying an odd policy byte still has to be usable by its owner.
+///
+/// ONE reader for one number, and that is the point of it living here rather than beside a
+/// screen: the surface that CREATES a PIN and the surface that ENTERS one must gate on the
+/// same length, or the device accepts a PIN at creation that it will not let the owner
+/// type back - the same class of defect as a UI floor above the store's, arrived at from
+/// inside the crate instead of from the spec.
+pub(crate) fn pin_floor(lock: &LockInfo) -> usize {
+    usize::from(lock.min_pin_len).clamp(1, PIN_MAX)
+}
+/// Characters a wallet name may hold (UX-SCREENS.md S-20).
+pub(crate) const NAME_MAX: usize = 24;
+
+/// Smallest and largest wrong-PIN thresholds the sealed store accepts while the wipe is
+/// enabled. Frozen FORMAT constants mirrored from `notyas_wallet::config`: the attempt
+/// log's tail reserve is sized to the ceiling, so these are not preferences and the
+/// policy editor must not offer a value outside them. This crate is no_std and cannot
+/// depend on the wallet crate, so the two copies are checked against each other in the
+/// firmware, which links both.
+pub const WIPE_AFTER_MIN: u8 = 3;
+pub const WIPE_AFTER_MAX: u8 = 25;
+/// The threshold a device erases at unless the owner has changed it (ratified Q5), and
+/// the value the policy editor restores when the wipe is turned back on from off.
+pub const WIPE_AFTER_DEFAULT: u8 = 15;
+
+/// The shortest PIN that may DISABLE the wipe, or `None` for no floor at all.
+///
+/// `None` is the owner's answer to Q62, reconfirmed with the arithmetic in front of it:
+/// the device STATES the trade at the moment of the change and does not withhold the
+/// setting. It is a constant rather than a hardcoded absence so that revisiting the
+/// decision is an edit here and nothing else - `guess::floor_blocks` takes the floor as
+/// an argument and its unit tests exercise it both ways, so the refusal path is live code
+/// a changed constant switches on rather than code that would have to be written first.
+pub const WIPE_DISABLE_MIN_PIN: Option<u8> = None;
+
+/// One unlock attempt on the bench boards, in milliseconds: the pinned Argon2id
+/// parameters (m = 16 MiB, t = 1, p = 1) at 1827 ms on the Waveshare and 1825 ms on the
+/// Elecrow, plus 82.5 ms to zeroize the working set (MEASUREMENTS.md m1).
+///
+/// A measurement, not a target. It is the default [`LockInfo::unlock_ms`] so that a
+/// screen computing an exhaustive-search time has a real number rather than a zero; an
+/// embedder that has timed its own board installs that instead.
+pub const UNLOCK_MS_M1: u32 = 1910;
+
+/// How many wallets this device can ever hold - the STATIC MAXIMUM, and the only
+/// occupancy number any pre-PIN surface may state (ratified Q2(a)).
+///
+/// A constant is not a leak: it is the same on every unit, so a coercer holding a locked
+/// device learns nothing from it. The COUNT IN USE is a different value entirely and
+/// appears on exactly one surface, the post-unlock wallet list, where the holder has
+/// already proved the PIN. Storage geometry: ESP-SEAL.md 3.2, eight payload slot pairs.
+pub const WALLET_SLOTS: u8 = 8;
 
 /// A self-wiping string that will never reallocate below `cap` bytes (+3 slack for the
 /// widest UTF-8 char a guard of `len() < cap` can still admit).
-fn secret_buf(cap: usize) -> Zeroizing<String> {
+pub(crate) fn secret_buf(cap: usize) -> Zeroizing<String> {
     Zeroizing::new(String::with_capacity(cap + 3))
 }
 
@@ -143,13 +282,186 @@ pub enum ScreenId {
     Deriving,
     Schemes,
     VerifyDevice,
+    /// The C3 Busy frame S-46 shows while the reserved-space scan runs (ratified Q57).
+    /// A distinct id rather than a flag on `VerifyDevice`, because what is on the panel
+    /// while it runs is a Busy screen: no Back, nothing tappable, and an embedder that
+    /// knows the difference can say so.
+    ScanningFlash,
+    /// S-03. The device says which device it is, before the user gives it a PIN.
+    /// Reachable only with a PIN set - see [`Ui::lock`].
+    Lock,
+    /// S-04. PIN entry on the fixed phone-order pad, with the anti-phishing words.
+    PinEntry,
+    /// S-06 / S-07. Choose a PIN and type it again: the only surface in the product that
+    /// can put a PIN on a device that has none, and therefore the only route to a store
+    /// that stores anything.
+    ///
+    /// ONE id for the two spec screens, which is the test [`ScreenId::ScanningFlash`] had
+    /// to pass and this does not: that variant exists because a Busy frame has no Back and
+    /// nothing tappable, so it IS a different screen to an embedder. S-07 is S-06 with a
+    /// different heading line and a different button label - same bar, same pad, same
+    /// rectangles, same Back - so splitting it would report a step counter as a screen
+    /// change.
+    PinCreate,
+    /// S-10. The device's real home once anything is stored. Post-PIN, and the only
+    /// surface in the product that states how many wallets exist (Q2(a)).
+    WalletList,
+    /// S-17. The mandatory backup check: every word, five candidates.
+    BackupCheck,
+    /// S-19. The save-or-keep-nothing fork - the product's central choice.
+    KeepOrSave,
+    /// S-20. Name the wallet, announce the flash write, seal it.
+    NameWallet,
+    /// S-21. The per-wallet hub: identity first, then what can be done with it.
+    WalletHome,
+    /// S-44. Device settings. Reachable only with a session open, because every row it
+    /// carries today configures stored wallets.
+    Settings,
+    /// S-44's wrong-PIN policy sub-screen: a live editor over the sealed policy, and the
+    /// surface the wipe-off trade and the PIN-removal entry point live on.
+    WipePolicy,
+
+    // --- 0.2.0: the card, the transaction and the registry (UX-SCREENS.md 2.4, 2.5) ---
+    /// S-27. Get an unsigned transaction into the device, and say plainly why the card is
+    /// the only way in.
+    SignSource,
+    /// S-28. The card's files, when auto-detect is not enough.
+    FilePicker,
+    /// The C3 Busy frame, whenever a screen has asked the std side for work that blocks
+    /// the input loop: reading a card, checking a transaction, writing a file, sealing a
+    /// registration.
+    ///
+    /// ONE id for every one of them, and that is the difference from
+    /// [`ScreenId::ScanningFlash`], which was minted before there was a second blocking
+    /// request. An id earns its place when it tells a reader something they do not already
+    /// have; here the embedder is, by construction, part-way through answering the request
+    /// that raised the frame, so it already knows which operation is running and the id
+    /// would only repeat it. What the id DOES say is the thing no other screen says: there
+    /// is no Back, nothing is tappable, and the panel will not move until an answer lands.
+    /// The heading on the frame names the operation to the user.
+    Working,
+    /// S-29 (C7). The signing pipeline will not proceed, and says which check refused, why
+    /// it matters and what to do. A screen and never a modal: a modal invites
+    /// dismiss-without-reading.
+    Refusal,
+    /// S-30..S-36. The paged review, and the hold that ends it.
+    ///
+    /// ONE id for the seven spec screens, on the [`ScreenId::PinCreate`] reasoning: C5 is
+    /// one screen with a pager - same bar, same `[ i / n ]`, same Prev/Next rectangles -
+    /// and the page is state. Reporting a page turn as a screen change would make every
+    /// instrument that logs screens report a transaction review as nine screens.
+    ReviewTransaction,
+    /// S-37. The signature itself: a C3 frame with a determinate meter, and the one
+    /// blocking operation the ratified inventory names as a screen of its own.
+    ///
+    /// Distinct from [`ScreenId::Working`] because it is the only frame during which a
+    /// seed is live and the only one nothing may cancel, and a device that cannot say
+    /// "the panel was here" cannot answer what a power cut interrupted.
+    Signing,
+    /// S-38. Two independent exits, so no flow ends with a signed transaction stranded in
+    /// RAM. No Back by construction.
+    Deliver,
+    /// S-41. What this wallet is registered in, and the way to import more.
+    MultisigList,
+    /// S-42. The cosigner review: every key in full, and the device's own statement that
+    /// it found itself in the set.
+    MultisigImport,
+    /// S-43. Re-inspect, cross-check, delete.
+    MultisigDetail,
+}
+
+impl ScreenId {
+    /// Every screen, once. The list a host instrument iterates when it has to prove it
+    /// covered all of them.
+    ///
+    /// Written out rather than derived because there is no derive that would be checked:
+    /// the unit test below maps every variant to its index through an exhaustive `match`,
+    /// so a new variant breaks compilation twice - at the array length and at the match -
+    /// and cannot be added without saying where it belongs.
+    pub const ALL: [ScreenId; 29] = [
+        ScreenId::Home,
+        ScreenId::DiceEntry,
+        ScreenId::MnemonicDisplay,
+        ScreenId::PhraseEntry,
+        ScreenId::PassphraseEntry,
+        ScreenId::Deriving,
+        ScreenId::Schemes,
+        ScreenId::VerifyDevice,
+        ScreenId::ScanningFlash,
+        ScreenId::Lock,
+        ScreenId::PinEntry,
+        ScreenId::PinCreate,
+        ScreenId::WalletList,
+        ScreenId::BackupCheck,
+        ScreenId::KeepOrSave,
+        ScreenId::NameWallet,
+        ScreenId::WalletHome,
+        ScreenId::Settings,
+        ScreenId::WipePolicy,
+        ScreenId::SignSource,
+        ScreenId::FilePicker,
+        ScreenId::Working,
+        ScreenId::Refusal,
+        ScreenId::ReviewTransaction,
+        ScreenId::Signing,
+        ScreenId::Deliver,
+        ScreenId::MultisigList,
+        ScreenId::MultisigImport,
+        ScreenId::MultisigDetail,
+    ];
+}
+
+#[cfg(test)]
+mod screen_id_tests {
+    use super::ScreenId;
+
+    /// `ALL` holds every variant exactly once, in the order the match below names.
+    #[test]
+    fn every_screen_is_in_all_exactly_once() {
+        let index = |s: ScreenId| match s {
+            ScreenId::Home => 0,
+            ScreenId::DiceEntry => 1,
+            ScreenId::MnemonicDisplay => 2,
+            ScreenId::PhraseEntry => 3,
+            ScreenId::PassphraseEntry => 4,
+            ScreenId::Deriving => 5,
+            ScreenId::Schemes => 6,
+            ScreenId::VerifyDevice => 7,
+            ScreenId::ScanningFlash => 8,
+            ScreenId::Lock => 9,
+            ScreenId::PinEntry => 10,
+            ScreenId::PinCreate => 11,
+            ScreenId::WalletList => 12,
+            ScreenId::BackupCheck => 13,
+            ScreenId::KeepOrSave => 14,
+            ScreenId::NameWallet => 15,
+            ScreenId::WalletHome => 16,
+            ScreenId::Settings => 17,
+            ScreenId::WipePolicy => 18,
+            ScreenId::SignSource => 19,
+            ScreenId::FilePicker => 20,
+            ScreenId::Working => 21,
+            ScreenId::Refusal => 22,
+            ScreenId::ReviewTransaction => 23,
+            ScreenId::Signing => 24,
+            ScreenId::Deliver => 25,
+            ScreenId::MultisigList => 26,
+            ScreenId::MultisigImport => 27,
+            ScreenId::MultisigDetail => 28,
+        };
+        for (i, s) in ScreenId::ALL.into_iter().enumerate() {
+            assert_eq!(index(s), i, "{s:?} is at the wrong index of ScreenId::ALL");
+        }
+    }
 }
 
 /// Semantic identity of a tappable region. What a tap MEANS, decoupled from where the
 /// rectangle happens to be on this panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegionId {
-    /// Top-bar back: returns to Home, dropping (and thereby zeroizing) the screen state.
+    /// Top-bar back. What it DOES is each screen's own answer (`Screen::back`): the
+    /// previous screen for an input-only one, a confirmation gate where a derived secret
+    /// is in memory, nothing at all on the floor of a locked device.
     Back,
     HomeNewSeed,
     HomeVerifySeed,
@@ -158,7 +470,7 @@ pub enum RegionId {
     Digit(u8),
     DiceBackspace,
     /// Dice mode segment, indexing the desktop mode set: RAW, then
-    /// [`bip39::FIXED_WORD_COUNTS`] (12/15/18/21/24) - see [`dice_mode`].
+    /// `bip39::FIXED_WORD_COUNTS` (12/15/18/21/24).
     Mode(u8),
     DiceDone,
     /// Opens the reveal-confirm modal on the mnemonic screen.
@@ -185,7 +497,7 @@ pub enum RegionId {
     KeyBackspace,
     /// Keyboard Done: commits the phrase / passphrase screen.
     KeyDone,
-    /// Scheme tab, indexing [`Scheme::ALL`].
+    /// Scheme tab, indexing [`notyas_core::derive::Scheme::ALL`].
     Tab(u8),
     /// QR button beside the account xpub on the schemes screen.
     QrXpub,
@@ -205,6 +517,190 @@ pub enum RegionId {
     /// OWN typed input against a public wordlist, which is not a path any derived or
     /// masked value can reach.
     Suggest(u8),
+
+    // --- 0.2.0: lock, PIN and the session (UX-SCREENS.md 4) --------------------------
+    /// The lock screen's body: touch anywhere to reach PIN entry.
+    LockWake,
+    /// PIN pad position `n` (0-based, reading order). The POSITION, not the digit: hit
+    /// testing must never depend on what is printed on a key, so the region vocabulary
+    /// stays the same whatever the pad prints. Every device prints [`PIN_PAD`] on it
+    /// since the 2026-08-19 reversal of Q35, and this indexing outlives that decision.
+    PinKey(u8),
+    PinBackspace,
+    /// Switch between the digit pad and the alphanumeric keyboard. Declared
+    /// here because the region vocabulary is frozen with the screen spec, and NOT emitted
+    /// by m4a's minimal S-04: an alphanumeric PIN needs the C9 keyboard, which is m4b's
+    /// graft, and a drawn key that no screen hit-tests is a button that lies.
+    PinAlpha,
+    /// "Show device words": derives the anti-phishing words for the digits typed so far.
+    /// Costs no attempt-counter decrement (ARCHITECTURE.md 3).
+    PinShowWords,
+    PinSubmit,
+    /// S-06's commit: the PIN typed so far is accepted as the FIRST entry, and the screen
+    /// asks for it a second time. Nothing has been written to the device yet.
+    PinNext,
+    /// S-07's commit: the second entry is compared with the first, and a match is what
+    /// raises [`UiRequest::SetPin`]. Distinct from [`RegionId::PinSubmit`] because the two
+    /// spend different things - `PinSubmit` spends an attempt against a store that already
+    /// has a PIN, this one formats a store that has none - and a region vocabulary that
+    /// blurred them would let a mis-wired screen turn one into the other.
+    PinConfirm,
+    /// Drop the open session now. Offered only while one is open.
+    Lock,
+    /// C4c hold-to-confirm. Fires from [`Ui::tick`] once the fill completes, not from a
+    /// tap; released early it fires nothing.
+    HoldConfirm,
+    /// "Mark as seen": writes the boot-counter acknowledgement mark (VERIFY.md 6.3).
+    /// Post-PIN only - a coercer who can press it erases the gap the counter shows.
+    VerifyAckBoots,
+    /// "Scan": run the reserved-space scan now (VERIFY.md 3.3, ratified Q57). Always
+    /// offered, and re-runs when it has already been run - the spans move with the
+    /// build, so a second look is a different measurement rather than a cached one.
+    VerifyScanFlash,
+    /// "Show as QR": hand the whole `notyas-verify/1` readout to the C11 QrPlayer
+    /// (VERIFY.md 7.2). Declared here because Q54 ratified the region vocabulary with
+    /// the screen spec, and NOT emitted by S-46 yet: C11's player is the schemes
+    /// screen's private modal, and a drawn button no screen hit-tests is a button that
+    /// lies - the same rule that keeps `PinAlpha` declared and unemitted.
+    VerifyQr,
+    /// Step one viewport back / forward through a long review sheet (C6's explicit
+    /// pager, reused verbatim by S-46 rather than inventing a second scroll model).
+    /// Offered only where there is a viewport to step to.
+    ReviewPrev,
+    ReviewNext,
+    /// "Save to this device": the storing half of the S-19 fork.
+    SaveToDevice,
+
+    // --- 0.2.0-m4b: wallet management (UX-SCREENS.md 4) ------------------------------
+    /// A wallet row, carrying the storage SLOT the embedder reported for it rather than
+    /// the row's position. Position is a rendering fact that changes with scrolling and
+    /// with a re-ordered list; the slot is what the tap MEANS, and carrying it is what
+    /// lets `activate` name the wallet without reading the list back.
+    ListRow(u8),
+    /// "New wallet" - start the dice flow from the wallet list.
+    WalletNew,
+    /// "Restore from words" - start the word-entry flow from the wallet list.
+    WalletRestore,
+    /// Backup-check candidate `n` (0-based, reading order). The DIGIT-pad reasoning
+    /// applies: the position is hit-tested, the word on it is derived, so a candidate can
+    /// never resolve to a different word than the one under the finger.
+    QuizChoice(u8),
+    /// "Use once, keep nothing": the stateless half of the S-19 fork. Equal weight with
+    /// [`RegionId::SaveToDevice`] by construction - see the fork screen.
+    UseOnce,
+    /// Focus the wallet-name field (S-20).
+    NameField,
+    /// "Save wallet": commit the sealed write announced by the C12 notice above it.
+    ConfirmSave,
+    /// The one-time acknowledgement that the passphrase is not stored (Q22). Gates the
+    /// first save of a passphrase wallet, so the warning cannot be skipped by habit.
+    PassNotStoredAck,
+    /// "Export public keys" on the wallet home.
+    ActExport,
+    /// "Delete this wallet" on the wallet home: opens the C4d typed-name sheet.
+    WalletDelete,
+    /// The C4 danger sheet's two answers. Every grade offers Cancel; the Confirm and
+    /// typed-name grades offer this confirm, the hold grade offers
+    /// [`RegionId::HoldConfirm`] instead.
+    DangerCancel,
+    DangerConfirm,
+    /// The C4 danger sheet's THIRD way out, offered by the sheets that have one: the
+    /// action that removes the reason for the warning rather than accepting or dismissing
+    /// it (PIN-MODES.md's longer-PIN path).
+    DangerAlternative,
+    /// The full candidate list behind the restore screen's final-word strip, opened when
+    /// more valid last words exist than the four chips can show, and closed again.
+    SuggestMore,
+    SuggestClose,
+    /// The Settings affordance, on the screen a session lives on (S-10). Not on Home:
+    /// an unlocked device lands on the wallet list and never leaves it, so a chip there
+    /// would be one no finger could reach.
+    OpenSettings,
+    /// Settings list row `n` (0-based), indexing the rows the screen is CURRENTLY
+    /// showing rather than a fixed catalogue, so a row that is absent cannot be reached
+    /// by index.
+    SetRow(u8),
+    /// Turn the wrong-PIN wipe on, or open the sheet that turns it off.
+    PolicyWipe,
+    /// Step the wrong-PIN threshold within [`WIPE_AFTER_MIN`]..=[`WIPE_AFTER_MAX`].
+    PolicyLess,
+    PolicyMore,
+    /// Commit the edited policy. A button rather than a live write, because committing
+    /// re-seals the store (PIN-MODES.md) and a stepper that did that per tap would spend
+    /// a flash erase and an Argon2id stretch on every digit.
+    PolicySave,
+    /// "Remove PIN and stored wallets": opens the C4d sheet for the revert-to-stateless
+    /// operation (Q5.5).
+    RemoveThePin,
+
+    // --- 0.2.0: the card, the transaction and the registry (UX-SCREENS.md 2.4, 2.5) ---
+    /// S-21's two remaining action cards, which exist now that the screens behind them
+    /// do. Named for the ACTION and not for the screen, like [`RegionId::ActExport`]:
+    /// what the tap means is "sign something with this wallet", and which screen answers
+    /// that is the wallet home's to decide.
+    ActSign,
+    ActMultisig,
+    /// S-27's auto-detected file card. Tapping it loads that file, so the card is the
+    /// primary action and not decoration.
+    SignReady,
+    /// S-27 -> S-28: choose a different file.
+    SignPickFile,
+    /// "Check again": re-read the card. S-28's own region name, and the one every other
+    /// surface that can be looking at a card which is not there uses too - S-27's empty
+    /// state and S-38's write band - because it is the same affordance with the same
+    /// label, "insert the card and try again" is the whole remedy for R-23, and a user who
+    /// has to navigate away to reach it will power-cycle instead.
+    FileRefresh,
+    /// "Show all files": S-28 with the PSBT filter off, so a mis-extensioned file is
+    /// findable. On S-27's no-PSBT state and on S-28's tab row alike.
+    FileShowAll,
+    /// The picker's explicit pager (C2: drag alone is undiscoverable with no scrollbar).
+    /// Offered only when the listing exceeds two viewports.
+    ListPagePrev,
+    ListPageNext,
+    /// C7's "Show details": toggles the mono block a bug report gets photographed from.
+    /// It never contains key material - a refusal is decided before any key exists.
+    RefusalDetails,
+    /// S-38's two exits and its two ways out.
+    ///
+    /// `DeliverSd` writes the files the C12 notice above it named; `DeliverDone` leaves,
+    /// and is offered only once a delivery has succeeded, because Back from a signed and
+    /// undelivered transaction is exactly the loss S-38 exists to prevent. `DeliverRetry`
+    /// appears after a failed write, `DeliverDiscard` after the second one - the C4b red
+    /// card that lets a user with a dead card slot leave with informed consent rather
+    /// than by pulling the power, which is the same outcome without it.
+    DeliverSd,
+    DeliverDone,
+    DeliverRetry,
+    DeliverDiscard,
+    /// "Show as QR" (S-38) and the registry's two QR exports (S-43). DECLARED and NOT
+    /// EMITTED, on the [`RegionId::PinAlpha`] rule: the C11 player animates a fountain-
+    /// coded sequence, no encoder in this workspace produces one, and a drawn button that
+    /// no screen hit-tests is a button that lies. The vocabulary is frozen with the screen
+    /// spec so that the day the encoder lands, the region it needs already means this.
+    DeliverQr,
+    /// S-41: import a descriptor or a Coldcard multisig file from the card.
+    MsImport,
+    /// S-41's "Export our xpub (BIP48)", S-43's "Export to card" and "Export as QR".
+    /// DECLARED and NOT EMITTED for the same reason as [`RegionId::DeliverQr`], with one
+    /// addition for the two card exports: invariant 2b requires the file name to be on
+    /// screen BEFORE the write, and no request in this crate's vocabulary yet asks the std
+    /// side what that name would be.
+    MsExportXpub,
+    MsExportSd,
+    MsExportQr,
+    /// S-42's two answers. `MsApprove` exists only on the last page and only after the
+    /// whole cosigner set has been seen (C5's enforced traversal); `MsReject` is offered
+    /// throughout, because refusing an import needs no traversal.
+    MsApprove,
+    MsReject,
+    /// S-43's re-inspection actions: the paged cosigner review again, read-only, and the
+    /// first receive address this registration produces - the value a user compares
+    /// against another signer before the wallet is used.
+    MsCosigners,
+    MsFirstAddress,
+    /// S-43's "Delete registration": opens the C4d typed-name sheet.
+    MsDelete,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -232,11 +728,532 @@ pub struct QrTarget {
 /// *inside* this no_std crate's state machine. Returning a request keeps `touch` a pure
 /// state transition, keeps the std/no_std boundary visible in the type system, and
 /// costs the embedder three lines: match, encode, [`Ui::show_qr`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # Every request is answered, and the failure is part of the answer
+///
+/// Each variant names the `Ui` method that answers it, and every one of those methods
+/// takes ONE value whose variants include the ways the work can fail. That is not a
+/// convenience: an embedder cannot answer with the success alone, because no success-only
+/// call exists, and a request that is answered at all is answered on the panel. The
+/// alternative - a handler that logs an error and returns - leaves the user in front of a
+/// screen that did nothing, and this product has shipped that three times.
+///
+/// The answer goes back to the screen that raised the request (see `screens::Answer`), so
+/// the two halves of an exchange live in one module, and a late answer is dropped by the
+/// screen the user has moved on to rather than dragging them back.
+#[derive(Debug, PartialEq, Eq)]
 pub enum UiRequest {
     /// Encode `payload` (e.g. with `notyas_core::qr::matrix`, std side), pack it into a
     /// [`QrData`] and hand it back via [`Ui::show_qr`] together with this target.
     Qr(QrTarget),
+    /// Derive the anti-phishing words for the prefix typed so far and answer with
+    /// [`Ui::show_device_words`]. Costs no attempt-counter decrement.
+    DeviceWords(Secret),
+    /// Try this PIN against the sealed store; answer with [`Ui::unseal_result`]. The
+    /// unsealing, the attempt accounting and every flash write live on the std side.
+    UnsealWallet(Secret),
+    /// Install this PIN as the device's FIRST one - format the store under it and open the
+    /// session that formatting produces - and answer with [`Ui::pin_created`].
+    ///
+    /// Raised only by S-06/S-07, only where [`StoreStatus::has_pin`] is false, and only
+    /// after the same PIN has been typed twice. Distinct from [`UiRequest::ChangePin`],
+    /// which re-seals records that already exist under a key that already exists: there is
+    /// nothing here to re-seal and no old key to retire, so the two are different flash
+    /// operations with different failure modes and they do not share a request.
+    ///
+    /// This is a WRITE, and the first one the device has ever made: it creates the ledger
+    /// and the superblock. Until 0.2.0 shipped this variant the only route to it was the
+    /// test console, which a product build compiles out - so a release image could not be
+    /// given a PIN at all, and therefore could not store a wallet at all.
+    SetPin(Secret),
+    /// Seal this wallet into the store; answer with [`Ui::persist_result`].
+    PersistWallet(WalletDraft),
+    /// Drop the open session now (the Lock affordance, and the power-off path). Answer
+    /// with [`Ui::lock`], which is also what the auto-lock timeout calls.
+    LockSession,
+    /// Write the boot-counter acknowledgement mark (VERIFY.md 6.3); answer with
+    /// [`Ui::set_verify_info`] carrying the values read back after the write.
+    AcknowledgeBoots,
+    /// Raw-read every must-be-blank flash span and answer with [`Ui::set_flash_scan`]
+    /// (VERIFY.md 3.3). Roughly 14 MiB on board B and 30 MiB on board A, so it is on
+    /// demand and never at boot (ratified Q57), and the C3 Busy frame that says so is
+    /// already on the panel when this request is returned.
+    ScanReservedSpace,
+    /// Unseal the wallet in this slot and answer with [`Ui::wallet_opened`]. The slot
+    /// comes from the [`WalletInfo`] the embedder itself installed, so the UI never
+    /// invents one.
+    OpenWallet(u8),
+    /// Erase this slot's record, then install the list as it now reads with
+    /// [`Ui::set_wallets`]. Raised only behind the C4d typed-name sheet.
+    DeleteWallet(u8),
+    /// Re-seal the store under a new wrong-PIN policy; `None` disables the wipe.
+    ///
+    /// A change-PIN-class operation rather than a settings write: the policy is
+    /// authenticated INSIDE the AEAD (PIN-MODES.md), so committing it re-seals under the
+    /// PIN and carries the fresh PIN confirmation the std side performs. Answer with
+    /// [`Ui::policy_result`], and with [`Ui::set_lock_info`] carrying the policy as it
+    /// reads back afterwards.
+    SetWipePolicy { wipe_after: Option<u8> },
+    /// Run the change-PIN sequence: the std side owns the PIN, the re-seal of every
+    /// stored record under the new one, and the fresh PIN confirmation the format
+    /// requires; it answers with [`Ui::set_lock_info`] carrying the new [`PinShape`].
+    ///
+    /// Raised by S-44's change-PIN row, and - the reason it exists at this milestone - by
+    /// the longer-PIN action on the wipe-off sheet. PIN-MODES.md requires that sheet to
+    /// offer the longer-PIN PATH rather than only accept or cancel, and a path is an
+    /// action that goes somewhere.
+    ChangePin,
+    /// Destroy every sealed record and leave the store unformatted, returning the device
+    /// to 0.1.0 stateless operation (Q5.5). Answer with [`Ui::pin_removed`].
+    ///
+    /// Deliberately NOT named "turn the PIN off": the sealing key IS the PIN, so no state
+    /// exists in which the records survive its removal, and a name that implied otherwise
+    /// would be the one place this enum could mislead about what the button does.
+    RemovePin,
+
+    // --- 0.2.0: the card, the transaction and the registry ----------------------------
+    //
+    // NOTHING in this group carries key material, and that is a property of the flows
+    // rather than an omission: a PSBT, a descriptor, a cosigner xpub and a file name are
+    // all public, and the two values that are not - the seed and the PIN - never leave the
+    // std side at all. [`Secret`] is therefore absent here, and a request that ever needs
+    // to carry a typed secret uses it, as `UnsealWallet` and `SetPin` do.
+    //
+    // Every one of these blocks the input loop for well over C3's 150 ms, so each is
+    // raised from a screen that has already switched to its Busy frame
+    // ([`ScreenId::Working`], [`ScreenId::Signing`]) and the embedder publishes that frame
+    // BEFORE it starts work. The answer is what moves the panel off it - which is why
+    // every one of them has a failure answer, not just a success one.
+    /// List one directory of the card: the root when `dir` is empty, one level below it
+    /// otherwise (S-28's depth limit). Answer with [`Ui::card_result`].
+    ListCard { dir: String, filter: FileFilter },
+    /// Read this file off the card AND decide whether it may be signed. Answer with
+    /// [`Ui::psbt_result`].
+    ///
+    /// ONE request for the read and the check, because the user does nothing between them
+    /// and because both fail into the same C7 screen: "no card" (R-23), "not a PSBT"
+    /// (R-20) and "change output not proven" (R-03) are all answers to one tap on one file,
+    /// and splitting them would give the screen two failure channels for one action.
+    LoadPsbt { dir: String, name: String },
+    /// Sign the transaction the user has just held to sign, and run the post-sign gate on
+    /// what was produced. Answer with [`Ui::sign_result`].
+    ///
+    /// Carries nothing: the reviewed file lives on the std side, which is also where the
+    /// seed is, and re-sending either would mean the UI held a copy of one of them. What
+    /// binds this to what was on the panel is the engine's own binding - the inspection
+    /// carries the SHA-256 of the bytes it read and signing recomputes it.
+    SignTx,
+    /// Write the signed transaction to the card, as the files the C12 notice named.
+    /// `overwrite` is true only on the second raise, behind the C4a confirm that a
+    /// [`WriteOutcome::Collision`] opens. Answer with [`Ui::write_result`].
+    WriteSigned { overwrite: bool },
+    /// Destroy the signed transaction the std side is holding without delivering it - the
+    /// C4b override S-38 offers after two failed writes. Answer with
+    /// [`Ui::discard_result`].
+    ///
+    /// A request rather than a screen change, because the bytes are not the UI's to drop:
+    /// leaving S-38 without this would strand a signed transaction in RAM, which is the
+    /// exact loss that screen exists to prevent.
+    DiscardSigned,
+    /// Read a descriptor or a Coldcard multisig file off the card and prove this device is
+    /// one of its cosigners. Answer with [`Ui::import_result`].
+    ///
+    /// The proof happens HERE and not at approval: a wallet this device cannot sign for
+    /// must never reach a review screen that implies it can, which is R-04's whole point.
+    ImportRegistration { dir: String, name: String },
+    /// Seal the reviewed registration into a registry slot. `replace` is true only behind
+    /// the C4a confirm a [`RegistrationReview::duplicate`] opens. Answer with
+    /// [`Ui::registration_result`].
+    ApproveRegistration { replace: bool },
+    /// Erase this registry slot, then install the registry as it now reads with
+    /// [`Ui::set_registrations`]. Raised only behind the C4d typed-name sheet. Answer with
+    /// [`Ui::registration_deleted`].
+    DeleteRegistration(u8),
+}
+
+/// A secret on its way from a screen to the embedder: a PIN, or the prefix of one.
+///
+/// The [`Ui`] is no_std and touches neither flash nor crypto, so the one thing it can do
+/// with a typed PIN is hand it over. This type is that handover made explicit: it wipes
+/// on drop, it is not `Clone` (duplicating a PIN is a decision a call site should have to
+/// write out), and its `Debug` says nothing.
+pub struct Secret(Zeroizing<String>);
+
+impl Secret {
+    fn new(value: &str) -> Secret {
+        let mut buf = secret_buf(PIN_MAX);
+        buf.push_str(value);
+        Secret(buf)
+    }
+
+    /// The characters to hand to `notyas_wallet::Pin`, or to the anti-phishing
+    /// derivation when this is a prefix.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
+/// Equality over the secret itself, so a test can assert which PIN a screen handed out.
+/// Not constant time and deliberately not pretending to be: the comparison that decides
+/// anything happens in `notyas-wallet`, against a key, not here against a `String`.
+impl PartialEq for Secret {
+    fn eq(&self, other: &Secret) -> bool {
+        *self.0 == *other.0
+    }
+}
+
+impl Eq for Secret {}
+
+/// The wallet a finished create flow is offering to save, on its way to be sealed.
+///
+/// Carries the BIP39 phrase, which is the whole secret; the fingerprint and network ride
+/// along because the record's label needs them and re-deriving them on the std side would
+/// be a second implementation of the same arithmetic.
+pub struct WalletDraft {
+    phrase: Zeroizing<String>,
+    /// The user's label for the slot, as typed on S-20. Not a secret and not an
+    /// identity - the fingerprint is the identity - but the record needs it.
+    pub name: String,
+    pub fingerprint: String,
+    pub network: bitcoin::Network,
+    /// Whether a BIP-39 passphrase was applied. The passphrase ITSELF is never handed
+    /// over and never stored (ratified Q22); this is the flag the record carries so the
+    /// wallet home can say the wallet has one.
+    pub passphrase: bool,
+}
+
+impl WalletDraft {
+    pub fn phrase(&self) -> &str {
+        &self.phrase
+    }
+}
+
+impl core::fmt::Debug for WalletDraft {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WalletDraft")
+            .field("name", &self.name)
+            .field("fingerprint", &self.fingerprint)
+            .field("phrase", &"<redacted>")
+            .finish()
+    }
+}
+
+impl PartialEq for WalletDraft {
+    fn eq(&self, other: &WalletDraft) -> bool {
+        *self.phrase == *other.phrase
+            && self.name == other.name
+            && self.fingerprint == other.fingerprint
+            && self.network == other.network
+            && self.passphrase == other.passphrase
+    }
+}
+
+impl Eq for WalletDraft {}
+
+// ---------------------------------------------------------------------------------------
+// Wallets, as the post-PIN screens read them
+// ---------------------------------------------------------------------------------------
+
+/// What kind of wallet a slot holds. The badge on the list row and on the identity card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalletKind {
+    SingleSig,
+    Multisig,
+}
+
+impl WalletKind {
+    /// The badge word, in the copy vocabulary (UX-SCREENS.md S-10).
+    pub fn badge(self) -> &'static str {
+        match self {
+            WalletKind::SingleSig => "single-sig",
+            WalletKind::Multisig => "multisig",
+        }
+    }
+}
+
+/// Whether the backup behind a wallet has been proved (commandment 3).
+///
+/// Two states and no third: a wallet is either backed by words the owner demonstrably
+/// holds or it is not, and the screens say which in the same two words everywhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackupState {
+    /// The check was passed. The string is what the embedder recorded (a date); empty
+    /// when the record carries none, which renders as the bare badge rather than a
+    /// fabricated date.
+    Verified(String),
+    /// Never checked on this device. Uppercase on screen: it should stop a reader.
+    Unchecked,
+}
+
+/// One stored or session wallet, as every post-PIN screen reads it.
+///
+/// One vocabulary for two screens on purpose: the list row and the identity card show
+/// overlapping subsets of the same facts, and two structs would let them disagree about
+/// the same wallet. Everything here is PUBLIC - a name, a fingerprint, a path, a network -
+/// so the struct is `Clone` and printable; the seed behind it never enters this type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalletInfo {
+    /// Storage slot this record lives in, as the embedder read it. The UI never invents
+    /// one and never renumbers: it is the handle [`UiRequest::OpenWallet`] and
+    /// [`UiRequest::DeleteWallet`] name.
+    pub slot: u8,
+    pub name: String,
+    /// Master fingerprint, 8 lowercase hex. The identity surface, and the only
+    /// abbreviation the product permits (it is a full value, not a truncation).
+    pub fingerprint: String,
+    /// Account derivation path, e.g. `m/84'/0'/0'`.
+    pub path: String,
+    /// Script type in words, e.g. "native segwit". Supplied rather than derived: naming
+    /// a script type from a path is the embedder's job, not a rendering rule.
+    pub script_type: String,
+    pub kind: WalletKind,
+    pub backup: BackupState,
+    pub network: bitcoin::Network,
+    /// Multisig registrations stored against this wallet.
+    pub registrations: u8,
+    /// False for a "Use once, keep nothing" session: nothing was written, and the wallet
+    /// home says so rather than letting the user assume it survives a power cut.
+    pub stored: bool,
+    /// A BIP-39 passphrase was applied. Never the passphrase itself (Q22).
+    pub passphrase: bool,
+}
+
+/// A row of the wallet list.
+///
+/// Two variants because a slot whose record fails its AEAD tag has no name, no
+/// fingerprint and no path to show, and rendering it as a wallet with blank fields would
+/// invent facts about a record the device could not read (R-32).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WalletRow {
+    Wallet(WalletInfo),
+    /// This slot did not decrypt with this PIN.
+    Unreadable { slot: u8 },
+}
+
+/// The two counts a destruction confirmation names individually (Q5.5), counted from the
+/// wallet list the embedder installed.
+///
+/// Counted rather than tracked separately on purpose: two sources of truth for "how many
+/// wallets" is exactly the drift that would eventually put a wrong number on the one
+/// screen where the number is the whole point. POST-PIN only, like the list it is
+/// counted from - Q2(a) forbids an occupancy count on every pre-PIN surface and on the
+/// Verify screen, permanently and for all users.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StoredCounts {
+    pub wallets: usize,
+    pub registrations: usize,
+}
+
+impl StoredCounts {
+    pub fn of(rows: &[WalletRow]) -> StoredCounts {
+        let mut counts = StoredCounts::default();
+        for row in rows {
+            counts.wallets += 1;
+            // An unreadable slot is still an occupied slot and is still destroyed; what
+            // is unknown is what it holds, which is why it contributes no registrations
+            // rather than being left out of the wallet count.
+            if let WalletRow::Wallet(w) = row {
+                counts.registrations += usize::from(w.registrations);
+            }
+        }
+        counts
+    }
+
+    /// "no stored wallets" / "1 stored wallet" / "3 stored wallets".
+    ///
+    /// The phrasing lives here rather than in each screen because two screens name these
+    /// counts and a paraphrase between them would be a second vocabulary for one fact -
+    /// the same reasoning as [`PASSPHRASE_WARNING`].
+    pub fn wallets_text(&self) -> String {
+        match self.wallets {
+            0 => String::from("no stored wallets"),
+            1 => String::from("1 stored wallet"),
+            n => format!("{n} stored wallets"),
+        }
+    }
+
+    /// "no multisig registrations" / "1 multisig registration" / "2 multisig registrations".
+    pub fn registrations_text(&self) -> String {
+        match self.registrations {
+            0 => String::from("no multisig registrations"),
+            1 => String::from("1 multisig registration"),
+            n => format!("{n} multisig registrations"),
+        }
+    }
+}
+
+/// What the backup check is asking right now.
+///
+/// Public because a host driver - tools/uisim and the test suite - has no other way to
+/// read the panel, and it discloses exactly what the screen already paints: five
+/// candidate words, one of them correct and carrying no marker that says which.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuizView {
+    /// 1-based position of the word under test.
+    pub word: u8,
+    /// Words in the mnemonic.
+    pub words: u8,
+    /// Positions already answered correctly.
+    pub done: u8,
+    /// The candidates, in the order they are drawn.
+    pub choices: alloc::vec::Vec<String>,
+}
+
+/// What the std side made of a [`UiRequest::UnsealWallet`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsealOutcome {
+    /// The PIN was right and a session is open on the std side.
+    Unsealed,
+    /// The PIN was wrong. `attempts_left` is `None` when the wipe policy is off.
+    WrongPin { attempts_left: Option<u8> },
+    /// The attempt threshold was reached and the stored records were destroyed.
+    Wiped,
+    /// The store could not be read at all: typing a PIN into it cannot succeed (R-32).
+    Unreadable,
+}
+
+/// What the sealed store holds, as much of it as a screen is allowed to know.
+///
+/// Deliberately NOT a count. Ratified Q2(a): no pre-PIN surface and no Verify row ever
+/// states how many wallets are stored, permanently and for all users, because the count
+/// is what a coercer learns for free from a device they cannot open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreStatus {
+    /// No device key is burned. Nothing can be sealed, and no anti-phishing word exists
+    /// to show - they are derived from that key (R20).
+    NotProvisioned,
+    /// A device key is present but the ledger has never been formatted. Still stateless,
+    /// still no words, still nothing written to flash.
+    Blank,
+    /// A PIN is set and the device is locked.
+    Locked,
+    /// A PIN is set and a session is open.
+    Unlocked,
+    /// Both slots are unreadable; the device says so rather than pretending.
+    Unreadable,
+}
+
+impl StoreStatus {
+    /// Whether a PIN has ever been set on this device - the precondition for the lock
+    /// screen, for PIN entry, and for the existence of anti-phishing words (R20).
+    pub fn has_pin(self) -> bool {
+        matches!(self, StoreStatus::Locked | StoreStatus::Unlocked)
+    }
+}
+
+/// The shape of the PIN currently set, as much of it as the exhaustive-search arithmetic
+/// on the wipe-policy screen needs.
+///
+/// The LENGTH and the ALPHABET, never the PIN: the two together are the keyspace, which
+/// is the only thing that sentence is a function of. The alphabet is a count supplied by
+/// the embedder rather than an enum here, so the day PIN entry grows its alphanumeric
+/// page ([`RegionId::PinAlpha`]) the arithmetic is already right and nothing in this
+/// crate changes.
+///
+/// Post-PIN only. Nothing pre-PIN reads it and nothing may: the length of a PIN is a hint
+/// for anyone guessing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PinShape {
+    pub len: u8,
+    /// Distinct characters one position can hold. 10 for the digit pad.
+    pub alphabet: u32,
+}
+
+impl PinShape {
+    /// The alphabet of the digit pad, which is the only PIN entry the device has today.
+    pub const DIGITS: u32 = 10;
+}
+
+/// The lock and PIN screens' values, filled by the embedder from what it read.
+///
+/// Everything here is either public device state or a user-chosen label; nothing in it
+/// is derived from a secret, which is why the whole struct is `Clone` and printable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockInfo {
+    pub status: StoreStatus,
+    /// User-chosen device nickname (Settings). Empty when unset, which the lock screen
+    /// renders as its own edge state rather than as a blank line.
+    pub nickname: String,
+    /// User-chosen lock word (Settings). Empty when unset.
+    pub lock_word: String,
+    /// Attempts left before the wipe; `None` when the wipe policy is off.
+    pub attempts_left: Option<u8>,
+    /// The configured threshold, so every number on screen is a format string over the
+    /// runtime policy rather than a literal (Q5 / Q37).
+    pub wipe_after: Option<u8>,
+    /// The shortest PIN this device's store will accept, read from its format-time policy
+    /// (`notyas_wallet::Policy::min_pin_len`).
+    ///
+    /// Pre-PIN and safe there: it is a property of the FORMAT, identical on every device
+    /// formatted with the same config, and it says nothing about the PIN actually in
+    /// force - that is [`PinShape`], which is post-PIN only. The PIN screen already states
+    /// this number to the user, because a disabled Unlock owes its reason.
+    ///
+    /// A device fact rather than a constant of this crate because the STORE is what
+    /// refuses a short PIN, and 0.2.0 shipped an S-04 whose own literal sat above it: a
+    /// device formatted at the ratified 4-digit floor could type its whole PIN and never
+    /// enable Unlock. Two crates each believing they owned the number is the defect; this
+    /// field is the single owner, and [`PIN_MIN_DEFAULT`] is only what a silent embedder
+    /// gets.
+    pub min_pin_len: u8,
+    /// The shape of the PIN in force, once a session has been opened with it. `None`
+    /// where no PIN exists, and also where the embedder did not record one - the
+    /// wipe-policy screen then says the search time is unknown rather than printing a
+    /// number for a PIN it never measured.
+    pub pin: Option<PinShape>,
+    /// What one unlock attempt costs on THIS board, in milliseconds: the other half of
+    /// the exhaustive-search arithmetic, and the half that is a measurement. See
+    /// [`UNLOCK_MS_M1`], which is both the default and the bench figure.
+    pub unlock_ms: u32,
+}
+
+impl Default for LockInfo {
+    /// A device the embedder has told nothing about has no PIN, so neither the lock
+    /// screen nor PIN entry can be reached from it. The honest default, and the one that
+    /// keeps R20 true for a caller that forgets to call [`Ui::set_lock_info`].
+    fn default() -> Self {
+        LockInfo {
+            status: StoreStatus::NotProvisioned,
+            nickname: String::new(),
+            lock_word: String::new(),
+            attempts_left: None,
+            wipe_after: None,
+            min_pin_len: PIN_MIN_DEFAULT,
+            pin: None,
+            unlock_ms: UNLOCK_MS_M1,
+        }
+    }
+}
+
+/// The Q22 warning, in the plain words the ratified answer requires, at every one of its
+/// three placements.
+///
+/// ONE constant rather than three paraphrases: the acceptance criterion is that the same
+/// four facts reach the user wherever a passphrase is involved - it is not stored here,
+/// restoring needs both halves, a seed backup alone is not enough, and the device cannot
+/// help if it is forgotten - and three copies of a sentence drift until one of them says
+/// something weaker. The placements are passphrase entry (create AND restore), the
+/// post-check backup screen, and the save that would otherwise imply the device kept it.
+pub(crate) const PASSPHRASE_NOT_STORED: [&str; 1] = [
+    "This passphrase is not stored here. Restoring needs BOTH your seed words AND \n     it. A seed backup alone will not do. A forgotten one is lost.",
+];
+
+/// What one [`Ui::tick`] did.
+///
+/// Two independent facts that used to be one `bool`: whether the panel needs repainting,
+/// and whether the tick raised work only the embedder can do. A hold-to-confirm that
+/// completes while the finger is still down is exactly a request with no touch event
+/// behind it, so `tick` needs both halves.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Ticked {
+    pub dirty: bool,
+    pub request: Option<UiRequest>,
 }
 
 /// A tappable region: identity plus the rectangle it occupies right now.
@@ -246,54 +1263,311 @@ pub struct Region {
     pub rect: Rect,
 }
 
-/// The Verify-device screen's values. The firmware fills this from what it actually
-/// read (running-partition hash, eFuse state, GPIO54 level - SECURITY.md invariant 5);
-/// the UI only displays it. The simulator passes obviously-fake values marked DUMMY.
-#[derive(Debug, Clone)]
-pub struct VerifyInfo {
-    pub firmware_version: String,
-    /// Board name this image was built for (the build IS the board - BOARDS.md).
-    pub board: String,
-    /// Runtime platform as read at boot: IDF version and silicon revision.
-    pub platform: String,
-    /// SHA256 of the running app partition, lowercase hex.
-    pub app_sha256: String,
-    /// Source-id hash of the tree the firmware was built from.
-    pub source_id: String,
-    pub self_test: String,
-    pub self_test_ok: bool,
-    /// Radio lockdown state, e.g. "C6 held in reset (GPIO54 low)".
-    pub radio: String,
-    pub radio_ok: bool,
-    pub secure_boot: String,
-    pub flash_encryption: String,
+// ---------------------------------------------------------------------------------------
+// The Verify-device readout (S-46; VERIFY.md sections 10 and 11)
+// ---------------------------------------------------------------------------------------
+
+/// A value that is hex when it exists, and a STATED REASON when it does not.
+///
+/// Five variants because the silicon gives five different answers, and collapsing them
+/// loses the one that matters most: `esp_efuse_read_block()` performs no `RD_DIS` check
+/// and a read-protected block hands back zeros, so an absent digest must not be able to
+/// reach the screen as thirty-two zero bytes (VERIFY.md 5.1).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum HexValue {
+    /// Lowercase unspaced hex, exactly as read. The screen groups and wraps it; it never
+    /// shortens it (contract rule 1).
+    Read(String),
+    /// The fuse or field is not burned. An absence, not a failure.
+    NotBurned,
+    /// A secure-boot digest slot that has been revoked.
+    Revoked,
+    /// Read protection is set, so software - this firmware included - cannot see it.
+    ReadProtected,
+    /// This build could not read it.
+    #[default]
+    NotRead,
 }
 
-impl Default for VerifyInfo {
-    /// Honest placeholders: a Verify screen with nothing supplied reports exactly that,
-    /// never a reassuring constant.
-    fn default() -> Self {
-        VerifyInfo {
-            firmware_version: String::from("not read"),
-            board: String::from("not read"),
-            platform: String::from("not read"),
-            app_sha256: String::from("not read"),
-            source_id: String::from("not read"),
-            self_test: String::from("not run"),
-            self_test_ok: false,
-            radio: String::from("not read"),
-            radio_ok: false,
-            secure_boot: String::from("not read"),
-            flash_encryption: String::from("not read"),
+impl HexValue {
+    /// The hex itself, if there is any. The screen needs the distinction because a
+    /// reason renders as a one-line K1 value and a digest renders as a K2 block.
+    pub fn hex(&self) -> Option<&str> {
+        match self {
+            HexValue::Read(h) => Some(h),
+            _ => None,
         }
     }
 }
 
-// ---------------------------------------------------------------------------------------
-// Screen state (private; owns all secrets)
-// ---------------------------------------------------------------------------------------
+/// One hashed flash region: what was hashed, from where, and to what.
+///
+/// The offset and length travel with the digest because a digest without them is a
+/// number rather than a checkable number - the same three-part shape the firmware's own
+/// `notyas-verify/1` readout emits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionDigest {
+    pub offset: u32,
+    /// Bytes hashed. For an image this excludes the appended 32-byte digest, which is
+    /// the length the release manifest publishes as `*_image_len`.
+    pub len: u32,
+    /// SHA-256 over exactly `len` bytes at `offset`, lowercase unspaced hex.
+    pub sha256: String,
+}
 
-/// On-screen keyboard page.
+/// One row of the live partition table, in the order the iterator returned it.
+///
+/// Field set and spelling match `firmware/partitions.csv` so the screen and the file are
+/// compared directly rather than translated (VERIFY.md 11.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartitionRow {
+    pub name: String,
+    /// IDF's own `type/subtype` rendering, e.g. `app/fact` or `data/0x40`.
+    pub kind: String,
+    pub offset: u32,
+    pub size: u32,
+    /// The partition carries the `encrypted` flag.
+    pub encrypted: bool,
+}
+
+/// Bytes found in a span that was supposed to be erased, and where they start.
+///
+/// A count alone tells the owner nothing they can act on; an offset tells them, and
+/// anyone they report it to, exactly where to look (VERIFY.md 3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetBytes {
+    pub count: u64,
+    pub first: u32,
+}
+
+/// One must-be-blank flash span and what a RAW read found in it.
+///
+/// Raw, not decrypted: erased flash is physically `0xff` whether or not the unit is
+/// encrypted, while the decrypted view of erased flash is pseudorandom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlankSpan {
+    pub start: u32,
+    /// One past the last byte read.
+    pub end: u32,
+    /// `None` is `all 0xff` - the only value on this screen whose comparand the owner
+    /// needs nothing from anywhere to know.
+    pub set: Option<SetBytes>,
+}
+
+/// The reserved-space scan: on demand behind `[ Scan ]`, never at boot (ratified Q57).
+///
+/// `NotScanned` is a statement about the device rather than a missing value: it has not
+/// looked. Rendering it as `all 0xff`, or as anything else, would be the firmware
+/// answering a question nobody asked it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ReservedSpace {
+    #[default]
+    NotScanned,
+    /// The scan was asked for and produced no result: this build could not perform the
+    /// raw read. Distinct from [`ReservedSpace::NotScanned`] on one side (which is "it has
+    /// not looked") and from an empty [`ReservedSpace::Scanned`] on the other (which would
+    /// claim it looked and found nothing), because those are three different statements
+    /// about the device and only one of them is true at a time.
+    NotRead,
+    Scanned {
+        /// In address order, which is also the order the digest concatenates them in.
+        spans: alloc::vec::Vec<BlankSpan>,
+        /// SHA-256 over the concatenated spans, so two units compare in one value and
+        /// the scan survives the QR export.
+        digest: HexValue,
+    },
+}
+
+/// One eFuse bit as the SCREEN names it.
+///
+/// Four states, and the two past set/clear are the honest ones: a field this silicon
+/// does not have (P4 has no `HARD_DIS_JTAG`) is [`Bit::Absent`], and a field this build
+/// could not resolve is [`Bit::NotRead`]. Neither may collapse into [`Bit::Clear`],
+/// which would be the screen reporting a fuse state it never read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Bit {
+    Set,
+    Clear,
+    /// Not a field on this silicon, or no key block carries the purpose the row is about.
+    Absent,
+    #[default]
+    NotRead,
+}
+
+impl Bit {
+    /// A bit that was read.
+    pub fn read(set: bool) -> Bit {
+        if set {
+            Bit::Set
+        } else {
+            Bit::Clear
+        }
+    }
+
+    /// A bit that may not exist on this silicon: `None` is [`Bit::Absent`], never
+    /// [`Bit::Clear`].
+    pub fn present(set: Option<bool>) -> Bit {
+        match set {
+            Some(b) => Bit::read(b),
+            None => Bit::Absent,
+        }
+    }
+
+    /// The bit as read, or `None` when there was none to read.
+    pub fn get(self) -> Option<bool> {
+        match self {
+            Bit::Set => Some(true),
+            Bit::Clear => Some(false),
+            Bit::Absent | Bit::NotRead => None,
+        }
+    }
+}
+
+/// One of the six eFuse key blocks (VERIFY.md 5.1, rendered per 11.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyBlockInfo {
+    /// IDF's own purpose enumerator name, printed verbatim and never translated: the
+    /// name IS the value a reader compares against `espefuse.py summary` and against the
+    /// burn runbook. `None` is `esp_efuse_key_block_unused()`, printed `<unused>`.
+    pub purpose: Option<String>,
+    pub read_protected: bool,
+    pub write_protected: bool,
+}
+
+/// Everything S-46 shows, in VERIFY.md section 10's frozen field order.
+///
+/// The firmware fills this from what it MEASURED (SECURITY.md invariant 5); this crate
+/// displays it and computes no part of it. Every field carries its own way of saying
+/// "this build did not read this" - `Option`, [`Bit::NotRead`], [`HexValue::NotRead`],
+/// an empty `Vec` - because the contract rule "read, never claim" means an unread field
+/// renders `not read` and never a plausible default, and because a row that could only
+/// ever render one thing would make the screen a liar about the state it reports.
+///
+/// Flat, with section 11.2's six banners, deliberately: the field order is frozen, this
+/// struct is in that order, and a reviewer checking one against the other should be
+/// reading a list rather than walking a tree.
+#[derive(Debug, Clone, Default)]
+pub struct VerifyInfo {
+    // --- identity (VERIFY.md 10.1) -----------------------------------------------------
+    /// Board this image was built for; the build IS the board (BOARDS.md). One of the
+    /// two legitimately compile-time values here - the flash rows beside it are what
+    /// check the build against the hardware it is running on.
+    pub board: Option<String>,
+    pub chip: Option<String>,
+    pub chip_revision: Option<String>,
+    /// Boot ROM ECO version, e.g. `eco 2`.
+    pub boot_rom: Option<String>,
+    pub rom_chip_id: Option<String>,
+    pub mac: Option<String>,
+    /// eFuse `OPTIONAL_UNIQUE_ID`, 128 bits. `NotBurned` on a die that never had one,
+    /// which says nothing rather than zero.
+    pub die_unique_id: HexValue,
+
+    // --- firmware (VERIFY.md 10.2) -----------------------------------------------------
+    /// The other legitimately compile-time value: what the build calls itself. The
+    /// digests below it are why a string is enough here.
+    pub firmware_version: Option<String>,
+    pub idf_app: Option<String>,
+    /// The IDF that built the bootloader now in flash. Beside the app's row on purpose:
+    /// a different string is a stale bootloader, which no digest alone can name.
+    pub idf_bootloader: Option<String>,
+    pub rollback_image: Option<String>,
+    pub rollback_efuse: Option<String>,
+    /// The composite over the three immutable regions (VERIFY.md 2.4).
+    pub firmware_digest: HexValue,
+    pub app: Option<RegionDigest>,
+    pub bootloader: Option<RegionDigest>,
+    pub partition_table: Option<RegionDigest>,
+
+    // --- flash (VERIFY.md 10.3) --------------------------------------------------------
+    /// What the build was told the flash is.
+    pub flash_size_header: Option<String>,
+    /// What the fitted part reports.
+    pub flash_size_detected: Option<String>,
+    pub jedec_id: Option<String>,
+    /// Top 64 of 128 bits on GD parts; `None` where the part does not implement `4Bh`.
+    pub flash_unique_id: Option<String>,
+    /// The live table, row by row. Empty is `not read`.
+    pub partitions: alloc::vec::Vec<PartitionRow>,
+    pub reserved_space: ReservedSpace,
+    /// Raw digest of the `wallets` partition - a digest of ciphertext, so it says
+    /// nothing about content. Pre-PIN under the ratified Q2(a) (Q56).
+    pub wallets_digest: HexValue,
+    /// Raw digest of the `counters` partition. Expected to change on every boot.
+    pub counters_digest: HexValue,
+
+    // --- efuse (VERIFY.md 10.4) --------------------------------------------------------
+    pub secure_boot: Bit,
+    pub aggressive_revoke: Bit,
+    /// All three slots, always: three rows where two read `not burned` make the absence
+    /// of a second enrolled signing key a readable value rather than an inference from
+    /// silence (ratified Q58).
+    pub key_digests: [HexValue; 3],
+    pub flash_encryption: Bit,
+    /// IDF's own `esp_get_flash_encryption_mode()` enumerator name, untranslated.
+    pub encryption_mode: Option<String>,
+    /// Raw `SPI_BOOT_CRYPT_CNT` popcount, 0..=3.
+    pub crypt_count: Option<u8>,
+    /// `RD_DIS` on whichever block carries an XTS purpose; [`Bit::Absent`] when none
+    /// does. A burned but software-readable XTS key is not flash encryption in any
+    /// useful sense, which is why it is a row of its own.
+    pub xts_key_read_protected: Bit,
+    // Every remaining field in this group names an ACCESS rather than a fuse: `Set` is
+    // "enabled", and it is the state of a chip whose `DIS_*` fuse is NOT burned. The
+    // inversion happens once, in the firmware that reads the fuse, so that no reader of
+    // this struct has to remember which way each symbol points.
+    /// `DIS_DOWNLOAD_MANUAL_ENCRYPT` inverted: manual encryption is still allowed.
+    pub manual_encrypt: Bit,
+    pub uart_download: Bit,
+    /// `ENABLE_SECURITY_DOWNLOAD` - the one field in the group that is not inverted.
+    pub secure_download: Bit,
+    pub usb_serial_jtag_download: Bit,
+    pub usb_otg_download: Bit,
+    pub forced_download: Bit,
+    pub direct_boot: Bit,
+    pub jtag_pad: Bit,
+    pub jtag_usb: Bit,
+    /// `SOFT_DIS_JTAG` as `(count, width)`, printed raw: it is a 3-bit odd/even field,
+    /// IDF treats soft-disabled as complete only at the full width, and the count is
+    /// what `espefuse.py` prints.
+    pub jtag_soft: Option<(u8, u8)>,
+    /// Which JTAG path the strapping pin selects. A selector, so the raw bit.
+    pub jtag_select: Bit,
+    /// `UART_PRINT_CONTROL`, two bits, printed raw.
+    pub rom_log: Option<u8>,
+    /// ROM printing over USB-serial-JTAG, as the access.
+    pub rom_log_usb: Bit,
+    /// All six blocks in block order. Empty is `not read`.
+    pub key_blocks: alloc::vec::Vec<KeyBlockInfo>,
+
+    // --- state (VERIFY.md 10.5) --------------------------------------------------------
+    /// Boots counted since the ledger was formatted. `None` renders `not counted` and
+    /// NEVER `0`: on an unprovisioned or blank device nothing is written and nothing is
+    /// read, so `0` would be a value the device did not measure (VERIFY.md 6 / R24).
+    pub boot_count: Option<u64>,
+    /// The boot index the owner last marked as seen. `None` renders `not acknowledged`.
+    pub acknowledged_at: Option<u64>,
+    /// Times this device has been wiped. Pre-PIN: a wipe is not a secret, and the value
+    /// is in the plaintext `counters` partition where a flash dump reads it anyway.
+    pub wipe_epoch: Option<u64>,
+    /// Occupancy at the granularity Q2(a) permits: `present` / `blank`, never a count.
+    pub storage: Option<String>,
+
+    // --- operation (VERIFY.md 10.6) ----------------------------------------------------
+    /// The kill line's GPIO number, so the row names the pad it read.
+    pub radio_gpio: Option<u8>,
+    /// The pad level as it reads right now.
+    pub radio: Option<String>,
+    /// One of exactly two rows where semantic colour survives on S-46 (11.6), because a
+    /// device not holding its radio in reset is a different situation from a field the
+    /// reader is being asked to compare - and even there the WORD carries the meaning.
+    pub radio_ok: bool,
+    pub self_test: Option<String>,
+    pub self_test_ok: bool,
+}
+
+/// On-screen keyboard page. Shared vocabulary: the keyboard component draws it, and the
+/// two screens that carry a keyboard own one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Page {
     Lower,
@@ -302,680 +1576,654 @@ pub(crate) enum Page {
     Symbols,
 }
 
+/// The C4c fill time: how long an irreversible action's button must be held before it
+/// fires (UX-SCREENS.md C4c). A constant, never a setting - a user-shortenable hold is a
+/// user-shortenable safety interlock.
+pub const HOLD_MS: u32 = 1500;
+
+/// Fill of a hold-to-confirm button after `held_ms`, in permille of [`HOLD_MS`].
+///
+/// Permille rather than a float: this crate has no FPU on the target and the value is a
+/// pixel width in the end, so integer math all the way to the trough is both exact and
+/// what the drawing code wants.
+pub fn hold_fill_permille(held_ms: u32) -> u32 {
+    held_ms.saturating_mul(1000).checked_div(HOLD_MS).unwrap_or(1000).min(1000)
+}
+
+/// A press in flight, for the screens that render one (the C4c hold bar).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PassFocus {
-    Entry,
-    Confirm,
+pub struct Press {
+    /// The region the Down landed on, or `None` if it landed on bare paper.
+    pub id: Option<RegionId>,
+    /// Milliseconds the finger has been down, as [`Ui::tick`] has been told.
+    pub held_ms: u32,
 }
 
-pub(crate) struct DiceState {
-    /// The digits as typed (1-6). `Zeroizing`, because this string alone regenerates the
-    /// wallet.
-    pub rolls: Zeroizing<String>,
-    /// Parsed form of `rolls`, kept in step by the edit handlers (parsing is cheap but
-    /// the draw path should not re-derive state). Self-wiping.
-    pub entropy: DiceEntropy,
-    pub mode: MnemonicMode,
+
+// ---------------------------------------------------------------------------------------
+// The card, as the ingress screens read it (S-27, S-28)
+// ---------------------------------------------------------------------------------------
+
+/// Which files S-28 is listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFilter {
+    /// `.psbt` files, plus directories so the tab can still be navigated.
+    PsbtOnly,
+    /// Everything the card holds. The escape hatch for a mis-extensioned file, reached
+    /// through [`RegionId::FileShowAll`] - hiding a file the user can plainly see on the
+    /// card is how a picker sends someone hunting for a transaction that is right there.
+    All,
 }
 
-impl DiceState {
-    fn new() -> Self {
-        DiceState {
-            // Worst case one ASCII digit per entropy bit (rolls of 4/5 yield 1 bit), so
-            // this capacity holds every string the MAX_ENTROPY_BITS guard can admit.
-            rolls: secret_buf(bip39::MAX_ENTROPY_BITS),
-            entropy: parse_dice(""),
-            mode: MnemonicMode::Raw,
-        }
-    }
-
-    /// ENT the current mode would put in the mnemonic, given the bits collected so far.
-    fn ent(&self) -> usize {
-        let total = self.entropy.binary().len();
-        match self.mode {
-            MnemonicMode::Raw => bip39::raw_bits_used(total),
-            // ENT = words * 32 / 3 (each word is 11 bits, 32 of every 33 are entropy).
-            MnemonicMode::Words(n) => n.get() * 32 / 3,
-        }
-    }
-
-    /// The number every warning is computed from, per the desktop rule.
-    pub fn effective_bits(&self) -> usize {
-        report::effective_bits(self.mode, self.ent(), self.entropy.binary().len())
-    }
-}
-
-pub(crate) struct MnemonicState {
-    pub dice: DiceEntropy,
-    pub mode: MnemonicMode,
-    /// The words being shown. notyas-core's type: wipes itself on drop.
-    pub mnem: Mnemonic,
-    pub revealed: bool,
-    /// Reveal-confirm modal is open.
-    pub modal: bool,
-    pub scroll: i32,
-}
-
-pub(crate) struct PhraseState {
-    pub text: Zeroizing<String>,
-    pub page: Page,
-}
-
-/// Where the seed material for the passphrase screen came from.
-pub(crate) enum SeedSource {
-    Dice { dice: DiceEntropy, mode: MnemonicMode },
-    Phrase(Zeroizing<String>),
-}
-
-impl SeedSource {
-    /// A self-wiping copy, for handing the seed material to the Deriving state while the
-    /// passphrase screen keeps its own (Back must restore that screen intact). Not a
-    /// `Clone` impl on purpose: duplicating secret material is a decision each call site
-    /// should have to write out.
-    fn duplicate(&self) -> SeedSource {
-        match self {
-            SeedSource::Dice { dice, mode } => {
-                SeedSource::Dice { dice: dice.clone(), mode: *mode }
-            }
-            // Exact-capacity allocation, so the copy cannot grow and strand a partial
-            // phrase outside the Zeroizing wrapper.
-            SeedSource::Phrase(p) => SeedSource::Phrase(Zeroizing::new(String::from(&**p))),
-        }
-    }
-
-    /// The mnemonic mode the pipeline should run in. The phrase path does not use one;
-    /// it takes the same placeholder the core does.
-    fn mode(&self) -> MnemonicMode {
-        match self {
-            SeedSource::Dice { mode, .. } => *mode,
-            SeedSource::Phrase(_) => MnemonicMode::Raw,
-        }
-    }
-}
-
-/// Everything the pending derivation needs, parked while the interstitial is on screen.
+/// What one row of the picker is, as far as a screen needs to know.
 ///
-/// The seed material lives HERE rather than being read back off the passphrase screen so
-/// that [`Ui::tick`] is a pure function of this state: the blocking work cannot depend on
-/// anything the user might have changed between the frame being painted and the compute
-/// starting.
-pub(crate) struct DerivingState {
-    pub source: SeedSource,
-    /// Empty when the user did not opt in, which is exactly what the pipeline wants.
-    pub passphrase: Zeroizing<String>,
+/// The extensions this device acts on, and one bucket for everything else. Deliberately
+/// NOT "is this really a PSBT": deciding that belongs to the decoder, which already owns
+/// the magic check and already writes the sentence a user acts on, and answering it here
+/// would mean opening every file on the card to draw a list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    Directory,
+    Psbt,
+    /// `.txn`, the finalized-transaction file.
+    Txn,
+    /// `.txt`, which is how the Coldcard dialect ships multisig descriptors.
+    Text,
+    /// `.json`, the coordinator export bodies.
+    Json,
+    Other,
 }
 
-pub(crate) struct PassState {
-    pub source: SeedSource,
-    /// The desktop's explicit opt-in: off means the seed derives with an empty
-    /// passphrase, and the screen says so.
-    pub enabled: bool,
-    pub entry: Zeroizing<String>,
-    pub confirm: Zeroizing<String>,
-    pub focus: PassFocus,
-    pub page: Page,
-    /// Show/Hide toggle (default hidden). When true the passphrase fields render
-    /// unmasked so the user can verify what they typed - an unseen typo silently
-    /// derives a different wallet, which is the worse failure.
-    pub show: bool,
+/// One row of S-28, and the value [`UiRequest::LoadPsbt`] names.
+///
+/// Everything here came off a FAT directory entry, which is untrusted input that someone
+/// else wrote: the embedder has already bounded and validated it (`notyas_wallet::sd`
+/// does the deciding) and this is what survived. The UI renders it and re-derives none of
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRow {
+    /// The name exactly as it is on the card, which is also the name a request carries
+    /// back. Never shortened for display: a truncated name is a name the user cannot
+    /// match against what their computer wrote.
+    pub name: String,
+    pub kind: FileKind,
+    pub len: u32,
+    /// The directory entry's timestamp, already rendered ("17 Aug 14:02"). A STRING
+    /// because this crate has no clock and no calendar, and because the device makes no
+    /// timezone claim about a number some other machine wrote. Empty where the entry
+    /// carries none, which renders as a blank column rather than as an invented date.
+    pub modified: String,
+    /// The entry claims more than the transfer cap. The row is still drawn - a file the
+    /// user can see on the card must be findable on the screen - and it is not selectable,
+    /// and the refusal states the cap.
+    pub oversize: bool,
 }
 
-/// The QR modal, open over the schemes screen: a finished symbol plus its title.
-pub(crate) struct QrModal {
-    pub label: String,
-    pub data: QrData,
+/// One directory of the card, as S-28 shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CardListing {
+    /// The directory listed. Empty is the card root; anything else is the one level below
+    /// it that S-28's depth limit permits.
+    pub dir: String,
+    /// Rows in the order they will be drawn, which is the order the embedder sorted them
+    /// into. The screen does not re-sort: the row a user taps has to be a function of what
+    /// they were shown, not of a layout whoever wrote the card chose.
+    pub rows: Vec<FileRow>,
+    /// The walk stopped at its entry bound. The screen says so rather than implying the
+    /// card holds only this.
+    pub truncated: bool,
+    /// Entries dropped because their names could not be validated. Counted, never
+    /// transliterated: a name this device cannot open must not reach a row.
+    pub rejected: u16,
 }
 
-pub(crate) struct SchemesState {
-    /// The full pipeline output; its own Drop wipes the secrets it holds.
-    pub report: Report,
-    pub tab: usize,
-    pub scroll: i32,
-    /// `Some` while the QR modal is open. Filled only through [`Ui::show_qr`]
-    /// (the embedder answering a [`UiRequest::Qr`]), never computed here.
-    pub qr: Option<QrModal>,
-}
-
-// The variants differ in size because each owns exactly its screen's data (a Report is
-// large); exactly one State exists at a time, so boxing would buy indirection, not memory.
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum State {
-    Home,
-    Dice(DiceState),
-    Mnemonic(MnemonicState),
-    Phrase(PhraseState),
-    Passphrase(PassState),
-    Deriving(DerivingState),
-    Schemes(SchemesState),
-    Verify { scroll: i32 },
+/// What the std side made of a [`UiRequest::ListCard`].
+///
+/// Three variants, and the two failures are separate because they are two different
+/// remedies: a slot with nothing in it is answered by inserting a card, and a card that
+/// mounted and would not list is answered by a different card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardOutcome {
+    Listed(CardListing),
+    /// R-23. No card in the slot, or it did not mount.
+    NoCard,
+    /// The card could not be listed. The sentence is the embedder's, because the fault is
+    /// its filesystem's - or its build's - to describe.
+    Unreadable(String),
 }
 
 // ---------------------------------------------------------------------------------------
-// The Ui
+// Refusals (S-29 / C7)
 // ---------------------------------------------------------------------------------------
 
-/// Movement beyond this many pixels turns a press into a drag and cancels the tap.
-const DRAG_SLOP: i32 = 16;
-
-/// In-flight touch bookkeeping between Down and Up.
-struct Pressed {
-    id: Option<RegionId>,
-    last_y: i32,
-    /// Accumulated absolute vertical movement, for the tap-vs-drag decision.
-    moved: i32,
-}
-
-/// The whole user interface: screen state, pipeline inputs, and the renderer.
+/// A refusal code, and the three fixed sentences the ratified table gives it
+/// (UX-SCREENS.md 3.2).
 ///
-/// The firmware's loop is: `touch()` for every panel event, then `draw()` into the
-/// framebuffer when anything may have changed. Both are total - no screen can panic on
-/// any event - and `draw` is a pure function of the current state.
-pub struct Ui {
-    m: Metrics,
-    state: State,
-    verify: VerifyInfo,
-    pressed: Option<Pressed>,
-    /// Navigation stack: each forward transition pushes the prior screen here,
-    /// so Back restores it exactly (user's rolls, mnemonic, passphrase survive).
-    /// One level per forward step; Back pops. Empty stack + Back -> Home.
+/// The COPY lives here and the FACTS arrive with it, and that split is the point. A
+/// refusal's headline, the reason it matters and what to do about it are product copy,
+/// stable across releases and asserted with their exact text by CI - so they belong in the
+/// crate the screen is in, beside every other frozen string. What HAPPENED is a fact about
+/// one file that only the engine knows ("Input 2 states an amount but does not include the
+/// transaction it came from"), so it travels in [`RefusalNotice::happened`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalCode {
+    NotOurInputs,
+    MissingPrevTx,
+    ChangeNotProven,
+    CosignerMismatch,
+    WrongNetwork,
+    ImpossibleFee,
+    UnsupportedSighash,
+    UnexpectedTaproot,
+    MalformedFile,
+    SignatureCheckFailed,
+    NotAPsbt,
+    PsbtVersion2,
+    FileTooLarge,
+    NoCard,
+    NoPsbtFiles,
+    WriteFailed,
+    /// The device cannot do this at all - not because of anything in the file.
     ///
-    /// Boxed on purpose (clippy's `vec_box` reads only the size, not the contents): a
-    /// `State` holds rolls, a mnemonic and a passphrase, and storing them inline would
-    /// memcpy those bytes on every push, pop and Vec regrow - each copy leaving an
-    /// unwiped duplicate behind at the old address. A pointer move copies no secret.
-    #[allow(clippy::vec_box)]
-    prior: Vec<Box<State>>,
-    /// Exit-confirmation modal is open over the current screen. When true, only
-    /// the modal's Cancel/Confirm are tappable; the sheet below is inert.
-    exit_modal: bool,
-    /// Network every derivation runs on. Toggled on Home (desktop parity: the desktop
-    /// pipeline takes the network as an input too); lives on the `Ui` rather than in a
-    /// screen state so the choice survives screen changes within a session. Power-off
-    /// resets it to mainnet like everything else - the device is stateless.
-    network: bitcoin::Network,
+    /// NOT in the ratified table, and deliberately outside its numbering. Every code above
+    /// describes a FILE and tells the user what to do about that file; this one describes
+    /// the DEVICE, and it exists so that no request in this vocabulary can be answered by
+    /// silence. A build in which every screen is wired never constructs it, which is the
+    /// only sense in which it is temporary - the alternative it replaces is a handler that
+    /// logs and returns, and this codebase has shipped three of those.
+    NotInThisBuild,
 }
 
-impl core::fmt::Debug for Ui {
-    /// Screen id only. The state behind it holds rolls, words and passphrases, none of
-    /// which may reach a `Debug` rendering (house rule, same as every notyas-core type).
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Ui").field("screen", &self.screen()).finish()
-    }
-}
-
-impl Ui {
-    /// A UI for a `width` x `height` Rgb565 display. All layout derives from this size.
-    pub fn new(width: u32, height: u32) -> Self {
-        Ui {
-            m: Metrics::new(width, height),
-            state: State::Home,
-            verify: VerifyInfo::default(),
-            pressed: None,
-            prior: Vec::new(),
-            exit_modal: false,
-            network: bitcoin::Network::Bitcoin,
+impl RefusalCode {
+    /// The stable code, right-aligned in C7's header band.
+    pub fn code(self) -> &'static str {
+        match self {
+            RefusalCode::NotOurInputs => "R-01",
+            RefusalCode::MissingPrevTx => "R-02",
+            RefusalCode::ChangeNotProven => "R-03",
+            RefusalCode::CosignerMismatch => "R-04",
+            RefusalCode::WrongNetwork => "R-05",
+            RefusalCode::ImpossibleFee => "R-06",
+            RefusalCode::UnsupportedSighash => "R-07",
+            RefusalCode::UnexpectedTaproot => "R-08",
+            RefusalCode::MalformedFile => "R-09",
+            RefusalCode::SignatureCheckFailed => "R-10",
+            RefusalCode::NotAPsbt => "R-20",
+            RefusalCode::PsbtVersion2 => "R-21",
+            RefusalCode::FileTooLarge => "R-22",
+            RefusalCode::NoCard => "R-23",
+            RefusalCode::NoPsbtFiles => "R-24",
+            RefusalCode::WriteFailed => "R-25",
+            RefusalCode::NotInThisBuild => "R-00",
         }
     }
 
-    /// The network the next derivation will run on (Home-screen toggle).
-    pub fn network(&self) -> bitcoin::Network {
-        self.network
-    }
-
-    pub fn screen(&self) -> ScreenId {
-        match self.state {
-            State::Home => ScreenId::Home,
-            State::Dice(_) => ScreenId::DiceEntry,
-            State::Mnemonic(_) => ScreenId::MnemonicDisplay,
-            State::Phrase(_) => ScreenId::PhraseEntry,
-            State::Passphrase(_) => ScreenId::PassphraseEntry,
-            State::Deriving(_) => ScreenId::Deriving,
-            State::Schemes(_) => ScreenId::Schemes,
-            State::Verify { .. } => ScreenId::VerifyDevice,
+    /// The headline in the C7 band.
+    pub fn headline(self) -> &'static str {
+        match self {
+            RefusalCode::NotOurInputs => "These inputs are not from this wallet",
+            RefusalCode::MissingPrevTx => "Missing the previous transaction",
+            RefusalCode::ChangeNotProven => "Change output not proven",
+            RefusalCode::CosignerMismatch => "Cosigner keys do not match",
+            RefusalCode::WrongNetwork => "Wrong network",
+            RefusalCode::ImpossibleFee => "Fee is impossible",
+            RefusalCode::UnsupportedSighash => "Unsupported signature type",
+            RefusalCode::UnexpectedTaproot => "Unexpected taproot data",
+            RefusalCode::MalformedFile => "This file is malformed",
+            RefusalCode::SignatureCheckFailed => "Signature check failed",
+            RefusalCode::NotAPsbt => "This file is not a PSBT",
+            RefusalCode::PsbtVersion2 => "PSBT version 2 is not supported",
+            RefusalCode::FileTooLarge => "File is too large",
+            RefusalCode::NoCard => "No card detected",
+            RefusalCode::NoPsbtFiles => "No PSBT files on this card",
+            RefusalCode::WriteFailed => "Card write failed",
+            RefusalCode::NotInThisBuild => "This build cannot do that",
         }
     }
 
-    /// Install the values the Verify screen shows. The firmware calls this once at boot
-    /// with what it measured; until then the screen shows "not read" placeholders.
-    pub fn set_verify_info(&mut self, info: VerifyInfo) {
-        self.verify = info;
-    }
-
-    /// Every tappable region of the current screen, in no particular order. When the
-    /// modal is open, only the modal's buttons are returned - the sheet below it is
-    /// inert, exactly as it is unreachable on screen.
-    pub fn regions(&self) -> Vec<Region> {
-        if self.exit_modal {
-            return screens::exit_modal_regions(&self.m);
-        }
-        screens::regions(&self.m, &self.state)
-    }
-
-    /// Feed one touch event. Taps fire on Up over the same region the Down hit;
-    /// vertical drags scroll the scrollable screens (mnemonic grid, scheme details).
+    /// C7's "Why this matters": the attack or the fault this refusal defends against.
     ///
-    /// Returns `Some` when the tap needs work only the embedder can do (currently: QR
-    /// encoding, which is std-only - see [`UiRequest`]). Dropping a request loses
-    /// nothing but the response; the state machine has already moved on cleanly.
-    pub fn touch(&mut self, ev: TouchEvent) -> Option<UiRequest> {
-        // The Deriving screen has no tappable regions, so an event arriving in that
-        // state is a stray - finishing the pending work first is the only sane response,
-        // and it means an embedder that has not yet added `tick` to its loop recovers on
-        // the next touch instead of wedging on the interstitial forever.
-        self.tick();
-        match ev {
-            TouchEvent::Down { x, y } => {
-                let id = self.hit(x, y);
-                self.pressed = Some(Pressed { id, last_y: y, moved: 0 });
-                None
+    /// `None` on the two codes the ratified table leaves blank, and only those two. They
+    /// are the codes about the CARD rather than about a transaction - there is no attack
+    /// behind an empty slot - and a fabricated sentence there would teach a user to skim
+    /// the section on the codes where it carries the whole warning.
+    pub fn matters(self) -> Option<&'static str> {
+        match self {
+            RefusalCode::NotOurInputs => Some("Signing needs the wallet that owns the coins."),
+            RefusalCode::MissingPrevTx => Some(
+                "Without it the amount cannot be checked. A wrong amount is how a signer \
+                 is tricked into paying its balance as a fee.",
+            ),
+            RefusalCode::ChangeNotProven => {
+                Some("This is exactly what an attacker does to redirect your change.")
             }
-            TouchEvent::Move { x: _, y } => {
-                let p = self.pressed.as_mut()?;
-                let dy = y - p.last_y;
-                p.last_y = y;
-                p.moved += dy.abs();
-                if p.moved > DRAG_SLOP {
-                    p.id = None;
-                }
-                self.scroll_by(-dy);
-                None
+            RefusalCode::CosignerMismatch => {
+                Some("A substituted cosigner key sends your coins to someone else's multisig.")
             }
-            TouchEvent::Up { x, y } => {
-                let p = self.pressed.take()?;
-                let (down, up) = (p.id?, self.hit(x, y)?);
-                if down == up && p.moved <= DRAG_SLOP {
-                    self.activate(down)
-                } else {
-                    None
-                }
+            RefusalCode::WrongNetwork => Some(
+                "Signing across networks can expose keys that were meant to stay separate.",
+            ),
+            RefusalCode::ImpossibleFee => {
+                Some("A negative fee means the file is corrupt or hostile.")
             }
+            RefusalCode::UnsupportedSighash => Some(
+                "notyas signs SIGHASH_ALL only. Other types let the outputs be changed \
+                 after you sign.",
+            ),
+            RefusalCode::UnexpectedTaproot => {
+                Some("Signing data the device cannot interpret is signing a blank cheque.")
+            }
+            RefusalCode::MalformedFile => {
+                Some("A signer that accepts malformed input is a signer that can be steered.")
+            }
+            RefusalCode::SignatureCheckFailed => Some(
+                "This is a device fault, not a problem with your transaction. Nothing was \
+                 signed and nothing was written.",
+            ),
+            RefusalCode::NotAPsbt => Some("The device reads PSBT files only."),
+            RefusalCode::PsbtVersion2 => Some(
+                "This device reads version 0, which is what wallet software produces today.",
+            ),
+            RefusalCode::FileTooLarge => {
+                Some("The device holds the whole transaction in memory to check it.")
+            }
+            RefusalCode::NoCard | RefusalCode::NoPsbtFiles => None,
+            RefusalCode::WriteFailed => Some("The file on the card is incomplete."),
+            RefusalCode::NotInThisBuild => Some(
+                "A device that quietly does nothing teaches you that an operation \
+                 succeeded.",
+            ),
         }
     }
 
-    /// Run the pending blocking computation, if the current screen has one.
-    ///
-    /// The embedder's loop is `touch -> draw -> tick`. Only the Deriving screen has
-    /// pending work (the seed stretch and the whole scheme derivation, seconds of PBKDF2
-    /// on this silicon), and it exists precisely so that the "Deriving" frame is painted
-    /// and published BEFORE that work starts - a synchronous derivation behind the
-    /// passphrase screen is indistinguishable from a hung device.
-    ///
-    /// A no-op returning `false` on every other screen, so the loop can call it
-    /// unconditionally; `true` means the state advanced and the screen needs a repaint.
-    pub fn tick(&mut self) -> bool {
-        let State::Deriving(d) = &self.state else {
-            return false;
-        };
-        let params = Parameters {
-            mode: d.source.mode(),
-            passphrase: &d.passphrase,
-            network: self.network,
-            schemes: &Scheme::ALL,
-            account: ChildIndex::ZERO,
-            change: ChildIndex::ZERO,
-            count: ADDRESS_ROWS,
-            script_type: 2,
-        };
-        let report = match &d.source {
-            SeedSource::Dice { dice, .. } => Report::build(dice, &params).ok(),
-            SeedSource::Phrase(text) => Report::from_phrase(text, &params),
-        };
-        self.state = match report {
-            Some(report) => State::Schemes(SchemesState { report, tab: 0, scroll: 0, qr: None }),
-            // Both arms were validated before the passphrase screen, so a None here is a
-            // core bug. Falling back to the screen the user came from beats wedging on an
-            // interstitial that will never finish, and beats panicking in the input path.
-            None => self.prior.pop().map(|p| *p).unwrap_or(State::Home),
-        };
-        true
-    }
-
-    /// Install the finished QR symbol for a [`UiRequest::Qr`] and open the modal.
-    ///
-    /// Only acts while the schemes screen is showing - the one screen whose regions can
-    /// emit a QR request. A response arriving after the user navigated away is dropped:
-    /// resurrecting a modal over a different screen would show a QR nobody asked for.
-    pub fn show_qr(&mut self, target: QrTarget, data: QrData) {
-        if self.exit_modal {
-            return;
-        }
-        if let State::Schemes(s) = &mut self.state {
-            s.qr = Some(QrModal { label: target.label, data });
-        }
-    }
-
-    /// Repaint the whole screen. The only output path this crate has.
-    pub fn draw<D: DrawTarget<Color = Rgb565>>(&self, target: &mut D) -> Result<(), D::Error> {
-        screens::draw(target, &self.m, &self.state, &self.verify, self.network)?;
-        if self.exit_modal {
-            screens::draw_exit_modal(target, &self.m)?;
-        }
-        Ok(())
-    }
-
-    // --- internals ---------------------------------------------------------------------
-
-    fn hit(&self, x: i32, y: i32) -> Option<RegionId> {
-        self.regions().into_iter().find(|r| r.rect.contains(x, y)).map(|r| r.id)
-    }
-
-    /// Apply a vertical scroll delta to the current screen, clamped to its content.
-    fn scroll_by(&mut self, dy: i32) {
-        if dy == 0 || self.exit_modal {
-            return;
-        }
-        let limit = screens::scroll_limit(&self.m, &self.state, &self.verify);
-        match &mut self.state {
-            State::Mnemonic(s) if !s.modal => s.scroll = (s.scroll + dy).clamp(0, limit),
-            // The sheet under an open QR modal is inert, scrolling included.
-            State::Schemes(s) if s.qr.is_none() => s.scroll = (s.scroll + dy).clamp(0, limit),
-            State::Verify { scroll } => *scroll = (*scroll + dy).clamp(0, limit),
-            _ => {}
-        }
-    }
-
-    /// The state machine: what a completed tap on `id` does in the current state.
-    /// Unmatched combinations are ignored by construction - `regions` never offers a
-    /// region the current state cannot act on. Returns the request a QR button raises;
-    /// every other tap resolves entirely inside this crate and returns `None`.
-    fn activate(&mut self, id: RegionId) -> Option<UiRequest> {
-        // Exit-confirmation modal takes priority over everything: while it is
-        // open, only Cancel and Confirm are tappable (regions() returns only
-        // those two), and every other tap is ignored.
-        if self.exit_modal {
-            match id {
-                RegionId::ModalCancel => self.exit_modal = false,
-                RegionId::ModalConfirm => {
-                    self.exit_modal = false;
-                    if let Some(prev) = self.prior.pop() {
-                        self.state = *prev;
-                    } else {
-                        self.state = State::Home;
-                    }
-                }
-                _ => {}
+    /// C7's "What to do": the user's next action, always present.
+    pub fn todo(self) -> &'static str {
+        match self {
+            RefusalCode::NotOurInputs => "Open that wallet and load the file again.",
+            RefusalCode::MissingPrevTx => {
+                "Re-export with full previous transactions included, then load it again."
             }
-            return None;
-        }
-
-        match (&mut self.state, id) {
-            // --- global -----------------------------------------------------------------
-            // Back: navigates to the prior screen. On serious screens (where a
-            // derived secret is in memory) the exit-confirmation modal opens
-            // first; on input-only screens (Dice, Phrase, Verify) it goes
-            // straight back, matching the user's expectation that "Back" means
-            // "the screen I was on before".
-            (_, RegionId::Back) => {
-                match &self.state {
-                    State::Mnemonic(_) | State::Passphrase(_) | State::Schemes(_) => {
-                        self.exit_modal = true;
-                    }
-                    _ => {
-                        if let Some(prev) = self.prior.pop() {
-                            self.state = *prev;
-                        } else {
-                            self.state = State::Home;
-                        }
-                    }
-                }
+            RefusalCode::ChangeNotProven => {
+                "Do not sign. Check the transaction in your wallet software."
             }
-
-            // --- home: network toggle ---------------------------------------------------
-            (State::Home, RegionId::NetToggle) => {
-                self.network = match self.network {
-                    bitcoin::Network::Bitcoin => bitcoin::Network::Testnet,
-                    _ => bitcoin::Network::Bitcoin,
-                };
+            RefusalCode::CosignerMismatch => {
+                "Compare the registration on all your devices. Import it again if it \
+                 changed legitimately."
             }
-
-            // --- home -------------------------------------------------------------------
-            (State::Home, RegionId::HomeNewSeed) => self.state = State::Dice(DiceState::new()),
-            (State::Home, RegionId::HomeVerifySeed) => {
-                self.state = State::Phrase(PhraseState {
-                    text: secret_buf(PHRASE_MAX),
-                    page: Page::Lower,
-                })
+            RefusalCode::WrongNetwork => "Open the testnet wallet, or load a mainnet transaction.",
+            RefusalCode::ImpossibleFee => "Rebuild the transaction in your wallet software.",
+            RefusalCode::UnsupportedSighash => {
+                "Rebuild the transaction with the default signature type."
             }
-            (State::Home, RegionId::HomeVerifyDevice) => self.state = State::Verify { scroll: 0 },
-
-            // --- dice entry -------------------------------------------------------------
-            (State::Dice(s), RegionId::Digit(d)) if (1..=6).contains(&d) => {
-                // Stop short of the BIP39 encoder's ENT ceiling: past it more rolls can
-                // no longer change the raw-mode result (see MAX_ENTROPY_BITS).
-                if s.entropy.binary().len() + 2 <= bip39::MAX_ENTROPY_BITS {
-                    s.rolls.push((b'0' + d) as char);
-                    s.entropy = parse_dice(&s.rolls);
-                }
+            RefusalCode::UnexpectedTaproot => "Rebuild the transaction without it.",
+            RefusalCode::MalformedFile => "Re-export the transaction and load it again.",
+            RefusalCode::SignatureCheckFailed => {
+                "Run Verify device and report this with the details below."
             }
-            (State::Dice(s), RegionId::DiceBackspace) => {
-                s.rolls.pop();
-                s.entropy = parse_dice(&s.rolls);
+            RefusalCode::NotAPsbt => "Check the file, or choose a different one.",
+            RefusalCode::PsbtVersion2 => "Export as a version 0 PSBT.",
+            RefusalCode::FileTooLarge => "Split the transaction, or use fewer inputs.",
+            RefusalCode::NoCard => "Insert a FAT32-formatted card and try again.",
+            RefusalCode::NoPsbtFiles => "Copy the transaction onto the card, or show all files.",
+            RefusalCode::WriteFailed => {
+                "Delete that file, then retry - or show the signed transaction as a QR instead."
             }
-            (State::Dice(s), RegionId::Mode(i)) if (i as usize) < DICE_MODE_LABELS.len() => {
-                s.mode = dice_mode(i);
+            RefusalCode::NotInThisBuild => {
+                "Update to a firmware release that carries this screen."
             }
-            (State::Dice(s), RegionId::DiceDone) => {
-                if s.effective_bits() < MIN_SECURE_BITS {
-                    return None; // Drawn disabled, with the reason; a tap does nothing.
-                }
-                if let Ok(mnem) = bip39::mnemonic_from_dice(&s.entropy, s.mode) {
-                    let dice = s.entropy.clone();
-                    let mode = s.mode;
-                    self.prior.push(Box::new(core::mem::replace(&mut self.state, State::Home)));
-                    self.state = State::Mnemonic(MnemonicState {
-                        dice,
-                        mode,
-                        mnem,
-                        revealed: false,
-                        modal: false,
-                        scroll: 0,
-                    });
-                }
-            }
-
-            // --- mnemonic display -------------------------------------------------------
-            (State::Mnemonic(s), RegionId::Reveal) if !s.modal => s.modal = true,
-            (State::Mnemonic(s), RegionId::ModalConfirm) => {
-                s.revealed = true;
-                s.modal = false;
-            }
-            (State::Mnemonic(s), RegionId::ModalCancel) => s.modal = false,
-            (State::Mnemonic(s), RegionId::Next) if !s.modal => {
-                let dice = s.dice.clone();
-                let mode = s.mode;
-                self.prior.push(Box::new(core::mem::replace(&mut self.state, State::Home)));
-                self.state = State::Passphrase(PassState {
-                    source: SeedSource::Dice { dice, mode },
-                    enabled: false,
-                    entry: secret_buf(PASS_MAX),
-                    confirm: secret_buf(PASS_MAX),
-                    focus: PassFocus::Entry,
-                    page: Page::Lower,
-                    show: false,
-                });
-            }
-
-            // --- phrase entry (verify existing seed) ------------------------------------
-            (State::Phrase(s), RegionId::Key(c)) => {
-                if s.text.len() < PHRASE_MAX {
-                    s.text.push(c);
-                }
-            }
-            (State::Phrase(s), RegionId::Space) => {
-                if s.text.len() < PHRASE_MAX {
-                    s.text.push(' ');
-                }
-            }
-            (State::Phrase(s), RegionId::KeyBackspace) => {
-                s.text.pop();
-            }
-            // Completing a word: replace the fragment being typed with the chosen word
-            // and append the separating space, so the next word can be typed straight
-            // away. The list comes from `screens::suggestions` - the same call the strip
-            // drew and `regions` hit-tested - so index `i` cannot resolve to a different
-            // word than the one under the finger.
-            (State::Phrase(s), RegionId::Suggest(i)) => {
-                if let Some(word) = screens::suggestions(&s.text).get(i as usize) {
-                    let keep = s.text.len() - bip39::current_word_fragment(&s.text).len();
-                    s.text.truncate(keep);
-                    // The truncate freed at least one byte per fragment character, so
-                    // this only declines at a phrase that was already at the cap.
-                    // (`+ 1` is the separating space, folded into the comparison.)
-                    if s.text.len() + word.len() < PHRASE_MAX {
-                        s.text.push_str(word);
-                        s.text.push(' ');
-                    }
-                }
-            }
-            (State::Phrase(s), RegionId::Shift) => {
-                s.page = if s.page == Page::Lower { Page::Upper } else { Page::Lower };
-            }
-            (State::Phrase(s), RegionId::PageDigits) => s.page = Page::Digits,
-            (State::Phrase(s), RegionId::PageLetters) => s.page = Page::Lower,
-            (State::Phrase(s), RegionId::PageSymbols) => s.page = Page::Symbols,
-            (State::Phrase(s), RegionId::KeyDone) => {
-                let normalized = bip39::normalize_phrase(&s.text);
-                if normalized.is_empty() {
-                    return None; // Nothing typed; Done is drawn disabled.
-                }
-                self.prior.push(Box::new(core::mem::replace(&mut self.state, State::Home)));
-                self.state = State::Passphrase(PassState {
-                    source: SeedSource::Phrase(normalized),
-                    enabled: false,
-                    entry: secret_buf(PASS_MAX),
-                    confirm: secret_buf(PASS_MAX),
-                    focus: PassFocus::Entry,
-                    page: Page::Lower,
-                    show: false,
-                });
-            }
-
-            // --- passphrase -------------------------------------------------------------
-            (State::Passphrase(s), RegionId::PassToggle) => {
-                s.enabled = !s.enabled;
-                if !s.enabled {
-                    // Off wipes what was typed: an abandoned passphrase must not linger.
-                    s.entry.zeroize();
-                    s.confirm.zeroize();
-                    s.focus = PassFocus::Entry;
-                }
-            }
-            (State::Passphrase(s), RegionId::PassShow) => s.show = !s.show,
-            (State::Passphrase(s), RegionId::PassEntry) => s.focus = PassFocus::Entry,
-            (State::Passphrase(s), RegionId::PassConfirm) => s.focus = PassFocus::Confirm,
-            (State::Passphrase(s), RegionId::Key(c)) => pass_edit(s, Some(c)),
-            (State::Passphrase(s), RegionId::Space) => pass_edit(s, Some(' ')),
-            (State::Passphrase(s), RegionId::KeyBackspace) => pass_edit(s, None),
-            (State::Passphrase(s), RegionId::Shift) => {
-                s.page = if s.page == Page::Lower { Page::Upper } else { Page::Lower };
-            }
-            (State::Passphrase(s), RegionId::PageDigits) => s.page = Page::Digits,
-            (State::Passphrase(s), RegionId::PageLetters) => s.page = Page::Lower,
-            (State::Passphrase(s), RegionId::PageSymbols) => s.page = Page::Symbols,
-            // Done on the passphrase screen does NOT derive. It parks the seed material
-            // in the Deriving state and returns, so the embedder's next draw puts the
-            // interstitial on the panel BEFORE [`Ui::tick`] spends several seconds in
-            // PBKDF2. Deriving inline here is what made this transition feel like a
-            // freeze: the last passphrase keypress stayed on screen for the whole stretch.
-            (State::Passphrase(s), RegionId::KeyDone) => {
-                if s.enabled && *s.entry != *s.confirm {
-                    return None; // Mismatch shown in danger ink; Done is drawn disabled.
-                }
-                let mut passphrase = secret_buf(PASS_MAX);
-                if s.enabled {
-                    passphrase.push_str(&s.entry);
-                }
-                let source = s.source.duplicate();
-                self.prior.push(Box::new(core::mem::replace(&mut self.state, State::Home)));
-                self.state = State::Deriving(DerivingState { source, passphrase });
-            }
-
-            // --- schemes ----------------------------------------------------------------
-            (State::Schemes(s), RegionId::Tab(i)) if (i as usize) < Scheme::ALL.len() => {
-                s.tab = i as usize;
-                s.scroll = 0;
-            }
-            // The QR buttons: every payload here is a PUBLIC value (crate-level QR scope
-            // note). The request carries the exact string the screen shows - encoding
-            // happens on the embedder's std side, the modal opens via `show_qr`.
-            (State::Schemes(s), RegionId::QrXpub) => {
-                let acct = &s.report.schemes[s.tab.min(s.report.schemes.len() - 1)].derived.account;
-                return Some(UiRequest::Qr(QrTarget {
-                    label: format!("Account xpub {}", acct.path),
-                    payload: acct.xpub.clone(),
-                }));
-            }
-            (State::Schemes(s), RegionId::QrSlip132) => {
-                let sr = &s.report.schemes[s.tab.min(s.report.schemes.len() - 1)];
-                let (slip, (_, label)) =
-                    (sr.derived.account.slip132_pub.as_ref()?, sr.scheme.slip132_labels()?);
-                return Some(UiRequest::Qr(QrTarget {
-                    label: format!("{label} {}", sr.derived.account.path),
-                    payload: slip.clone(),
-                }));
-            }
-            (State::Schemes(s), RegionId::QrAddress(i)) => {
-                let sr = &s.report.schemes[s.tab.min(s.report.schemes.len() - 1)];
-                let row = sr.derived.rows.get(i as usize)?;
-                return Some(UiRequest::Qr(QrTarget {
-                    label: row.path.clone(),
-                    payload: row.address.clone(),
-                }));
-            }
-            (State::Schemes(s), RegionId::ModalClose) => s.qr = None,
-
-            _ => {}
-        }
-        None
-    }
-}
-
-/// Segment labels of the dice mode control, in [`dice_mode`] index order. Desktop
-/// parity: the full `--words <raw|12|15|18|21|24>` set, not a binary toggle. All the
-/// fixed counts share the Coldcard/SeedSigner-compatible SHA256 math; RAW is the
-/// iancoleman-compatible raw-bits mode (ARCHITECTURE.md dice math note).
-pub(crate) const DICE_MODE_LABELS: [&str; 6] = ["RAW", "12", "15", "18", "21", "24"];
-
-/// The mode behind segment `i` of the dice mode control: 0 = RAW, 1..=5 = the
-/// [`bip39::FIXED_WORD_COUNTS`] entry. Total for any u8 (out-of-range clamps to 24),
-/// keeping the input path panic-free.
-pub(crate) fn dice_mode(i: u8) -> MnemonicMode {
-    match i {
-        0 => MnemonicMode::Raw,
-        _ => {
-            let count = bip39::FIXED_WORD_COUNTS[(i as usize - 1).min(4)];
-            // Every FIXED_WORD_COUNTS member is a valid WordCount by definition.
-            MnemonicMode::Words(WordCount::new(count).unwrap_or_else(|_| unreachable!()))
         }
     }
 }
 
-/// Inverse of [`dice_mode`], for drawing the active segment.
-pub(crate) fn dice_mode_index(mode: MnemonicMode) -> usize {
-    match mode {
-        MnemonicMode::Raw => 0,
-        MnemonicMode::Words(n) => {
-            1 + bip39::FIXED_WORD_COUNTS.iter().position(|&c| c == n.get()).unwrap_or(4)
-        }
+/// One refusal, ready to render as S-29.
+///
+/// A refusal that arrives AFTER signing has started returns the user to the wallet home
+/// rather than to the source screen, and says so; [`RefusalNotice::after_signing`] is that
+/// distinction, because "load a different file" is the wrong instruction to give someone
+/// whose device just failed its own post-sign gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusalNotice {
+    pub code: RefusalCode,
+    /// What happened to THIS file, in the copy vocabulary and naming the index, the path
+    /// or the name involved. Supplied by the embedder because only the engine knows it.
+    pub happened: String,
+    /// The machine facts C7's `[ Show details ]` reveals: indexes, txids, the claimed
+    /// path, the script type, the check number. Photographed for bug reports, so it is
+    /// complete and it never contains key material - which costs nothing, because every
+    /// refusal is decided before any key exists.
+    pub details: String,
+    /// The refusal happened after the hold-to-sign, so the way out is the wallet home and
+    /// the screen adds "Nothing was signed and nothing was written."
+    pub after_signing: bool,
+}
+
+// ---------------------------------------------------------------------------------------
+// The transaction under review (S-30..S-36)
+// ---------------------------------------------------------------------------------------
+
+/// The fee, and whether it is a number any transaction carrying this device's signature
+/// would actually have to pay.
+///
+/// There is deliberately no accessor that hands out the amount alone: a caller has to
+/// match, and matching is how the caveat reaches the screen. A signer that renders an
+/// unprovable number the same way it renders a proven one has lied by omission.
+///
+/// This mirrors the firmware's own `signing::ReviewedFee` across the no_std boundary, and
+/// the exhaustive match that converts one into the other is the pin between them: neither
+/// can grow a third state without the other refusing to compile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewedFee {
+    /// Every input amount was proven against its own previous transaction, or this
+    /// device's signature commits to all of them at once (BIP-341).
+    Enforced(Amount),
+    /// At least one input's amount is the file's word and no signature of ours makes it
+    /// binding. A lower bound on what this transaction costs, never a measurement, and it
+    /// renders as such beside the input whose [`AmountProof`] is
+    /// [`AmountProof::ClaimedByFile`].
+    Stated(Amount),
+}
+
+/// One entry of S-35, in the order it is numbered.
+///
+/// Two lines and never one: what it is, and why it matters. A warning that is a bare noun
+/// phrase teaches the reader to skip the page, which is the page the whole review builds
+/// towards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxWarning {
+    pub headline: String,
+    pub detail: String,
+}
+
+/// Everything the review pages render, exactly as the engine established it.
+///
+/// The fact vectors are notyas-core's own types, carried rather than re-modelled, for the
+/// reason this crate has given since 0.1.0: one pipeline, many renderers. The screen reads
+/// [`OutputFacts::role`] - what the device PROVED - and never `claims_our_key`, which is
+/// what the file asserted; the difference between those two is the change-confusion attack.
+///
+/// The presentation facts beside them are the ones the engine has no opinion about: which
+/// file this came from, which wallet is open, the vsize estimate, and the warnings, whose
+/// thresholds are ratified policy and therefore the embedder's to apply.
+///
+/// Nothing here is secret. A PSBT is public, its addresses are public, and the file itself
+/// arrived over a card anyone could read - which is why this struct is `Clone` and
+/// printable and carries no wipe obligation, unlike everything on the create path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxReview {
+    /// Every input, in the transaction's own order, INCLUDING the ones that are not ours.
+    /// A signer that hides them is a signer that can be shown one thing and sign another.
+    pub inputs: Vec<InputFacts>,
+    pub outputs: Vec<OutputFacts>,
+    pub input_total: Amount,
+    pub output_total: Amount,
+    pub fee: ReviewedFee,
+    pub lock_time: LockTime,
+    /// Any input signals replaceability (BIP125).
+    pub rbf_signaled: bool,
+    pub network: bitcoin::Network,
+    /// The open wallet's master fingerprint, 8 lowercase hex - the same identity
+    /// vocabulary [`WalletInfo`] uses.
+    pub fingerprint: String,
+    /// The open wallet's name, for "all from savings (a1b2c3d4)".
+    pub wallet: String,
+    /// The file this was read from, for the review bar and the deliver notice.
+    pub source: String,
+    /// How many inputs this device would sign. Zero is a wrong-wallet screen, not an
+    /// error - and it is R-01 before this struct is ever built.
+    pub signable_inputs: usize,
+    /// Unknown and proprietary key-value pairs the file carries. Preserved through signing
+    /// untouched and never read for any decision; the count exists so the screen can say
+    /// they are there.
+    pub unknown_fields: usize,
+    pub serialized_len: usize,
+    /// SHA-256 of the exact bytes reviewed, 64 lowercase hex. The deliver screen prints
+    /// its leading bytes so that what left the device can be tied to what was on screen.
+    pub psbt_id: String,
+    /// Virtual size for the fee-rate row.
+    pub vsize: u32,
+    /// The vsize is exact, and it is exact for one shape only: every input a taproot
+    /// key-path spend under SIGHASH_DEFAULT, where BIP-341 fixes the Schnorr signature at
+    /// 64 bytes with no encoding left to vary.
+    ///
+    /// False for everything else, multisig or not. An ECDSA signature is DER, and low-R
+    /// grinding (ratified Q3) BOUNDS it at 71 bytes rather than fixing it there - a leading
+    /// zero in S encodes a byte shorter about one signature in 64 - so a vsize quoted
+    /// before the signatures exist is an estimate, and the fee page says "estimated". An
+    /// exact-looking number that shifts after signing erodes trust in every other number on
+    /// the screen.
+    pub vsize_exact: bool,
+    /// Legal but notable, collected for S-35. Empty is a page that reads "No warnings.",
+    /// never a page that is absent: the page count has to be stable and the hold has to be
+    /// in the same place every time.
+    pub warnings: Vec<TxWarning>,
+}
+
+/// Add amounts without an overflow panic.
+///
+/// `Amount: Add` panics on overflow, and a review screen is the last place in the product
+/// that may abort: the values here came off a card someone else wrote, and the engine
+/// bounds the transaction rather than the arithmetic a renderer performs over it.
+/// Saturating is the honest failure - a total pinned at 21 million times a hundred million
+/// is visibly wrong on a screen, where a panic is a dead device holding an unsigned file.
+fn sum_sats(values: impl Iterator<Item = Amount>) -> Amount {
+    Amount::from_sat(values.fold(0u64, |acc, v| acc.saturating_add(v.to_sat())))
+}
+
+impl TxReview {
+    /// What this transaction actually sends away, which is the number a user has to
+    /// internalise on a signer. Change is excluded by definition.
+    ///
+    /// Summed here rather than carried, because it is a sum over a classification the
+    /// engine already made and the UI cannot second-guess: [`OutputRole::is_change`] is
+    /// the only question asked, and it is the core's own answer to it. The same reasoning
+    /// as [`StoredCounts::of`].
+    pub fn leaving(&self) -> Amount {
+        sum_sats(self.outputs.iter().filter(|o| !o.role.is_change()).map(|o| o.value))
+    }
+
+    /// What comes back to this wallet as proven change.
+    pub fn change(&self) -> Amount {
+        sum_sats(self.outputs.iter().filter(|o| o.role.is_change()).map(|o| o.value))
+    }
+
+    /// Inputs whose amount rests on the file's word alone.
+    pub fn unproven_amounts(&self) -> usize {
+        self.inputs
+            .iter()
+            .filter(|i| i.amount_proof == AmountProof::ClaimedByFile)
+            .count()
+    }
+
+    /// How many pages the C5 traversal has: the overview, one per input, one per output,
+    /// the fee page and the warnings page.
+    ///
+    /// Pagination is this crate's own arithmetic - it is a property of the screen, not of
+    /// the transaction - and it lives here so that the page count in the bar, the visited
+    /// set that gates the hold, and the page the Next button lands on are one definition
+    /// rather than three that can disagree by one.
+    pub fn pages(&self) -> usize {
+        3 + self.inputs.len() + self.outputs.len()
     }
 }
 
-/// Append/remove one character on whichever passphrase field has focus.
-fn pass_edit(s: &mut PassState, c: Option<char>) {
-    if !s.enabled {
-        return;
-    }
-    let buf = match s.focus {
-        PassFocus::Entry => &mut s.entry,
-        PassFocus::Confirm => &mut s.confirm,
-    };
-    match c {
-        Some(c) if buf.len() < PASS_MAX => buf.push(c),
-        Some(_) => {}
-        None => {
-            buf.pop();
-        }
-    }
+/// What the std side made of a [`UiRequest::LoadPsbt`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PsbtOutcome {
+    Reviewed(TxReview),
+    /// The card, the decoder or one of the ten checks refused. There is no third answer:
+    /// a file that is not refused is reviewed, and a file that is refused is never
+    /// partially reviewed.
+    Refused(RefusalNotice),
+}
+
+// ---------------------------------------------------------------------------------------
+// The signed transaction and its delivery (S-37, S-38)
+// ---------------------------------------------------------------------------------------
+
+/// One file a delivery will write, or has written.
+///
+/// Named BEFORE the write, which is what makes the C12 notice worth something: invariant
+/// 2b requires the announcement to carry the value the writer is later handed, and this is
+/// that value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    pub name: String,
+    pub bytes: u32,
+}
+
+/// What signing produced, as the deliver screen reads it.
+///
+/// The BYTES are not here and never will be. They live on the std side with the seed that
+/// made them, the UI asks for them to be written, and a signed transaction therefore
+/// exists in exactly one place on this device - which is also why leaving S-38 has to be a
+/// request ([`UiRequest::DiscardSigned`]) rather than a screen change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedTx {
+    /// Signatures this device added.
+    pub signed_inputs: u16,
+    /// Signatures the post-sign gate re-verified against a digest recomputed from the PSBT
+    /// alone. Equal to `signed_inputs` on every path that reaches this screen - the gate
+    /// refuses rather than reporting a shortfall - and shown anyway, because a gate whose
+    /// result nobody can see is a gate nobody can tell has stopped running.
+    pub verified_inputs: u16,
+    /// Inputs the review said this device would sign.
+    pub signable_inputs: u16,
+    /// The transaction is complete and ready to broadcast. False for a multisig that still
+    /// needs another cosigner, where S-38 says so and omits the `-final.txn` line.
+    pub complete: bool,
+    /// The files a write will create, in the order the notice lists them.
+    pub artifacts: Vec<Artifact>,
+    /// SHA-256 of the bytes that were reviewed, 64 lowercase hex - the same value
+    /// [`TxReview::psbt_id`] carried, so the screen can tie what left the device to what
+    /// was on the panel.
+    pub psbt_id: String,
+}
+
+/// What the std side made of a [`UiRequest::SignTx`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignOutcome {
+    Signed(SignedTx),
+    /// The post-sign gate refused (R-10), or the wallet holding the seed is not the wallet
+    /// the review was taken under. Either way NO file exists: signing builds a new PSBT and
+    /// returns it only on success, so there is nothing partially signed to deliver.
+    Refused(RefusalNotice),
+}
+
+/// What the std side made of a [`UiRequest::WriteSigned`].
+///
+/// Four answers because S-38 does four different things with them, and three of the four
+/// are not failures of the same kind: a collision is a question for the user, an empty slot
+/// is a remedy they can perform standing there, and a part-written file is a mess they have
+/// to clean up before reusing the name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteOutcome {
+    /// The files that landed, as they landed.
+    Written(Vec<Artifact>),
+    /// These names are already on the card. S-38 opens the C4a overwrite confirm and
+    /// raises [`UiRequest::WriteSigned`] again with `overwrite` set.
+    Collision(Vec<String>),
+    /// R-23, as an inline band rather than a screen: the transaction is still signed and
+    /// still deliverable, and a screen change would take the user away from the only place
+    /// they can deliver it from.
+    NoCard,
+    /// R-25. The sentence names how far the write got, because the file on the card is
+    /// incomplete and has to be deleted before the name is reused.
+    Failed(String),
+}
+
+// ---------------------------------------------------------------------------------------
+// The multisig registry (S-41, S-42, S-43)
+// ---------------------------------------------------------------------------------------
+
+/// One cosigner of a multisig wallet, in full. Nothing here is masked, ever: an xpub is
+/// public and comparing it against the other signers is the entire defence against a
+/// substituted key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CosignerRow {
+    /// 8 lowercase hex.
+    pub fingerprint: String,
+    /// The origin path this cosigner's key sits at.
+    pub path: String,
+    /// The account xpub, complete and never abbreviated.
+    pub xpub: String,
+    /// This device. Proven by derivation from the live seed, never read off the file.
+    pub ours: bool,
+}
+
+/// A multisig registration this device has proven it is a member of, as S-41 and S-43 read
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistrationInfo {
+    /// The registry slot this record lives in, as the embedder read it. The handle
+    /// [`UiRequest::DeleteRegistration`] names; the UI never invents one.
+    pub slot: u8,
+    pub name: String,
+    pub threshold: u8,
+    pub cosigners: u8,
+    /// The script type in words, e.g. "P2WSH". Supplied rather than derived, like
+    /// [`WalletInfo::script_type`].
+    pub script: String,
+    /// The account derivation this registration sits at.
+    pub derivation: String,
+    /// This device's own cosigner fingerprint within the set.
+    pub fingerprint: String,
+    pub network: bitcoin::Network,
+    /// The stored record proved out against the live seed at open time. False is a record
+    /// that did not: the row renders in DANGER and reads "unreadable - delete and import
+    /// again", because a registration the user believes is live and is not would refuse
+    /// their next PSBT with nothing to say why.
+    pub proven: bool,
+}
+
+/// A registration waiting to be approved: everything S-42 pages through.
+///
+/// The membership PROOF has already happened - [`UiRequest::ImportRegistration`] is what
+/// performs it, and a wallet this device is not a cosigner of is R-04 and never a page.
+/// What is left for the user is the comparison this screen exists for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistrationReview {
+    pub name: String,
+    pub threshold: u8,
+    /// The descriptor function, e.g. "sortedmulti".
+    pub policy: String,
+    /// The script type in words, e.g. "P2WSH (native segwit)".
+    pub script: String,
+    /// The account derivation this registration sits at.
+    pub derivation: String,
+    pub network: bitcoin::Network,
+    /// Every cosigner, in the order the registration orders them.
+    pub cosigners: Vec<CosignerRow>,
+    /// 1-based position of this device in the set, for "This device is cosigner 1 of 3".
+    /// Zero would be a wallet this device is not in, which cannot reach this struct.
+    pub ours: u8,
+    /// The first receive address this registration produces, complete and chunked by the
+    /// screen. The value page 5 asks the user to compare on their other signers before the
+    /// wallet is used.
+    pub first_address: String,
+    /// The canonical descriptor this device will store, which is its own rendering and not
+    /// the text that came in.
+    pub descriptor: String,
+    /// The file was a Coldcard multisig `.txt` and was converted on ingest. Page 1 says so.
+    pub converted: bool,
+    /// An identical registration is already stored. Approval opens the C4a "Replace it?"
+    /// confirm and raises [`UiRequest::ApproveRegistration`] with `replace` set.
+    pub duplicate: bool,
+}
+
+/// What the std side made of a [`UiRequest::ImportRegistration`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportOutcome {
+    Pending(RegistrationReview),
+    /// The card, the parser, or the membership proof refused. R-04 is the one that matters
+    /// most: importing a wallet you cannot sign for is how a substituted key gets accepted.
+    Refused(RefusalNotice),
+}
+
+/// What the std side made of a [`UiRequest::ApproveRegistration`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistrationOutcome {
+    Saved(RegistrationInfo),
+    Refused(RefusalNotice),
 }
 
 // ---------------------------------------------------------------------------------------

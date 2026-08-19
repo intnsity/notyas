@@ -169,6 +169,51 @@ pub fn strength_meter<D: DrawTarget<Color = Rgb565>>(
     Ok(())
 }
 
+/// The C4c hold-to-confirm control: a trough that fills while the finger stays down.
+///
+/// Not a button and drawn as one deliberately isn't: a tap must not fire it, so it shows
+/// its own progress instead of a pressed state. `permille` comes from
+/// [`crate::hold_fill_permille`] over the press age the touch layer tracks, and `ink` is
+/// the consequence's colour - `ACCENT` to sign, `DANGER` to erase.
+///
+/// The caller supplies both lines because they name the specific action and its specific
+/// undoing ("Hold to sign" / "Released - nothing was signed"), and a component that
+/// guessed either would put the wrong verb on one of the two screens that use it.
+pub fn hold_bar<D: DrawTarget<Color = Rgb565>>(
+    t: &mut D,
+    r: Rect,
+    label: &str,
+    status: &str,
+    permille: u32,
+    ink: Rgb565,
+) -> Result<(), D::Error> {
+    panel(t, r, PAPER_0, BORDER_STRONG)?;
+    let inner = r.inset(8);
+    let line = HEADING.line_height as i32;
+    text_centered(t, label, Rect::new(inner.x, inner.y, inner.w, line), HEADING, INK_PRIMARY, PAPER_0)?;
+
+    // The trough is the middle third of the control, so the fill is the element the eye
+    // tracks rather than a hairline under a label.
+    let trough = Rect::new(inner.x, inner.y + line + 4, inner.w, (inner.h - 2 * line - 8).max(8));
+    panel(t, trough, PAPER_3, BORDER_STRONG)?;
+    let bore = trough.inset(2);
+    // Integer math to the pixel: permille is capped at 1000 by its producer, and the
+    // clamp here is what makes that a local fact rather than a caller's promise.
+    let w = bore.w.saturating_mul(permille.min(1000) as i32) / 1000;
+    if w > 0 {
+        fill(t, Rect::new(bore.x, bore.y, w, bore.h), ink)?;
+    }
+    text_centered(
+        t,
+        status,
+        Rect::new(inner.x, trough.bottom() + 4, inner.w, line),
+        BODY,
+        INK_SECONDARY,
+        PAPER_0,
+    )?;
+    Ok(())
+}
+
 /// An INPUT field: white (paper-3, "white = editable"), strong border, mono content.
 ///
 /// Masking here is the input rule, not the derived-secret rule (see the crate-level

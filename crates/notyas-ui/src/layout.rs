@@ -63,10 +63,41 @@ impl Rect {
     }
 }
 
-/// Minimum edge of a dice-keypad touch target in px. On the primary 720x720 panel
+/// Every distinct panel geometry the firmware ships, as `(width, height)`.
+///
+/// The single list. `firmware/src/board/*.rs` selects one of these per board feature -
+/// ten features, five distinct panels - and a screen that lays out on two of them is not
+/// a screen that lays out. This crate cannot depend on the firmware crate (different
+/// target, different toolchain), so the two lists are married by a drift test in
+/// tools/uisim, which parses the board files and asserts the distinct set equals this
+/// array. Add a panel here and to the board file in the same commit; the test fails if
+/// only one of the two happens.
+pub const PANELS: [(u32, u32); 5] =
+    [(720, 720), (800, 480), (720, 1280), (800, 1280), (1024, 600)];
+
+/// Minimum edge of any interactive region in px (UX-SCREENS.md 0.3, commandment 7).
+///
+/// The single audited exception is an on-screen keyboard key, which keeps its own 40 px
+/// floor: a letter key is a self-correcting target - a wrong one is visible and one
+/// backspace away - and a Sign button is not.
+pub const TOUCH_MIN: i32 = 60;
+
+/// Minimum edge of a keypad key (dice, PIN) in px. On the primary 720x720 panel
 /// (229 PPI) this is about 8.9 mm, comfortably above the ~7 mm ergonomic floor; the
 /// layout tests assert it holds on every supported geometry.
-pub const DICE_KEY_MIN: i32 = 80;
+pub const KEYPAD_KEY_MIN: i32 = 80;
+
+/// The 0.1.0 name for [`KEYPAD_KEY_MIN`], kept so the layout tests written against the
+/// dice pad keep reading as they did. One floor, two names, no second constant.
+pub const DICE_KEY_MIN: i32 = KEYPAD_KEY_MIN;
+
+/// List and card row height floor in px: a row is a wide target, so height is the
+/// constraint that decides whether it can be hit.
+pub const LIST_ROW_MIN: i32 = 88;
+
+/// Minimum clear space in px between a destructive confirm and its cancel, so the two
+/// cannot be confused by a finger that lands between them.
+pub const SEPARATION_MIN: i32 = 96;
 
 /// The spacing grid, derived once from the display size.
 #[derive(Debug, Clone, Copy)]

@@ -61,6 +61,33 @@ pub const BORDER: Rgb565 = rgb(0xE1D9C4);
 /// `--border-strong`: ink 28% over paper-1.
 pub const BORDER_STRONG: Rgb565 = rgb(0xC3BCA8);
 
+/// Every color this crate can put on a panel.
+///
+/// The list exists so a host instrument can prove its sentinel is unreachable: the
+/// simulator paints an out-of-palette magenta under every frame and treats a surviving
+/// magenta pixel as an unpainted one, which is only sound while no token IS that magenta.
+/// A palette entry added without being added here is caught by that same test, since the
+/// array length is what it counts.
+pub const PALETTE: [Rgb565; 17] = [
+    PAPER_0,
+    PAPER_1,
+    PAPER_2,
+    PAPER_3,
+    PAPER_TINT,
+    INK_PRIMARY,
+    INK_SECONDARY,
+    INK_MUTED,
+    ACCENT,
+    ACCENT_TINT,
+    GRAPHITE,
+    SUCCESS,
+    WARNING,
+    DANGER,
+    DANGER_TINT,
+    BORDER,
+    BORDER_STRONG,
+];
+
 // --- Masking convention (desktop BigDice house law; survey section 5) -----------------
 // Two rules, and the difference between them is who chose the secret. A DERIVED secret
 // masks as a FIXED run: its length is information the user never supplied and must not

@@ -1,6 +1,6 @@
 [package]
 name = "notyas-fonts"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Pre-rasterized notyas Sans / notyas Mono glyph atlases (derived from IBM Plex, OFL 1.1) with a minimal Rgb565 alpha-blending text renderer"
