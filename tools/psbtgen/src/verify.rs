@@ -654,6 +654,22 @@ impl Outcome {
             Verdict::Refused
         } else if matches!(self.recognition, Recognition::Unknown) {
             Verdict::Unrecognised
+        } else if self.signatures_checked == 0 {
+            // Belt to the structural braces above. The two acceptance holes this tool
+            // shipped with - a pass-through witness on an input whose origin hints were
+            // absent, and a multisig leg counted because a key had SOME entry in
+            // partial_sigs - both ended here with an empty refusal list, because in each
+            // case nothing was ever checked and so nothing could refuse. `authorized` and
+            // the WitnessNotVerified pass now catch both by construction.
+            //
+            // This guard exists anyway, and its value is exactly that it is redundant:
+            // it converts "no refusal fired" into "at least one signature was verified",
+            // which is the property an ACCEPTED verdict actually asserts. A future edit
+            // that adds a fourth path into the accept branch without a matching refusal
+            // gets caught here rather than certifying an unspendable transaction. For a
+            // tool whose whole output is a yes or a no about somebody's money, the cheap
+            // duplicate check is worth its line count.
+            Verdict::Unrecognised
         } else {
             Verdict::Accepted
         }
