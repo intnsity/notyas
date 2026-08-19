@@ -1462,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "notyas-firmware"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "embedded-graphics",
@@ -1476,6 +1476,7 @@ dependencies = [
  "notyas-ui",
  "notyas-wallet",
  "sha2",
+ "zeroize",
 ]
 
 [[package]]

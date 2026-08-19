@@ -1,3 +1,25 @@
 # Board overlay: Elecrow CrowPanel Advanced 5inch ESP32-P4 (800x480 RGB).
 # 16 MB QSPI NOR (schematic: W25Q128JVSIQ; probed unit: GD25Q128 - same size).
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# The last two RGB de-sync recovery paths, board-local because only this board drives a
+# parallel RGB panel from PSRAM on pre-3.0 silicon.
+#
+# On this unit (ESP32-P4 rev v1.3) the LCD_CAM RGB FIFO is 8 pixels deep and a single
+# PSRAM bandwidth outage desynchronises the DMA read pointer from the pixel the timing
+# generator is emitting, which ESP-IDF documents as "a permanently shifted image" - it
+# does not recover on its own. Bounce buffers (see elecrow_5.rs) both prevent most of it
+# and revive the driver's own detector, which is inert while bounce_buffer_size_px is 0
+# because expect_eof_count is only set when a bounce size exists.
+#
+# RESTART_IN_VSYNC is the remaining independent recovery: it restarts the DMA on every
+# VBlank, so any de-sync that still gets through costs one frame instead of the rest of
+# the boot. The underrun interrupt that would otherwise catch it does not exist below
+# chip rev 3.0 (LCD_LL_EVENT_UNDERRUN is #defined to 0), so "no underrun in the log" is
+# not evidence that none occurred.
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
+
+# The restart above is driven from the VBlank ISR, and this device disables the flash
+# cache on every sealed-store commit. Without an IRAM-safe ISR the one interrupt that
+# repairs the display is silent across exactly the window that most needs it.
+CONFIG_LCD_RGB_ISR_IRAM_SAFE=y

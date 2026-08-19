@@ -12,7 +12,7 @@ build-std = ["std", "panic_abort"]
 [env]
 MCU = "esp32p4"
 # embuild guesses the workspace dir by walking up from OUT_DIR - which lives
-# under CARGO_TARGET_DIR (C:\nyt), NOT next to our sources - so its
+# under CARGO_TARGET_DIR (C:\nb\nyt), NOT next to our sources - so its
 # `cargo metadata` probe finds no Cargo.toml and every
 # [package.metadata.esp-idf-sys] setting (including extra_components!) is
 # silently dropped. Pinning CARGO_WORKSPACE_DIR to the crate dir fixes the

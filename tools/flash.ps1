@@ -26,11 +26,11 @@ $ErrorActionPreference = "Stop"
 $boardMap = @{
     # Default ports: COM3 = Waveshare (CH343), COM6 = Elecrow 5inch (CH340K).
     # The DSI scaffolds have no hardware here - no default port on purpose.
-    "waveshare-4b" = @{ TargetDir = "C:\nyt-ws";   FlashSize = "32mb"; Port = "COM3" }
-    "elecrow-5"    = @{ TargetDir = "C:\nyt-e5";   FlashSize = "16mb"; Port = "COM6" }
-    "elecrow-7"    = @{ TargetDir = "C:\nyt-e7";   FlashSize = "16mb"; Port = "" }
-    "elecrow-9"    = @{ TargetDir = "C:\nyt-e9";   FlashSize = "16mb"; Port = "" }
-    "elecrow-101"  = @{ TargetDir = "C:\nyt-e101"; FlashSize = "16mb"; Port = "" }
+    "waveshare-4b" = @{ TargetDir = "C:\nb\ws";   FlashSize = "32mb"; Port = "COM3" }
+    "elecrow-5"    = @{ TargetDir = "C:\nb\e5";   FlashSize = "16mb"; Port = "COM6" }
+    "elecrow-7"    = @{ TargetDir = "C:\nb\e7";   FlashSize = "16mb"; Port = "" }
+    "elecrow-9"    = @{ TargetDir = "C:\nb\e9";   FlashSize = "16mb"; Port = "" }
+    "elecrow-101"  = @{ TargetDir = "C:\nb\e101"; FlashSize = "16mb"; Port = "" }
 }
 $b = $boardMap[$Board]
 

@@ -106,8 +106,8 @@ tools\flash.ps1 -Board elecrow-5 -Monitor
 ```
 
 `-Board` drives the cargo feature, the sdkconfig pair, the per-board
-CARGO_TARGET_DIR (C:\nyt-ws, C:\nyt-e5, C:\nyt-e7, C:\nyt-e9, C:\nyt-e101,
-C:\nyt-w5, C:\nyt-w7b, C:\nyt-w7x, C:\nyt-w8x, C:\nyt-w101x), espflash
+CARGO_TARGET_DIR (C:\nb\ws, C:\nb\e5, C:\nb\e7, C:\nb\e9, C:\nb\e101,
+C:\nb\w5, C:\nb\w7b, C:\nb\w7x, C:\nb\w8x, C:\nb\w101), espflash
 `--flash-size` (32mb/16mb) and the default port (COM3/COM6; port letters
 drift - override with `-Port COMx`). flash.ps1 does not know the Waveshare
 scaffold boards yet (no hardware exists to flash); build.ps1 knows the full
@@ -364,7 +364,7 @@ the only operation slow enough to need the `Deriving` interstitial.
    dir instead - and since the refactor, per-board target dirs make a
    wrong-board bootloader impossible by construction.
 3. Long target paths: esp-idf-sys refuses CARGO_TARGET_DIR paths that are too
-   long ("Too long output directory") - hence C:\nyt-ws / C:\nyt-e5 / ...
+   long ("Too long output directory") - hence C:\nb\ws / C:\nb\e5 / ...
 4. Pre-v3 eFuse table differences: `esp_chip_info` is not in the default
    esp-idf-sys binding allowlist, and on the pre-v3 table the wafer major
    version is split into LO(2b)/HI(1b) fields - compose `(HI << 2) | LO`

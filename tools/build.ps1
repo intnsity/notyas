@@ -16,7 +16,7 @@
 # (UNC paths + the heavy IDF/CMake build do not mix). The esp-idf-sys build
 # additionally hard-fails when the target path is long (Windows path-length
 # limits in the CMake/ninja IDF build), so the defaults are very short
-# (C:\nyt-ws etc). Override by setting NOTYAS_TARGET_DIR before calling -
+# (C:\nb\ws etc). Override by setting NOTYAS_TARGET_DIR before calling -
 # keep it SHORT (the build errors out with "Too long output directory"
 # otherwise), and keep it per-board yourself.
 
@@ -43,16 +43,16 @@ param(
 $ErrorActionPreference = "Stop"
 
 $boardMap = @{
-    "waveshare-4b"   = @{ Feature = "board-waveshare-4b";   TargetDir = "C:\nyt-ws";    Untested = $false }
-    "waveshare-5"    = @{ Feature = "board-waveshare-5";    TargetDir = "C:\nyt-w5";    Untested = $true; Portrait = $true }
-    "waveshare-7b"   = @{ Feature = "board-waveshare-7b";   TargetDir = "C:\nyt-w7b";   Untested = $true }
-    "waveshare-7x"   = @{ Feature = "board-waveshare-7x";   TargetDir = "C:\nyt-w7x";   Untested = $true; Portrait = $true }
-    "waveshare-8x"   = @{ Feature = "board-waveshare-8x";   TargetDir = "C:\nyt-w8x";   Untested = $true; Portrait = $true }
-    "waveshare-101x" = @{ Feature = "board-waveshare-101x"; TargetDir = "C:\nyt-w101x"; Untested = $true; Portrait = $true }
-    "elecrow-5"      = @{ Feature = "board-elecrow-5";      TargetDir = "C:\nyt-e5";    Untested = $false }
-    "elecrow-7"      = @{ Feature = "board-elecrow-7";      TargetDir = "C:\nyt-e7";    Untested = $true }
-    "elecrow-9"      = @{ Feature = "board-elecrow-9";      TargetDir = "C:\nyt-e9";    Untested = $true }
-    "elecrow-101"    = @{ Feature = "board-elecrow-101";    TargetDir = "C:\nyt-e101";  Untested = $true }
+    "waveshare-4b"   = @{ Feature = "board-waveshare-4b";   TargetDir = "C:\nb\ws";    Untested = $false }
+    "waveshare-5"    = @{ Feature = "board-waveshare-5";    TargetDir = "C:\nb\w5";    Untested = $true; Portrait = $true }
+    "waveshare-7b"   = @{ Feature = "board-waveshare-7b";   TargetDir = "C:\nb\w7b";   Untested = $true }
+    "waveshare-7x"   = @{ Feature = "board-waveshare-7x";   TargetDir = "C:\nb\w7x";   Untested = $true; Portrait = $true }
+    "waveshare-8x"   = @{ Feature = "board-waveshare-8x";   TargetDir = "C:\nb\w8x";   Untested = $true; Portrait = $true }
+    "waveshare-101x" = @{ Feature = "board-waveshare-101x"; TargetDir = "C:\nb\w101"; Untested = $true; Portrait = $true }
+    "elecrow-5"      = @{ Feature = "board-elecrow-5";      TargetDir = "C:\nb\e5";    Untested = $false }
+    "elecrow-7"      = @{ Feature = "board-elecrow-7";      TargetDir = "C:\nb\e7";    Untested = $true }
+    "elecrow-9"      = @{ Feature = "board-elecrow-9";      TargetDir = "C:\nb\e9";    Untested = $true }
+    "elecrow-101"    = @{ Feature = "board-elecrow-101";    TargetDir = "C:\nb\e101";  Untested = $true }
 }
 $b = $boardMap[$Board]
 

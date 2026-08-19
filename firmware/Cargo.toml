@@ -1,6 +1,6 @@
 [package]
 name = "notyas-firmware"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["intnsity <at@intnsity.com>"]
 edition = "2021"
 license = "GPL-3.0-or-later"
@@ -36,6 +36,14 @@ board-elecrow-101 = []
 # A measurement build never returns from the harness - it is not a product image.
 measure = ["dep:argon2"]
 
+# The panel calibration instrument (src/diag.rs): a frame whose entire content is
+# its own coordinates, so an operator can read off the GLASS which framebuffer
+# columns and rows actually reach it - the one question source reading cannot
+# answer when a panel shows a shifted picture. OFF by default, pulled in by
+# nothing else, and a build that has it never reaches the product UI: it lights
+# the panel and holds the frame for the power cycle. An instrument, not a screen.
+diag-display = []
+
 # The esp-idf-hmac exercise against VIRTUAL eFuses (src/hmac_check.rs). OFF by
 # default and never enabled by a release build. It is the only configuration in
 # this tree that compiles a call to an eFuse write API, and it is safe only in
@@ -48,8 +56,10 @@ hmac-virtual-check = ["esp-idf-hmac/provisioning"]
 # ESP-SEAL.md 6.4 fence 1. Substitutes a COMPILED-IN device-binding key for the
 # read-protected eFuse block, so storage logic can be exercised on boards whose
 # fuses must stay virgin. Deliberately ugly, never a default, and never enabled
-# by a release build: fence 2 is build.rs, which fails the build outright when
-# this is on in the release profile. Fences 3 and 4 make it harmless even if it
+# by a release build: fence 2 is build.rs, which fails the build outright unless
+# the image is bench-shaped in every property cargo reports (debug assertions,
+# profile root, optimization level and debuginfo, all four read together - the
+# reasoning is in build.rs). Fences 3 and 4 make it harmless even if it
 # somehow shipped - the provenance byte is inside every AEAD's associated data,
 # so a record sealed under this key cannot be opened by a production build, and
 # a product Config accepts only KeyProvenance::EfuseReadProtected at mount.
@@ -57,10 +67,30 @@ unsafe-emulated-key = ["dep:hmac", "dep:sha2"]
 
 # The hardware-in-the-loop test console (src/hil.rs): a line-oriented serial
 # command set that drives the store directly, so a bench operator can run the
-# known-answer test, format, seal, cut power and read the ledger back. It is how
+# known-answer test, format, seal, cut power and read the ledger back - and, since
+# 0.2.0, register a multisig wallet, review a PSBT and SIGN it, which is how
+# MILESTONES.md section 9 clause 2 is driven before the m4b screens exist. It is how
 # m4a's manual power-cut gate is evidenced (MILESTONES.md m4a test method) and it
-# is OFF by default; tools/ci/check-release-symbols.sh asserts its symbols are
-# absent from a shipped binary (Q41).
+# is OFF by default. Three layers stand between it and a shipped image, and they
+# are deliberately of three different kinds: build.rs refuses the feature unless
+# the image is bench-shaped in EVERY property cargo reports - debug assertions,
+# profile root, optimization level, debuginfo - and any one product-shaped answer
+# stops the artefact existing; src/hil.rs carries a compile_error! that rustc
+# evaluates on the module itself, requiring both its own debug_assertions and the
+# cfg build.rs sets when that conjunction held, so the layer holds when a build
+# script is skipped or stubbed and refuses when its verdict is simply absent; and
+# tools/ci/check-release-symbols.sh asserts the console's symbols are absent from
+# the linked ELF, in EVERY profile directory it can find rather than the two it
+# used to expect (Q41). Only the third is evidence: the first two are promises
+# made by the build, and this project ships to strangers who can read an image but
+# cannot audit our build invocation.
+#
+# The conjunction is not belt-and-braces, it is the lesson. A one-property fence
+# has now failed twice in opposite directions - `PROFILE == "release"` waved
+# through a dev-rooted image with shipping codegen, and the debug-assertions bit
+# that replaced it waved through `[profile.hardened] inherits = "release",
+# debug-assertions = true`, which cleared build.rs and hil.rs at once because both
+# read the same bit. Neither layer may narrow to one property again.
 hil-console = ["dep:hmac", "dep:sha2"]
 
 [dependencies]
@@ -74,6 +104,12 @@ embedded-graphics = "0.8"
 # the feature does not leak into that graph. m4 QR flow: Ui::touch returns
 # UiRequest::Qr, main.rs encodes the (public) payload with qr::matrix and hands the
 # finished matrix back via Ui::show_qr.
+#
+# The PSBT engine (m6) and the multisig registry (m7) need NO feature: `psbt` and
+# `multisig` are unconditional modules of notyas-core (its lib.rs), and its only cargo
+# feature is `qr`. So src/signing.rs and src/wallet/ compile against the graph that was
+# already here, and tools/build-graph-check.sh reports the same tree it did before this
+# line was written - no `rand`, no `getrandom`, and nothing new under notyas-ui.
 notyas-core = { path = "../crates/notyas-core", default-features = false, features = ["qr"] }
 notyas-ui = { path = "../crates/notyas-ui" }
 # Used directly for the selftest-failure screen (main.rs), which is deliberately NOT a
@@ -102,6 +138,14 @@ notyas-wallet = { path = "../crates/notyas-wallet" }
 # neither. Versions match notyas-wallet's so the workspace resolves one copy.
 hmac = { version = "0.13.0", default-features = false, optional = true }
 sha2 = { version = "0.11.0", default-features = false, optional = true }
+# Wiping. PRODUCT code, not a feature: src/wallet holds an open wallet's 64-byte seed
+# and the mnemonic it came from between the AEAD and the parse, and those need the same
+# discipline notyas-core applies to them rather than a hand-rolled memset a compiler is
+# free to elide. (It was optional and gated on `hil-console` until the product signing
+# path landed; the test console's use of it is now one caller among two.) The pin matches
+# notyas-wallet's so the workspace resolves one copy, and the crate is already in the
+# graph through notyas-core - this adds nothing new to the image.
+zeroize = { version = "1.9.0", default-features = false, features = ["alloc"] }
 
 [build-dependencies]
 embuild = "0.33"

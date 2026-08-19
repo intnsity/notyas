@@ -15,6 +15,26 @@
 CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
 CONFIG_ESP32P4_REV_MIN_100=y
 
+# --- Reproducible builds (0.2.0-m12) -----------------------------------------
+# The image must be a function of the source and nothing else. This option makes
+# the IDF build pass -fmacro-prefix-map/-fdebug-prefix-map so the IDF, project,
+# build, component and toolchain directories become the fixed names /IDF,
+# /IDF_PROJECT, /IDF_BUILD, /COMPONENT_<NAME>_DIR and /TOOLCHAIN; it drops the
+# build date and time from the app and bootloader descriptors; and it sorts the
+# source, component and linker-fragment lists before they reach CMake.
+#
+# It lives in the SHARED defaults rather than in the release recipe on purpose.
+# A reproducibility switch that is only on for release builds means the image
+# that was tested on the bench is not the image that ships, and the difference
+# would be invisible until someone diffed two binaries. What it cannot cover -
+# the ESP-IDF version and the versions of CMake, Ninja and the cross-compiler -
+# is pinned by the container instead (tools/repro/, docs/plan-0.2.0/REPRODUCIBLE.md).
+#
+# CONFIG_APP_PROJECT_VER is deliberately NOT set here: it would be the crate
+# version written down a second time. tools/repro/build.sh generates it from
+# firmware/Cargo.toml so the two can never disagree.
+CONFIG_APP_REPRODUCIBLE_BUILD=y
+
 # --- Logging -----------------------------------------------------------------
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
