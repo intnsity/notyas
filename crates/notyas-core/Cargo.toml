@@ -1,6 +1,6 @@
 [package]
 name = "notyas-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 # 1.85 is the floor imposed by the RustCrypto 2026 generation (sha2 0.11 / hmac 0.13 / pbkdf2 0.13),
 # same as the desktop crate this is ported from.
@@ -16,6 +16,22 @@ default = ["qr"]
 # (it imports std unconditionally); the firmware runs std Rust on ESP-IDF and keeps this
 # on, while the bare-metal no_std proof builds with --no-default-features. See PORTING.md.
 qr = ["dep:qrcode"]
+# The PSBT fixtures (`psbt::fixture`) as a reachable module. A feature rather than the
+# `cfg(test)` they were born as, and for exactly the reason notyas-wallet's `testkit`
+# exists: the release bar of MILESTONES.md section 9 clause 2 is a loop that runs OUTSIDE
+# this crate's unit tests - a host tool has to build the file the device loads and judge
+# what comes back - and a `cfg(test)` module is reachable from nowhere but its own crate's
+# test binary. A feature is also greppable in tools/build-graph-check.sh where a `cfg` is
+# not.
+#
+# It adds no dependency and no code to the device image. The fixtures are built from
+# `bitcoin`, `alloc` and this crate's own `sign` and `multisig`, every one of which is
+# already an unconditional part of the graph, so `cargo tree` over the DEFAULT feature set
+# is byte-identical with and without this line. That is the property SECURITY.md invariant 3
+# rests on, and it is why this is a feature rather than an unconditional `pub mod`: the
+# fixtures carry a fixed seed, and a fixed seed compiled into a firmware image is the
+# development-key hazard ESP-SEAL.md 6.4 names. It must never be enabled in a firmware build.
+testkit = []
 
 [dependencies]
 # default-features = false drops "std" and "secp-recovery"; there is no separate "alloc"
@@ -26,8 +42,14 @@ qr = ["dep:qrcode"]
 # Exact pin: a caret 0.32 always takes the newest 0.32.x, never a backport branch. Bump by hand.
 bitcoin = { version = "=0.32.102", default-features = false }
 # sha2 0.11 defaults are "alloc" + "oid" - no std - so the desktop declaration carries over.
-sha2 = "0.11"
-hmac = "0.13"
+# The "zeroize" feature is ON deliberately and is not hygiene. Without it every wipe
+# inside RustCrypto is #[cfg]d out, so a hasher leaves its input buffer intact on drop -
+# and the inputs here are the BIP-39 master entropy and the HMAC/HKDF midstates behind
+# `bound` and `device_binding`. A `Zeroizing` wrapper on the OWNER of a secret does not
+# reach the copy the hasher kept. It pulls nothing new: zeroize is already a direct
+# dependency below, and sha2/hmac gate theirs on digest/zeroize.
+sha2 = { version = "0.11", features = ["zeroize"] }
+hmac = { version = "0.13", features = ["zeroize"] }
 # "hmac" exposes pbkdf2::pbkdf2_hmac, and 0.13.0 enables exactly that by default. Naming it
 # with default-features = false is defensive, not corrective: it fixes the feature set against
 # a future change of default. The features to keep out are the optional "getrandom",

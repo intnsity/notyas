@@ -95,10 +95,22 @@ impl fmt::Debug for DiceEntropy {
 
 /// Per-digit codes of SPEC step 3, indexed by the base-6 digit value.
 ///
-/// The prefix-free shape is what makes the mapping unbiased: digits 0..=3 carry the four
-/// two-bit words and digits 4 and 5 carry the two one-bit words, so no code is ever a
-/// prefix of another and every emitted bit is uniform. Truncating a die roll to a fixed
-/// 2.58 bits, or to two bits by discarding 5 and 6, would not be.
+/// Why this is unbiased, stated correctly because the reason is not the obvious one. These
+/// codes are NOT prefix-free - "0" prefixes both "00" and "01" - and they do not need to be.
+/// Prefix-freeness buys unique DECODABILITY, and nothing here ever decodes: the bits are
+/// consumed as entropy, never parsed back into rolls.
+///
+/// Uniformity comes from a different property. A fair roll is uniform over 0..=5, so it
+/// emits a two-bit word (digits 0..=3) with probability 2/3 and a one-bit word (digits 4, 5)
+/// with probability 1/3 - and CONDITIONAL ON THAT LENGTH the word is uniform over all
+/// strings of it: {00, 01, 10, 11} each 1/4, {0, 1} each 1/2. The length carries no
+/// information about the bit values, so concatenating the words of independent rolls yields
+/// i.i.d. uniform bits, and any prefix of the stream is uniform over its own length.
+///
+/// The scheme is LOSSY, which is a separate matter and is fine: it keeps 5/3 bits of the
+/// log2(6) = 2.585 bits a roll carries, so the caller needs more rolls, not better ones.
+/// What would actually bias the result is truncating a roll to a fixed 2.58 bits, or taking
+/// two bits by discarding 5 and 6 - both change the distribution rather than shortening it.
 const CODES: [&str; 6] = ["00", "01", "10", "11", "0", "1"];
 
 /// Parse raw dice text into [`DiceEntropy`].

@@ -104,7 +104,12 @@ pub enum SignError {
     /// arrive inside a PSBT, and untrusted input must not be able to panic the signer.
     Derivation(bitcoin::bip32::Error),
     /// The BIP-143 digest could not be taken: the input index is not in the transaction,
-    /// or the script handed in is not a P2WPKH program.
+    /// or - for the two key-hash spends - the script handed in is not a P2WPKH program.
+    ///
+    /// One variant for all three segwit-v0 spends, including P2WSH, whose only failure is
+    /// the index. `P2wpkhError` names P2WPKH because it is rust-bitcoin's type for the
+    /// spend that has the second failure mode; splitting our own error in two to mirror
+    /// that would put a dependency's type layout in this crate's API for no gain.
     SegwitV0(P2wpkhError),
     /// The BIP-341 digest could not be taken: a prevout set that does not cover the
     /// input, an index out of range, an invalid sighash flag, or SIGHASH_SINGLE with no
@@ -351,9 +356,9 @@ fn message(digest: [u8; 32]) -> Message {
 
 /// The per-input facts a sighash needs beyond the transaction itself.
 ///
-/// One variant per input type 0.2.0 signs. A fourth input type is a fourth variant and a
-/// fourth arm of [`SpendKind::sign_hash`]; nothing else in the module changes, which is
-/// the property that keeps P2WSH multisig (m7) from being a rewrite.
+/// One variant per input type 0.2.0 signs. A further input type is a further variant and a
+/// further arm of [`SpendKind::sign_hash`]; nothing else in the module changes, which is
+/// the property that let m7 add P2WSH multisig here without touching a digest.
 #[derive(Debug)]
 pub enum SpendKind<'a> {
     /// BIP84 native segwit v0. `script_pubkey` is the input's own `0014{keyhash}`
@@ -370,6 +375,18 @@ pub enum SpendKind<'a> {
     /// is why this is a separate variant rather than an alias of the one above.
     P2shP2wpkh {
         redeem_script: &'a Script,
+        value: Amount,
+        sighash_type: EcdsaSighashType,
+    },
+    /// BIP48 native segwit multisig (m7). BIP-143 hashes the WITNESS script verbatim - it
+    /// is not expanded the way a P2WPKH program is - so what is passed here is the
+    /// `OP_M ... OP_N OP_CHECKMULTISIG` script itself, and never the `0020{hash}`
+    /// scriptPubKey that commits to it. The caller is expected to have rebuilt that script
+    /// from a verified registration rather than read it out of the PSBT
+    /// ([`crate::multisig::Registration::locate`]); this variant carries no way to tell the
+    /// difference, which is why the check lives one layer up in `psbt::inspect`.
+    P2wsh {
+        witness_script: &'a Script,
         value: Amount,
         sighash_type: EcdsaSighashType,
     },
@@ -415,6 +432,16 @@ impl SpendKind<'_> {
                 hash: cache
                     .p2wpkh_signature_hash(input_index, redeem_script, value, sighash_type)
                     .map_err(SignError::SegwitV0)?,
+                sighash_type,
+            }),
+            SpendKind::P2wsh {
+                witness_script,
+                value,
+                sighash_type,
+            } => Ok(SignHash::SegwitV0 {
+                hash: cache
+                    .p2wsh_signature_hash(input_index, witness_script, value, sighash_type)
+                    .map_err(|e| SignError::SegwitV0(P2wpkhError::Sighash(e)))?,
                 sighash_type,
             }),
             SpendKind::P2trKeyPath {

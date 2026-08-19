@@ -16,10 +16,14 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use bitcoin::bip32::{ChainCode, ChildNumber, DerivationPath, Fingerprint, Xpriv, Xpub};
-use bitcoin::key::{CompressedPublicKey, UntweakedKeypair};
+use bitcoin::key::CompressedPublicKey;
 use bitcoin::secp256k1::{All, Secp256k1};
-use bitcoin::{Address, Network, PrivateKey};
-use zeroize::Zeroize;
+use bitcoin::{Network, PrivateKey, ScriptBuf};
+use zeroize::{Zeroize, Zeroizing};
+
+// One wallet has one notion of an internal keychain and m7's type is it, exactly as
+// `crate::address` re-exports it rather than declaring a second.
+use crate::multisig::Keychain;
 
 /// SLIP-132 alternative version bytes. They change ONLY the four leading version bytes of
 /// the serialized extended key; the key data is identical to the xprv/xpub rendering of
@@ -28,6 +32,23 @@ pub const YPRV: [u8; 4] = [0x04, 0x9d, 0x78, 0x78];
 pub const YPUB: [u8; 4] = [0x04, 0x9d, 0x7c, 0xb2];
 pub const ZPRV: [u8; 4] = [0x04, 0xb2, 0x43, 0x0c];
 pub const ZPUB: [u8; 4] = [0x04, 0xb2, 0x47, 0x46];
+
+/// SLIP-132 registers a set of version bytes per chain, and testnet, signet and regtest
+/// share one set. These are the public halves of the test-chain set: the counterparts of
+/// [`YPUB`] and [`ZPUB`] on any chain that is not mainnet.
+///
+/// The private halves are deliberately absent. Nothing renders a test-chain private key -
+/// the key report shows the mainnet pair and [`derive`] produces no other - so a `uprv` or
+/// `vprv` constant here would be a value with no reader and one more way to write a secret
+/// out of the device.
+pub const UPUB: [u8; 4] = [0x04, 0x4a, 0x52, 0x62];
+pub const VPUB: [u8; 4] = [0x04, 0x5f, 0x1c, 0xf6];
+
+/// BIP-32's own version bytes for a serialized extended PUBLIC key: `xpub` on mainnet,
+/// `tpub` on every test chain. What [`slip132_pub`] reads to decide which SLIP-132 set an
+/// account node belongs to.
+const XPUB_MAINNET: [u8; 4] = [0x04, 0x88, 0xb2, 0x1e];
+const XPUB_TESTNET: [u8; 4] = [0x04, 0x35, 0x87, 0xcf];
 
 /// A BIP32 child index: any value below 2^31.
 ///
@@ -115,11 +136,13 @@ impl Scheme {
     fn slip132(self) -> Option<Slip132> {
         match self {
             Scheme::Bip49 => Some(Slip132 {
-                versions: (YPRV, YPUB),
+                mainnet: (YPRV, YPUB),
+                testnet_pub: UPUB,
                 labels: ("Account yprv", "Account ypub"),
             }),
             Scheme::Bip84 => Some(Slip132 {
-                versions: (ZPRV, ZPUB),
+                mainnet: (ZPRV, ZPUB),
+                testnet_pub: VPUB,
                 labels: ("Account zprv", "Account zpub"),
             }),
             Scheme::Bip44 | Scheme::Bip86 | Scheme::Bip48 => None,
@@ -138,7 +161,11 @@ impl Scheme {
 /// calls the resulting keys.
 #[derive(Clone, Copy)]
 struct Slip132 {
-    versions: ([u8; 4], [u8; 4]),
+    /// (private, public) version bytes on mainnet - the pair [`derive`] renders.
+    mainnet: ([u8; 4], [u8; 4]),
+    /// The PUBLIC version bytes on the test chains. Public only, for the reason given on
+    /// [`UPUB`].
+    testnet_pub: [u8; 4],
     labels: (&'static str, &'static str),
 }
 
@@ -253,8 +280,24 @@ pub struct Derived {
 ///
 /// The seed is the 64-byte PBKDF2 output; the master node is HMAC-SHA512("Bitcoin seed").
 /// Returns `xprv...` on mainnet and `tprv...` on testnet.
+///
+/// The returned `String` is spending authority for the whole wallet and is the CALLER's to
+/// wipe; the buffer is the only one that ever held it (see [`xprv_string`]), so a
+/// `zeroize` on it is complete.
 pub fn root_xprv(seed: &[u8; 64], network: bitcoin::Network) -> String {
-    master(seed, network).key().to_string()
+    xprv_string(master(seed, network).key().encode())
+}
+
+/// The master account's own extended PUBLIC key: `Xpub::from_priv` of the same node
+/// [`root_xprv`] serializes, depth 0 ("m"), on the given network.
+///
+/// Public identifier, not spending authority: this is the counterpart export code wants
+/// (SPEC/0.2.0-m10) when a coordinator's watch-only file format includes the master xpub
+/// alongside each account's own (e.g. Coldcard's `generic-wallet-export.md`, whose top
+/// level `xpub` field is exactly this value at the mainnet/testnet-appropriate prefix).
+pub fn root_xpub(seed: &[u8; 64], network: bitcoin::Network) -> String {
+    let secp = secp();
+    Xpub::from_priv(secp, master(seed, network).key()).to_string()
 }
 
 /// The master fingerprint: first 4 bytes of HASH160 of the master public key.
@@ -354,8 +397,8 @@ pub fn derive(
         // SLIP-132 assigns version bytes per network; only the mainnet set is specified
         // here, so a testnet run stays with tprv/tpub alone rather than mislabelling keys.
         Some(slip) if network == Network::Bitcoin => (
-            Some(reversion(node.key().encode(), slip.versions.0)),
-            Some(reversion(node_pub.encode(), slip.versions.1)),
+            Some(reversion(node.key().encode(), slip.mainnet.0)),
+            Some(reversion(node_pub.encode(), slip.mainnet.1)),
         ),
         _ => (None, None),
     };
@@ -378,9 +421,17 @@ pub fn derive(
                     .expect("PrivateKey::new yields a compressed key");
                 let row = AddressRow {
                     path,
-                    address: address(scheme, secp, child.key(), pubkey, network),
+                    // `crate::address::for_key` is the crate's one scheme-to-address
+                    // mapping, so the row the report prints and the row the explorer,
+                    // the CSV and the ownership search build are the same address by
+                    // construction rather than by two implementations agreeing.
+                    address: crate::address::for_key(scheme, pubkey, network)
+                        .expect("BIP48 produces no address rows")
+                        .to_string(),
                     pubkey: pubkey.to_string(),
-                    wif: key.to_wif(),
+                    // Not `key.to_wif()`: see `wif_string` for what rust-bitcoin's own
+                    // rendering leaves behind.
+                    wif: wif_string(&key),
                 };
                 key.inner.non_secure_erase();
                 row
@@ -391,7 +442,12 @@ pub fn derive(
     Derived {
         account: AccountKeys {
             path: account_path,
-            xprv: node.key().to_string(),
+            // The private rendering goes through this module's own encoder and the public
+            // one does not. That asymmetry is the point: an xpub is not a secret, so the
+            // buffers rust-bitcoin's `Display` abandons behind it cost nothing, while the
+            // same buffers behind an xprv are the account's spending key sitting in the
+            // free list. See `xprv_string`.
+            xprv: xprv_string(node.key().encode()),
             xpub: node_pub.to_string(),
             slip132_prv,
             slip132_pub,
@@ -400,32 +456,239 @@ pub fn derive(
     }
 }
 
-/// The scheme's payment address for one leaf.
+// ---------------------------------------------------------------------------------------
+// One single-sig account, as a value a file cannot forge
+// ---------------------------------------------------------------------------------------
+
+/// A name for one single-sig account: the scheme it belongs to and its index.
 ///
-/// BIP86 tweaks the internal key with an empty merkle root (BIP341 key-path spend); the
-/// untweaked key is what the row reports as `pubkey` and encodes as WIF, so the tweak must
-/// not escape this function.
-fn address(
+/// Enough to say WHICH account proved an output and no more. The network is the device's
+/// own and is the same for every account in a session, so putting it here would be a field
+/// that can only ever hold one value; the account node itself is public but far too large
+/// to carry through [`crate::psbt::OutputRole`], which is what this is carried inside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountId {
     scheme: Scheme,
-    secp: &Secp256k1<All>,
-    child: &Xpriv,
-    pubkey: CompressedPublicKey,
-    network: Network,
-) -> String {
-    match scheme {
-        Scheme::Bip44 => Address::p2pkh(pubkey, network).to_string(),
-        Scheme::Bip49 => Address::p2shwpkh(&pubkey, network).to_string(),
-        Scheme::Bip84 => Address::p2wpkh(&pubkey, network).to_string(),
-        // BIP48 never reaches here: derive() produces no address rows for it.
-        Scheme::Bip48 => unreachable!("BIP48 produces no address rows"),
-        Scheme::Bip86 => {
-            let mut keypair = UntweakedKeypair::from_secret_key(secp, &child.private_key);
-            let (internal_key, _parity) = keypair.x_only_public_key();
-            let address = Address::p2tr(secp, internal_key, None, network).to_string();
-            keypair.non_secure_erase();
-            address
-        }
+    account: ChildIndex,
+}
+
+impl AccountId {
+    pub fn scheme(self) -> Scheme {
+        self.scheme
     }
+
+    pub fn account(self) -> ChildIndex {
+        self.account
+    }
+}
+
+impl fmt::Display for AccountId {
+    /// `bip84/0`: the scheme's own command-line name and the account index, which is the
+    /// pair a user can match against the account line of their key report.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.scheme.name(), self.account)
+    }
+}
+
+/// One leaf of an account: the key it derives, and the script that key locks.
+///
+/// The two travel together because they are one derivation seen twice, and a caller that
+/// asked for them separately could compare a script from one leaf against a key from
+/// another - which is the shape of every change-confusion bug there has been.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Leaf {
+    pub key: CompressedPublicKey,
+    /// What this account locks at this leaf, from [`crate::address::for_key`] - the
+    /// crate's one scheme-to-script rule, so the change proof and the address explorer
+    /// cannot disagree about what an account owns.
+    pub script_pubkey: ScriptBuf,
+}
+
+/// One single-sig account of this wallet, reduced to what proving ownership of a script
+/// needs.
+///
+/// The single-sig counterpart of [`crate::multisig::Registration`], built the same way and
+/// for the same reason: the fields are private and [`Account::derive`] is the only
+/// constructor, so no value of this type can be assembled out of a PSBT. That is what
+/// makes ARCHITECTURE.md check 3 decidable by a pipeline holding no seed - the answer to
+/// "is this script ours" comes from a value that could only have come from the seed, or it
+/// does not come at all.
+///
+/// It holds the account node's PUBLIC key. Everything it can do - derive the two
+/// unhardened levels below that node - is everything a watch-only wallet can do, so a
+/// session may keep one in scope for as long as it keeps the review it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    id: AccountId,
+    network: Network,
+    /// `m/84h/0h/0h` and the like: where `xpub` sits under the master key. Kept typed
+    /// rather than rendered, because it is compared against a PSBT's own origin path and a
+    /// comparison of two spellings of a path is a comparison of two spellings.
+    origin: DerivationPath,
+    xpub: Xpub,
+}
+
+impl Account {
+    /// Derive one account node from the seed.
+    ///
+    /// `None` for [`Scheme::Bip48`]: a BIP48 account is a cosigner in a multisig wallet and
+    /// locks nothing on its own, so the only honest source of one of its scripts is a
+    /// [`crate::multisig::Registration`] carrying every cosigner.
+    ///
+    /// The seed is read here and nowhere else in the life of the value. What survives the
+    /// call is the account xpub, its path and its name.
+    pub fn derive(
+        seed: &[u8; 64],
+        network: Network,
+        scheme: Scheme,
+        account: ChildIndex,
+    ) -> Option<Account> {
+        if scheme == Scheme::Bip48 {
+            return None;
+        }
+        let secp = secp();
+        let origin = DerivationPath::from(alloc::vec![
+            hardened(fixed_index(scheme.purpose())),
+            hardened(fixed_index(coin_type(network))),
+            hardened(account),
+        ]);
+        // Both `SecretXpriv`s wipe themselves when this frame ends; the xpub taken from the
+        // account node is the only thing that outlives the call.
+        let root = master(seed, network);
+        let node = derive_child(secp, root.key(), &origin, "an account node");
+        Some(Account {
+            id: AccountId { scheme, account },
+            network,
+            origin,
+            xpub: Xpub::from_priv(secp, node.key()),
+        })
+    }
+
+    pub fn id(&self) -> AccountId {
+        self.id
+    }
+
+    pub fn network(&self) -> Network {
+        self.network
+    }
+
+    /// Where this account sits under the master key, e.g. `m/84h/0h/0h`.
+    pub fn origin(&self) -> &DerivationPath {
+        &self.origin
+    }
+
+    /// The account node's public key, for a caller that has to export or display it.
+    pub fn xpub(&self) -> &Xpub {
+        &self.xpub
+    }
+
+    /// Which leaf of this account a derivation path names, if it names one at all.
+    ///
+    /// A hint reader and nothing more: it says WHERE to look, and a hostile file is free to
+    /// point it anywhere. What decides ownership is [`Account::leaf`] rebuilding the script
+    /// the output actually pays. The two halves are deliberately separate calls for the
+    /// same reason they are on [`crate::multisig::Registration`] - a path that resolves is
+    /// not a proof, and one function returning both would read as though it were.
+    ///
+    /// `None` for a path that is not exactly this account's origin followed by two
+    /// unhardened steps, and for a chain step that is neither of BIP-44's two keychains.
+    pub fn locate_path(&self, path: &DerivationPath) -> Option<(Keychain, u32)> {
+        let steps: Vec<ChildNumber> = path.into_iter().copied().collect();
+        let origin: Vec<ChildNumber> = self.origin.into_iter().copied().collect();
+        if steps.len() != origin.len() + 2 || steps[..origin.len()] != origin[..] {
+            return None;
+        }
+        let (ChildNumber::Normal { index: chain }, ChildNumber::Normal { index }) =
+            (steps[origin.len()], steps[origin.len() + 1])
+        else {
+            return None;
+        };
+        Some((keychain_of(chain)?, index))
+    }
+
+    /// How many BIP-32 child derivations one [`leaf`](Account::leaf) costs: the keychain
+    /// step and the index step.
+    ///
+    /// The single-sig half of the price list [`crate::multisig::Registration::leaf_derivations`]
+    /// gives for the multisig half, and it exists for the same caller: `psbt::checks` has
+    /// to charge this against a file's work budget before it derives, and a number written
+    /// out at the call site is a number that stops matching this function.
+    pub const LEAF_DERIVATIONS: u32 = 2;
+
+    /// This account's key and script at one leaf.
+    ///
+    /// `None` only if the child key does not derive, which for an index below 2^31 is the
+    /// roughly 2^-128 case BIP-32 tells implementations to skip, or if the scheme has no
+    /// single-key script ([`Scheme::Bip48`], which [`Account::derive`] already refuses).
+    pub fn leaf(&self, keychain: Keychain, index: u32) -> Option<Leaf> {
+        let child = self
+            .xpub
+            .derive_pub(
+                secp(),
+                &[
+                    ChildNumber::from_normal_idx(chain_index(keychain)).ok()?,
+                    ChildNumber::from_normal_idx(index).ok()?,
+                ],
+            )
+            .ok()?;
+        let key = CompressedPublicKey(child.public_key);
+        Some(Leaf {
+            key,
+            script_pubkey: crate::address::for_key(self.id.scheme, key, self.network)?
+                .script_pubkey(),
+        })
+    }
+}
+
+/// Every single-sig account this device owns, for the caller that has to hand them to
+/// [`crate::psbt::inspect_with_accounts`].
+///
+/// This is a POLICY statement and the only one there is: the device's single-sig wallets
+/// are the four BIP-44 family schemes ([`Scheme::ALL`]) at account index 0, and nothing on
+/// this device derives, displays or exports any other. Written once, here, so that the
+/// change check and the address screens cannot come to disagree about which accounts a
+/// wallet has - that disagreement is a change output the review calls a payment.
+///
+/// [`Scheme::Bip48`] is absent because [`Account::derive`] refuses it: a BIP-48 account is
+/// a cosigner and locks nothing on its own, so its outputs are proven from a
+/// [`crate::multisig::Registration`] or not at all.
+///
+/// What is NOT covered: an account index above 0. A coordinator that spends from one gets
+/// [`crate::psbt::OutputRole::ClaimedButUnproven`] on its change, which counts as money
+/// leaving - the review OVERSTATES the spend rather than understating it, which is the
+/// direction this whole check exists to keep. Widening the set is a UI decision (there is
+/// no screen that selects an account) and not one to make here on speculation.
+///
+/// The seed is read for the length of the call and the four account xpubs are what
+/// survives it; every [`Account`] this returns is watch-only.
+pub fn device_accounts(seed: &[u8; 64], network: Network) -> Vec<Account> {
+    Scheme::ALL
+        .iter()
+        .filter_map(|scheme| Account::derive(seed, network, *scheme, ChildIndex::ZERO))
+        .collect()
+}
+
+/// BIP-44's change level: 0 is the external keychain and 1 the internal one. Fixed for
+/// single-sig, where a multisig descriptor instead names its own two chains and a
+/// registration stores them.
+///
+/// The one statement of the rule in this module, read in both directions by
+/// [`keychain_of`], so a device that derives change at chain 1 cannot come to recognise it
+/// at some other chain.
+fn chain_index(keychain: Keychain) -> u32 {
+    match keychain {
+        Keychain::Receive => 0,
+        Keychain::Change => 1,
+    }
+}
+
+/// The inverse of [`chain_index`]: which keychain a path's chain step names, or `None` for
+/// a chain this device does not use. "Chain 7" is not a thing anyone can ask for, which is
+/// what [`Keychain`] exists to say.
+fn keychain_of(chain: u32) -> Option<Keychain> {
+    [Keychain::Receive, Keychain::Change]
+        .into_iter()
+        .find(|keychain| chain_index(*keychain) == chain)
 }
 
 /// The one secp256k1 context of the process.
@@ -436,42 +699,133 @@ fn address(
 /// precomputed tables for no benefit.
 ///
 /// Building a context is pure computation over the curve constants, so sharing it changes
-/// nothing but the cost - `--scheme all` would otherwise build four. It is deliberately
-/// never randomized: randomization would need an OS RNG, which this program must not use.
+/// nothing but the cost - `--scheme all` would otherwise build four.
+///
+/// It is UNBLINDED unless [`blind_secp`] is called first, and that is a decision with a
+/// history, so here is what the primitive actually is. A previous note here said
+/// randomization "would need an OS RNG, which this program must not use". Both halves of
+/// that were wrong, and a wrong justification in security code is worse than none, because
+/// it retires the question:
+///
+/// - `Secp256k1::seeded_randomize(&[u8; 32])` takes the 32 bytes from the caller and needs
+///   no RNG at all. Only the `randomize(rng)` convenience wrapper does, and it is behind
+///   secp256k1's `rand` feature, which this build does not enable.
+/// - Randomization is NOT an entropy source and cannot put randomness on a derivation
+///   path. `secp256k1_context_randomize` reaches exactly one thing: the ecmult_gen
+///   context. It sets a blinding scalar `b`, so a secret scalar `a` is multiplied as
+///   `(a - b)*G + b*G` rather than directly, and it rescales the projective representation
+///   of the accumulator's initial point. Both are side-channel countermeasures against
+///   power analysis and cache timing during signing and public key generation. Every
+///   output is bit-for-bit unchanged: ECDSA here is RFC 6979, Schnorr is the no-aux-rand
+///   BIP-340 path, and BIP-32 derivation is a hash chain. SECURITY.md invariant 3 bans an
+///   RNG from the derivation and sealing paths; blinding is neither, and it does not need
+///   one regardless.
+///
+/// What actually keeps 0.2.0 unblinded is narrower and is a property of THIS crate: the
+/// seed has to be a device-bound value, and this crate cannot obtain one. It reads no
+/// peripheral and no eFuse by construction (see the crate docs), so the only 32 bytes it
+/// could supply itself would be a constant compiled into the image - and the image is open
+/// source and reproducible, so that constant is public, the blinding scalar derived from
+/// it is computable by the attacker, and the countermeasure buys nothing against the only
+/// attacker it is for. A blind that the attacker can compute is not a blind.
+///
+/// [`blind_secp`] is therefore the seam: the firmware owns the eFuse HMAC key and can
+/// derive 32 secret, device-unique, deterministic bytes from it, and passing them in makes
+/// the blinding real without this crate learning anything about hardware. Nothing in
+/// 0.2.0 calls it, so 0.2.0 signs on an unblinded context; that is the state to change
+/// when the boot path is next opened, not a fact to be re-derived from scratch.
 ///
 /// The desktop crate keeps the context in a `std::sync::OnceLock`; no_std has no blocking
 /// primitive to replace that with, so this is the racy-init pattern instead (the same one
 /// `once_cell::race` implements, hand-rolled here to avoid a dependency for fifteen
 /// lines): the first caller through publishes a leaked `Box` with a compare-exchange, and
 /// a concurrent loser frees its own candidate and adopts the winner's. Initialization may
-/// run more than once under contention; exactly one result is ever published, every caller
-/// sees that one, and the context is identical whoever builds it (curve constants, no
-/// randomization), so the race is unobservable. The single published context is
-/// deliberately never freed - it lives for the process, exactly as the OnceLock did.
+/// run more than once under contention; exactly one result is ever published and every
+/// caller sees that one. The race is unobservable because two contexts differ in nothing a
+/// caller can see - identical curve constants, and, per the paragraphs above, identical
+/// output even when one of them is blinded and the other is not. The single published
+/// context is deliberately never freed: it lives for the process, exactly as the OnceLock
+/// did.
 pub fn secp() -> &'static Secp256k1<All> {
-    static CONTEXT: AtomicPtr<Secp256k1<All>> = AtomicPtr::new(core::ptr::null_mut());
-    let mut published = CONTEXT.load(Ordering::Acquire);
-    if published.is_null() {
-        let candidate = Box::into_raw(Box::new(Secp256k1::new()));
-        match CONTEXT.compare_exchange(
-            core::ptr::null_mut(),
-            candidate,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => published = candidate,
-            Err(winner) => {
-                // SAFETY: `candidate` came from Box::into_raw above and lost the race, so
-                // this thread is its only owner and nothing else has seen the pointer.
-                drop(unsafe { Box::from_raw(candidate) });
-                published = winner;
-            }
+    let published = CONTEXT.load(Ordering::Acquire);
+    if !published.is_null() {
+        // SAFETY: see `publish`; a non-null CONTEXT is always a live leaked Box.
+        return unsafe { &*published };
+    }
+    publish(Secp256k1::new()).0
+}
+
+/// Whether a blinding seed reached the context this process will actually use.
+///
+/// Returned rather than swallowed because the failure is silent and total: a caller that
+/// asks too late gets an unblinded context and no other signal that its countermeasure did
+/// not happen. `#[must_use]` so it cannot be dropped on the floor.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blinding {
+    /// The seed was applied to the context every later caller will use.
+    Applied,
+    /// A context was already published, so nothing was blinded. Something on this boot
+    /// called [`secp`] first; the fix is to call this earlier, not to call it again.
+    TooLate,
+}
+
+/// Install a side-channel blinding seed on the process's secp256k1 context.
+///
+/// Call this once, at boot, BEFORE anything derives or signs. The context is published on
+/// first use and is never replaced afterwards, which is why a late call reports
+/// [`Blinding::TooLate`] rather than pretending to succeed. See [`secp`] for what blinding
+/// is, what it is not, and why this crate cannot produce the seed itself.
+///
+/// Requirements on `seed`, in the order they matter:
+/// - It must be SECRET. A value an attacker can read or recompute - anything constant in
+///   the published image - produces a blinding scalar the attacker can also compute, which
+///   is the same as no blinding.
+/// - It must be DEVICE-BOUND, so one unit's analysis does not carry to another.
+/// - It need not be random, and must not come from an RNG: libsecp256k1 runs the seed
+///   through an RFC 6979 HMAC-SHA256 generator chained with the previous blinding value,
+///   which is precisely what makes a derived, low-entropy or adversarial seed safe to use.
+///   A value HKDF'd from the eFuse HMAC key is the intended shape.
+///
+/// Output is unaffected: signatures, public keys and derived addresses are identical
+/// whether or not this is called, which is what makes it safe to add to a boot path that
+/// is covered by byte-exact vectors (SECURITY.md invariant 4).
+pub fn blind_secp(seed: &[u8; 32]) -> Blinding {
+    let mut candidate = Secp256k1::new();
+    candidate.seeded_randomize(seed);
+    if publish(candidate).1 {
+        Blinding::Applied
+    } else {
+        Blinding::TooLate
+    }
+}
+
+/// The process's context, or null until the first caller publishes one.
+static CONTEXT: AtomicPtr<Secp256k1<All>> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Publish `candidate` as THE context if none exists yet, and report whether it won.
+///
+/// The one place `CONTEXT` is ever stored to, so the invariant that a non-null `CONTEXT`
+/// is a live, leaked, never-mutated `Box` has exactly one proof obligation.
+fn publish(candidate: Secp256k1<All>) -> (&'static Secp256k1<All>, bool) {
+    let raw = Box::into_raw(Box::new(candidate));
+    match CONTEXT.compare_exchange(
+        core::ptr::null_mut(),
+        raw,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        // SAFETY: `raw` came from Box::into_raw, is now owned by the static for the rest
+        // of the process, and is never freed or mutated again.
+        Ok(_) => (unsafe { &*raw }, true),
+        Err(winner) => {
+            // SAFETY: `raw` lost the race, so this thread is still its only owner and no
+            // other thread has ever seen the pointer. `winner` is a pointer some thread
+            // published through the arm above.
+            drop(unsafe { Box::from_raw(raw) });
+            (unsafe { &*winner }, false)
         }
     }
-    // SAFETY: a non-null value in CONTEXT is always a pointer published by the
-    // compare-exchange above, never removed or mutated afterwards, so it is valid for the
-    // rest of the process.
-    unsafe { &*published }
 }
 
 /// An extended private key that erases its secret material when it goes out of scope.
@@ -554,9 +908,182 @@ fn normal(index: ChildIndex) -> ChildNumber {
 /// yprv/zprv side, so this owns it and wipes it rather than dropping it as it came in.
 fn reversion(mut raw: [u8; 78], version: [u8; 4]) -> String {
     raw[..4].copy_from_slice(&version);
-    let encoded = bitcoin::base58::encode_check(&raw);
+    let encoded = base58check_secret(&raw);
     raw.zeroize();
     encoded
+}
+
+/// The base58check rendering of a serialized extended PRIVATE key, taking ownership of the
+/// 78 bytes so the copy this frame holds is wiped rather than abandoned.
+///
+/// Callers pass `node.key().encode()` directly: rust-bitcoin returns that array by value,
+/// so binding it here is what gives anything a chance to wipe it at all.
+///
+/// `pub(crate)` because this is the crate's ONLY sanctioned rendering of an extended
+/// private key, not a detail of this module: `Xpriv`'s own `Display` is the leak
+/// [`base58check_secret`] documents, so every module that renders one - [`crate::bip85`]
+/// included - has to come through here or reintroduce it.
+pub(crate) fn xprv_string(mut raw: [u8; 78]) -> String {
+    let encoded = base58check_secret(&raw);
+    raw.zeroize();
+    encoded
+}
+
+/// A private key in WIF form, on the network and compression the key itself declares.
+/// Every key this module produces is compressed; the other branch exists because
+/// `PrivateKey` can represent both and a renderer that silently ignored the flag would be
+/// wrong in a way nothing here would catch.
+///
+/// Replaces `PrivateKey::to_wif`, which is correct but leaves three complete or partial
+/// copies of the key behind: `fmt_wif` builds the 34-byte payload on a stack array it does
+/// not wipe, base58-encodes it into a `String` grown from empty, writes THAT into a second
+/// `String` grown from empty, and then calls `shrink_to_fit`, whose reallocation frees a
+/// buffer holding the entire 52-character WIF. `AddressRow::drop` wipes the one string it
+/// is given and can reach none of them. A WIF is short enough to fit whole inside those
+/// abandoned buffers, so this is not a partial disclosure: it is the leaf's spending key.
+fn wif_string(key: &PrivateKey) -> String {
+    // Layout per WIF: version byte, the 32-byte scalar, then 0x01 to mark the public key
+    // compressed. 128 is mainnet and 239 is every test chain.
+    let mut payload = [0u8; 34];
+    payload[0] = if key.network.is_mainnet() { 128 } else { 239 };
+    let mut secret = key.inner.secret_bytes();
+    payload[1..33].copy_from_slice(&secret);
+    secret.zeroize();
+    let len = if key.compressed {
+        payload[33] = 1;
+        34
+    } else {
+        33
+    };
+    let encoded = base58check_secret(&payload[..len]);
+    payload.zeroize();
+    encoded
+}
+
+/// Largest payload this module base58check-encodes: a 78-byte extended key. The 4-byte
+/// checksum is appended by [`base58check_secret`] itself and is counted in
+/// [`B58_MAX_DIGITS`].
+const B58_MAX_PAYLOAD: usize = 78;
+
+/// Upper bound on the characters an 82-byte value (payload plus checksum) encodes to:
+/// `ceil(82 * 8 / log2(58))` is 112. A leading zero byte contributes one '1' and no digit,
+/// so this bounds the total output length whatever the input looks like. An xprv is 111
+/// characters and a WIF is 52.
+const B58_MAX_DIGITS: usize = 112;
+
+/// The base58 alphabet, Bitcoin ordering.
+const B58_ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+/// Base58check-encode a secret payload, leaving no copy of it anywhere but the returned
+/// `String`.
+///
+/// INVARIANT, and the whole reason this exists rather than a call to
+/// `bitcoin::base58::encode_check`: an encoder that is merely correct is not sufficient for
+/// a private key. The upstream one starts from `String::new()` and pushes one character at
+/// a time, so encoding a 111-character xprv abandons buffers holding its first 8, 16, 32
+/// and 64 characters - 64 base58 characters already cover the entire chain code - and it
+/// accumulates the base58 digits in a `SmallVec` that spills to the heap past 100 digits
+/// and is dropped unwiped. None of that is reachable from `AccountKeys::drop`, which sees
+/// only the final buffer. This encoder has exactly two secret-bearing buffers, both of
+/// known size before the first byte is written, and both are wiped: `digits` here, and the
+/// `String` it returns, which the owning type wipes.
+///
+/// Two properties are load bearing, and a change to either reintroduces the defect:
+/// - `out` is created at [`B58_MAX_DIGITS`] and never exceeds it, so no push reallocates.
+///   Nothing may `shrink_to_fit` it afterwards; that reallocation is itself the leak.
+/// - `digits` is a fixed array, not a `Vec`, so it cannot grow and abandon a buffer.
+///
+/// `crates/notyas-core/tests/key_material_residue.rs` fails if either is undone, and
+/// `base58check_matches_rust_bitcoin` fails if the encoding drifts from the crate this
+/// module used to call.
+fn base58check_secret(payload: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    assert!(
+        payload.len() <= B58_MAX_PAYLOAD,
+        "base58check_secret is sized for payloads up to {B58_MAX_PAYLOAD} bytes, got {}",
+        payload.len()
+    );
+
+    // Base58CHECK: the trailer is the first four bytes of SHA256d over the payload. Both
+    // digests are wiped - the first is an intermediate over key material, and sha2's own
+    // `zeroize` feature (enabled in Cargo.toml, deliberately) clears the hasher state.
+    let first = Zeroizing::new(<[u8; 32]>::from(Sha256::digest(payload)));
+    let checksum = Zeroizing::new(<[u8; 32]>::from(Sha256::digest(*first)));
+
+    // Base 256 to base 58 by repeated division, least significant digit first. Leading
+    // zero BYTES carry no value and so produce no digit; base58check renders each as a
+    // literal '1', which is why they are counted separately.
+    let mut digits = [0u8; B58_MAX_DIGITS];
+    let mut len = 0usize;
+    let mut leading_zeros = 0usize;
+    let mut still_leading = true;
+    for &byte in payload.iter().chain(checksum[..4].iter()) {
+        if still_leading && byte == 0 {
+            leading_zeros += 1;
+        } else {
+            still_leading = false;
+        }
+        let mut carry = usize::from(byte);
+        for digit in digits[..len].iter_mut() {
+            let value = usize::from(*digit) * 256 + carry;
+            *digit = (value % 58) as u8;
+            carry = value / 58;
+        }
+        while carry > 0 {
+            digits[len] = (carry % 58) as u8;
+            len += 1;
+            carry /= 58;
+        }
+    }
+
+    let mut out = String::with_capacity(B58_MAX_DIGITS);
+    for _ in 0..leading_zeros {
+        out.push('1');
+    }
+    for digit in digits[..len].iter().rev() {
+        out.push(char::from(B58_ALPHABET[usize::from(*digit)]));
+    }
+    digits.zeroize();
+    debug_assert_eq!(
+        out.capacity(),
+        B58_MAX_DIGITS,
+        "the output buffer grew, so an abandoned copy of the key is in the free list"
+    );
+    out
+}
+
+/// The SLIP-132 public rendering of an already-serialized account node: `ypub`/`zpub` on
+/// mainnet, `upub`/`vpub` on the test chains.
+///
+/// This exists because two consumers of the same account node disagree about what they
+/// need, and both are right. The key report renders the mainnet pair only, which is why
+/// [`AccountKeys::slip132_pub`] is `None` off mainnet: showing a user a fourth line of key
+/// material they have no use for is noise. Electrum, on the other hand, infers an
+/// account's script type from nothing but these version bytes, so a BIP84 testnet account
+/// exported under its plain `tpub` is not a lesser export, it is a wallet that builds
+/// legacy addresses from a native-segwit key. Rendering on demand serves both without
+/// making either the default.
+///
+/// The chain is read out of `xpub`'s own version bytes rather than taken as an argument.
+/// There is then no second source of truth to disagree with the key, and no way to hand
+/// this function a testnet account and a mainnet label and get a file back that lies about
+/// which chain it is for.
+///
+/// `None` when `scheme` has no SLIP-132 rendering (BIP44 and BIP86, which the ecosystem
+/// leaves as a plain xpub/tpub; BIP48, which is multisig), and when `xpub` is not a
+/// 78-byte base58check extended public key of a chain SLIP-132 registers.
+pub fn slip132_pub(scheme: Scheme, xpub: &str) -> Option<String> {
+    let slip = scheme.slip132()?;
+    let raw: [u8; 78] = bitcoin::base58::decode_check(xpub).ok()?.try_into().ok()?;
+    let version = if raw[..4] == XPUB_MAINNET {
+        slip.mainnet.1
+    } else if raw[..4] == XPUB_TESTNET {
+        slip.testnet_pub
+    } else {
+        return None;
+    };
+    Some(reversion(raw, version))
 }
 
 #[cfg(test)]
@@ -855,6 +1382,22 @@ mod tests {
         }
     }
 
+    /// [`root_xpub`] must be the public half of exactly the node [`root_xprv`] serializes:
+    /// parsing the xprv and dropping to its public key is an independent path to the same
+    /// value (rust-bitcoin's `Xpriv::from_str` + `Xpub::from_priv`, not this module's own
+    /// `master()`), and on testnet the prefix must flip from tprv to tpub.
+    #[test]
+    fn root_xpub_is_the_public_half_of_root_xprv() {
+        let seed = sample_seed();
+        for network in [Network::Bitcoin, Network::Testnet] {
+            let xprv: Xpriv = root_xprv(&seed, network).parse().expect("valid xprv/tprv");
+            let want = Xpub::from_priv(secp(), &xprv).to_string();
+            assert_eq!(root_xpub(&seed, network), want);
+        }
+        assert!(root_xpub(&seed, Network::Bitcoin).starts_with("xpub"));
+        assert!(root_xpub(&seed, Network::Testnet).starts_with("tpub"));
+    }
+
     #[test]
     fn zero_count_yields_account_only() {
         let seed = sample_seed();
@@ -1001,10 +1544,123 @@ mod tests {
             index(3),
             ChildIndex::ZERO,
             0,
-            1, // P2WSH
+            // BIP-48 script_type 1 is P2SH-P2WSH; script_type 2 is P2WSH
+            // (WALLET-API.md 2.6 restricts 0.2.0 to script_type 2 / WshSortedMulti). This
+            // test only exercises path arithmetic, so either value works, but 1 is
+            // labelled correctly here rather than as "P2WSH" (a stale mislabel this
+            // comment used to carry).
+            1,
         );
         assert_eq!(d.account.path, "m/48'/0'/3'/1'");
         assert!(d.rows.is_empty());
+    }
+
+    /// The hand rolled base58check encoder must agree with the crate this module used to
+    /// call, on every shape an extended key or a WIF can take.
+    ///
+    /// The reference-vector tests above already pin the real renderings; this pins the
+    /// EDGES those vectors never reach - leading zero bytes (a version byte of 0x00 is
+    /// what makes a base58 address start with '1'), the shortest and longest payloads, and
+    /// the all-0xff carry chain that exercises every division in the loop.
+    #[test]
+    fn base58check_matches_rust_bitcoin() {
+        let mut payloads: Vec<Vec<u8>> = alloc::vec![
+            alloc::vec![0x00],
+            alloc::vec![0x00, 0x00, 0x00, 0x00],
+            alloc::vec![0xff],
+            alloc::vec![0x00; B58_MAX_PAYLOAD],
+            alloc::vec![0xff; B58_MAX_PAYLOAD],
+        ];
+        // A pattern with no structure that could accidentally agree, at every length the
+        // module can hand the encoder, plus the same with a run of leading zeros.
+        for len in 1..=B58_MAX_PAYLOAD {
+            let body: Vec<u8> = (0..len)
+                .map(|i| (i as u8).wrapping_mul(37).wrapping_add(11))
+                .collect();
+            let mut zeroed = body.clone();
+            for byte in zeroed.iter_mut().take(len.min(5)) {
+                *byte = 0;
+            }
+            payloads.push(body);
+            payloads.push(zeroed);
+        }
+
+        for payload in &payloads {
+            let want = bitcoin::base58::encode_check(payload);
+            let got = base58check_secret(payload);
+            assert_eq!(got, want, "payload of {} bytes", payload.len());
+            assert!(
+                got.len() <= B58_MAX_DIGITS,
+                "a {}-byte payload encoded to {} characters, above the {B58_MAX_DIGITS} \
+                 the output buffer is sized for",
+                payload.len(),
+                got.len()
+            );
+        }
+    }
+
+    /// The WIF this module builds must be the one rust-bitcoin would have produced.
+    /// Rendering a key by hand is only acceptable while it is byte-identical.
+    #[test]
+    fn wif_string_matches_rust_bitcoin() {
+        let seed = sample_seed();
+        for network in [Network::Bitcoin, Network::Testnet] {
+            let root = master(&seed, network);
+            for index in 0u32..8 {
+                let child = derive_child(
+                    secp(),
+                    root.key(),
+                    &[normal(fixed_index(index))],
+                    "test child",
+                );
+                let key = PrivateKey::new(child.key().private_key, network);
+                assert_eq!(wif_string(&key), key.to_wif(), "{network} child {index}");
+
+                // The uncompressed form is not rendered anywhere in this program, but the
+                // branch exists, so it is checked rather than left as the one untested
+                // path through a function that emits spending keys.
+                let uncompressed = PrivateKey {
+                    compressed: false,
+                    ..key
+                };
+                assert_eq!(
+                    wif_string(&uncompressed),
+                    uncompressed.to_wif(),
+                    "{network} child {index} uncompressed"
+                );
+            }
+        }
+    }
+
+    /// Blinding must not move a single output bit. This is what makes [`blind_secp`] safe
+    /// to put on a boot path that is pinned to byte-exact published vectors, and it is the
+    /// claim the doc comment on [`secp`] rests on.
+    ///
+    /// Deliberately built on a LOCAL context rather than through `blind_secp`, which
+    /// publishes into the process-wide one: this must be re-runnable and must not depend on
+    /// whether some other test in this binary called `secp()` first.
+    #[test]
+    fn blinding_the_context_changes_no_output() {
+        let seed = sample_seed();
+        let plain = Secp256k1::new();
+        let mut blinded = Secp256k1::new();
+        blinded.seeded_randomize(&[0xa5; 32]);
+        // Twice, because libsecp chains each seed into the previous blinding value; the
+        // second call must be as output-neutral as the first.
+        blinded.seeded_randomize(&[0x5a; 32]);
+
+        let root = master(&seed, Network::Bitcoin);
+        for index in 0u32..4 {
+            let path = [hardened(fixed_index(84)), hardened(fixed_index(index))];
+            let a = derive_child(&plain, root.key(), &path, "plain");
+            let b = derive_child(&blinded, root.key(), &path, "blinded");
+            assert_eq!(a.key().encode(), b.key().encode(), "child {index}");
+            assert_eq!(
+                Xpub::from_priv(&plain, a.key()).encode(),
+                Xpub::from_priv(&blinded, b.key()).encode(),
+                "public half of child {index}"
+            );
+        }
     }
 
     /// Different script types produce different account keys.

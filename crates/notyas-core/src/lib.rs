@@ -32,6 +32,10 @@
 //!   tx  + input   -> [`sign::SpendKind::sign_hash`] -> a digest (no key in scope)
 //!   key + digest  -> [`sign::SecretSigningKey::sign`]
 //!
+//! `psbt` is the one caller of that sequence that a transaction actually arrives through,
+//! and it keeps the same split: [`psbt::inspect`] decides whether a file may be signed
+//! with no seed in scope at all, and [`psbt::sign`] acts only on what an inspection named.
+//!
 //! [`report::Report::build`] is the one caller of the first sequence and
 //! [`report::Report::from_phrase`] of the second; the firmware UI renders what either
 //! produces and `qr` draws one value out of it.
@@ -61,15 +65,43 @@ extern crate std;
 /// feature set could drift from the one the derivation path actually runs on.
 pub use bitcoin;
 
+// Addresses (0.2.0-m10): the one scheme-to-address rendering the whole crate uses, a
+// wallet's receive and change addresses derived watch-only from account xpubs and
+// multisig registrations, and the bounded ownership search behind "is this address
+// mine?". Hangs off step 9 rather than extending the line above: it starts from an
+// address someone else supplied. The module's own docs are the summary, and this comment
+// is deliberately not a doc comment - see the note on `sign` below for why an outer one
+// here would break the module's intra-doc links.
+pub mod address;
 pub mod bip39;
+pub mod bip85;
 pub mod derive;
 pub mod entropy;
+/// Watch-only export rendering: BIP-380 descriptors and the named coordinator export
+/// bodies (0.2.0-m10). See the module docs for what each format is and where it comes
+/// from.
+pub mod export;
+pub mod health;
+pub mod message;
+pub mod mnemonic_tools;
+/// Multisig (0.2.0-m7): P2WSH `sortedmulti` registration, script derivation and the change
+/// proof the policy engine's check 4 rests on. Off the derivation pipeline above and off
+/// the signing one too: it decides which multi-party scripts this device has been told it
+/// is a member of, and `psbt` is its only caller inside this crate.
+pub mod multisig;
+// The PSBT engine (0.2.0-m6): decode a BIP-174 file, decide whether it may be signed,
+// sign it, encode it again. Off the derivation pipeline above for the same reason `sign`
+// is: it starts from a file the pipeline knows nothing about. The module's own docs are
+// the summary, and this comment is deliberately not a doc comment - see the note on
+// `sign` below for why an outer one here would break the module's intra-doc links.
+pub mod psbt;
 /// QR symbols for the values [`report`] shows. Generation only; see the module docs.
 /// Feature-gated because the `qrcode` crate needs std; the firmware (std on ESP-IDF)
 /// keeps the default on.
 #[cfg(feature = "qr")]
 pub mod qr;
 pub mod report;
+pub mod seedqr;
 // Signing (0.2.0-m2). The module's own docs are the summary; an outer doc comment here
 // would make rustdoc resolve the module's intra-doc links in THIS file's scope, which is
 // why `qr` and `selftest` have unresolved links today.

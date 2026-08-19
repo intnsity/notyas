@@ -164,6 +164,12 @@ impl Mnemonic {
     /// Wrapped for the same reason [`seed`] is: the sentence alone regenerates the wallet,
     /// and a bare `String` return value would leave an unwiped copy in freed heap however
     /// careful the caller is. It derefs to `String`, so callers read it as one.
+    ///
+    /// `join` is what makes the wrapper sufficient here rather than decorative: it sums the
+    /// word lengths before it allocates, so the buffer `Zeroizing` receives is the only one
+    /// the sentence was ever written into. Building the sentence by pushing into a `String`
+    /// that starts empty would not be, and the wrapper would then cover the last copy of
+    /// four.
     pub fn phrase(&self) -> Zeroizing<String> {
         Zeroizing::new(self.words.join(" "))
     }
@@ -172,6 +178,19 @@ impl Mnemonic {
 impl Drop for Mnemonic {
     /// Key material must not outlive the value that owns it. Note this makes `Mnemonic`
     /// non-destructurable; clone the fields you need instead.
+    ///
+    /// INVARIANT, and the limit of what this impl can promise: a `Drop` reaches the buffer
+    /// the value owns AT THIS INSTANT and nothing else. A `String` or `Vec` that grew,
+    /// was collected into from an iterator of unknown length, or was `shrink_to_fit`ed left
+    /// its previous buffer in the allocator's free list with the contents intact, and no
+    /// wipe here can follow it. That is why the discipline this type stands for lives along
+    /// the whole data path and not in these two lines: `entropy` is built at its final size
+    /// (see `pack_bits`), the sentence is built at its final size (see `phrase`), and the
+    /// normalization `seed` performs on it is too (see `nfkd_secret`).
+    ///
+    /// `crates/notyas-core/tests/key_material_residue.rs` watches the allocator and fails
+    /// if any of those becomes untrue, which is the only way to keep it true: the mistake
+    /// is a single innocuous `to_string()` away and leaves the code reading correctly.
     fn drop(&mut self) {
         self.entropy.zeroize();
     }
@@ -302,6 +321,73 @@ pub fn current_word_fragment(text: &str) -> &str {
     }
 }
 
+/// The BIP39 words that would give `phrase` a valid checksum as its LAST word.
+///
+/// The final-word helper of the restore screen (UX-SCREENS.md S-14). With 11, 14, 17, 20
+/// or 23 words typed, the word still missing is almost entirely determined: it carries
+/// only `ENT - 11 * typed` entropy bits (7, 6, 5, 4 and 3 respectively) and the WHOLE
+/// checksum, so between 128 and 8 of the 2048 words can complete the phrase. Offering
+/// that set is what stops a user with a smudged backup hand-searching the wordlist, and
+/// it is exactly the information the checksum already published - no secret of theirs
+/// enters the list that their own other words did not put there.
+///
+/// Empty unless `phrase` is exactly one word short of a count in [`FIXED_WORD_COUNTS`]
+/// and every word already typed is in the list. An unknown word leaves no entropy to
+/// complete, and guessing past it would offer candidates for a phrase the user did not
+/// type.
+///
+/// The result is in wordlist (alphabetical) order: the candidate index is
+/// `value << checksum_bits | checksum`, which is strictly increasing in the entropy
+/// value the loop walks, so no sort is needed and none is done.
+pub fn valid_last_words(phrase: &str) -> Vec<&'static str> {
+    let list = wordlist();
+    let typed: Vec<&str> = phrase.split_whitespace().collect();
+    let total = typed.len() + 1;
+    if !FIXED_WORD_COUNTS.contains(&total) {
+        return Vec::new();
+    }
+
+    // The bit string of the words already typed, wiped on drop: it is the user's entropy
+    // less the last word's share, which is most of their wallet.
+    let mut bits = Zeroizing::new(String::with_capacity(total * BITS_PER_WORD));
+    for word in &typed {
+        let lower = Zeroizing::new(word.to_lowercase());
+        let Ok(index) = list.binary_search_by(|probe| (**probe).cmp(lower.as_str())) else {
+            return Vec::new();
+        };
+        for shift in (0..BITS_PER_WORD).rev() {
+            bits.push(char::from(b'0' + ((index >> shift) & 1) as u8));
+        }
+    }
+
+    let ent = total / 3 * ENTROPY_BLOCK_BITS;
+    let checksum_bits = ent / ENTROPY_BLOCK_BITS;
+    // What the last word contributes to ENT; the rest of its 11 bits is the checksum.
+    // Non-negative and under `BITS_PER_WORD` for every count in `FIXED_WORD_COUNTS`,
+    // which is why this arithmetic needs no clamp: 12 words give 7, 24 words give 3.
+    let tail = ent - typed.len() * BITS_PER_WORD;
+    let base = bits.len();
+
+    let mut out = Vec::with_capacity(1usize << tail);
+    for value in 0..(1usize << tail) {
+        // Reuse the one buffer rather than cloning it per candidate: the capacity above
+        // covers `base + tail` exactly, so no push here can reallocate and leave a copy
+        // of the user's entropy in freed heap.
+        bits.truncate(base);
+        for shift in (0..tail).rev() {
+            bits.push(char::from(b'0' + ((value >> shift) & 1) as u8));
+        }
+        let entropy = Zeroizing::new(pack_bits(bits.as_bytes()));
+        let digest = Zeroizing::new(<[u8; 32]>::from(Sha256::digest(&*entropy)));
+        let mut checksum = 0usize;
+        for i in 0..checksum_bits {
+            checksum = (checksum << 1) | usize::from(digest[i / 8] >> (7 - i % 8) & 1);
+        }
+        out.push(list[(value << checksum_bits) | checksum]);
+    }
+    out
+}
+
 /// Turn parsed dice into a mnemonic (SPEC steps 4-7).
 ///
 /// SPEC obligations:
@@ -379,16 +465,25 @@ fn hashed_entropy(clean: &str, words: WordCount) -> Vec<u8> {
 /// A character other than '1' is read as 0, which cannot happen for a [`DiceEntropy`]
 /// produced by [`crate::entropy::parse_dice`] (its `binary` invariant guarantees '0'/'1').
 ///
+/// INVARIANT: the output is the master entropy, so the buffer is allocated at its final
+/// size and filled, never collected into. `collect` happens to allocate exactly once here
+/// today - `Chunks` is a `TrustedLen` iterator and the standard library specializes on
+/// that - but the wipe discipline of [`Mnemonic`] cannot rest on a library optimization
+/// that no API promises. If it ever stopped applying, the entropy would be silently
+/// duplicated into freed heap at every doubling and nothing would fail.
+///
 /// [`DiceEntropy`]: crate::entropy::DiceEntropy
 fn pack_bits(bits: &[u8]) -> Vec<u8> {
     debug_assert_eq!(bits.len() % 8, 0, "bit count must be byte aligned");
-    bits.chunks(8)
-        .map(|chunk| {
+    let mut out = Vec::with_capacity(bits.len() / 8);
+    for chunk in bits.chunks(8) {
+        out.push(
             chunk
                 .iter()
-                .fold(0u8, |byte, &c| (byte << 1) | u8::from(c == b'1'))
-        })
-        .collect()
+                .fold(0u8, |byte, &c| (byte << 1) | u8::from(c == b'1')),
+        );
+    }
+    out
 }
 
 /// SPEC step 7: the generalized BIP39 encoder.
@@ -396,7 +491,12 @@ fn pack_bits(bits: &[u8]) -> Vec<u8> {
 /// Accepts any ENT that is a non-zero multiple of 32 bits up to [`MAX_ENTROPY_BITS`],
 /// which is what lets raw mode emit 27, 30, ... word phrases. `ENT + ENT/32` is always
 /// `33 * ENT/32`, i.e. divisible by 11, so the bit string always fills whole words.
-fn mnemonic_from_entropy(mut entropy: Vec<u8>) -> Result<Mnemonic, Bip39Error> {
+/// Visible to the crate because [`crate::bip85`] needs it: a BIP-85 child is DEFINED as
+/// a mnemonic, so stopping at raw entropy would leave every caller unable to use the
+/// result. It was briefly duplicated there, which is the wrong answer for a word
+/// encoding whose two copies could drift apart silently and produce a phrase that
+/// checksums but is not the child the path names.
+pub(crate) fn mnemonic_from_entropy(mut entropy: Vec<u8>) -> Result<Mnemonic, Bip39Error> {
     let ent = entropy.len() * 8;
     assert!(
         ent != 0 && ent % ENTROPY_BLOCK_BITS == 0,
@@ -445,16 +545,53 @@ fn mnemonic_from_entropy(mut entropy: Vec<u8>) -> Result<Mnemonic, Bip39Error> {
 /// The seed is returned wrapped: a bare `[u8; 64]` return value would leave an unwiped
 /// copy on this function's stack frame no matter what the caller does with it.
 pub fn seed(phrase: &str, passphrase: &str) -> Zeroizing<[u8; 64]> {
-    use unicode_normalization::UnicodeNormalization;
-
     // Normalize the concatenation, not the parts: NFKD of "mnemonic" + passphrase is what
     // BIP39 specifies, and for a passphrase starting with a combining mark the two differ.
-    let password = Zeroizing::new(phrase.nfkd().collect::<String>());
-    let joined = Zeroizing::new(format!("mnemonic{passphrase}"));
-    let salt = Zeroizing::new(joined.nfkd().collect::<String>());
+    //
+    // The salt is assembled at its final size rather than with `format!`: `format!` sizes
+    // its buffer from a heuristic over the format string, so any passphrase longer than
+    // that guess makes the buffer grow, and the abandoned buffer is a prefix of the
+    // passphrase that no `Zeroizing` reaches. See `nfkd_secret` for the general rule.
+    let mut joined = Zeroizing::new(String::with_capacity(SALT_PREFIX.len() + passphrase.len()));
+    joined.push_str(SALT_PREFIX);
+    joined.push_str(passphrase);
+
+    let password = nfkd_secret(phrase);
+    let salt = nfkd_secret(&joined);
 
     let mut out = Zeroizing::new([0u8; 64]);
     pbkdf2::pbkdf2_hmac::<sha2::Sha512>(password.as_bytes(), salt.as_bytes(), 2048, &mut *out);
+    out
+}
+
+/// BIP39's fixed salt prefix; the passphrase is appended to it (SPEC step 8).
+const SALT_PREFIX: &str = "mnemonic";
+
+/// NFKD-normalize `text` into a buffer that is wiped on drop and provably never grows.
+///
+/// INVARIANT, and the reason this is not `text.nfkd().collect::<String>()`: normalization
+/// is a character iterator whose length is not known in advance, so `collect` starts from
+/// an empty buffer and doubles. Each doubling copies what it has to a new allocation and
+/// hands the old one back to the allocator UNREAD - and for a mnemonic those abandoned
+/// buffers hold the first 8, 16, 32 and 64 bytes of the sentence, in plaintext, after the
+/// `Zeroizing` that owns the final buffer has done its job. Measuring first and then
+/// filling a buffer of exactly that size is what makes the wipe cover every copy that ever
+/// existed: `String::push` reallocates only when it is full, and this one never is.
+///
+/// Anything added here that returns a `String` by value, or that collects, reintroduces
+/// the defect. `crates/notyas-core/tests/key_material_residue.rs` fails if it does.
+///
+/// The measuring pass costs a second normalization of a few hundred bytes, next to a
+/// 2048-round PBKDF2. That is not a tradeoff worth thinking about twice.
+fn nfkd_secret(text: &str) -> Zeroizing<String> {
+    use unicode_normalization::UnicodeNormalization;
+
+    let len: usize = text.nfkd().map(char::len_utf8).sum();
+    let mut out = Zeroizing::new(String::with_capacity(len));
+    for c in text.nfkd() {
+        out.push(c);
+    }
+    debug_assert_eq!(out.len(), len, "the two normalization passes must agree");
     out
 }
 
@@ -556,12 +693,22 @@ impl fmt::Debug for PhraseCheck {
 /// `phrase` is expected to be [`normalize_phrase`]d, though any whitespace is tolerated.
 pub fn check_phrase(phrase: &str) -> PhraseCheck {
     let list = wordlist();
-    let words: Vec<&str> = phrase.split_whitespace().collect();
-    let word_count = words.len();
+    // Counted by walking the phrase rather than by collecting it: a `Vec<&str>` of the
+    // words would be a second, growing buffer describing the user's phrase, and the split
+    // is cheap enough to do twice.
+    let word_count = phrase.split_whitespace().count();
 
     let mut unknown_words = Vec::new();
-    let mut indices = Vec::with_capacity(word_count);
-    for word in words {
+    // INVARIANT: this vector IS the phrase. A BIP39 word index is the whole of what a word
+    // carries - eleven bits, losslessly - so a `Vec<usize>` of every index is the user's
+    // mnemonic in another encoding, and it must be wiped exactly as `PhraseCheck::entropy`
+    // is. It cannot be left to `PhraseCheck::drop`, because this vector never reaches the
+    // returned value: it is a local, consumed below and freed before the caller sees
+    // anything. Two properties keep the wipe complete, and both are load bearing:
+    // `Zeroizing` covers the buffer at drop, and the exact capacity means there is only
+    // ever one buffer for it to cover.
+    let mut indices: Zeroizing<Vec<usize>> = Zeroizing::new(Vec::with_capacity(word_count));
+    for word in phrase.split_whitespace() {
         // The list is lowercase, so "Zoo" is the word "zoo" for this comparison, which is
         // why case is only a display detail here while it stays significant for the seed.
         // The page's validator is stricter: its `WORDLISTS[language].indexOf(word)` is an
@@ -589,7 +736,10 @@ pub fn check_phrase(phrase: &str) -> PhraseCheck {
     }
 
     let mut bits = Zeroizing::new(String::with_capacity(word_count * BITS_PER_WORD));
-    for index in indices {
+    // Borrowed, not consumed. `Zeroizing` deliberately owns no `IntoIterator`, so the
+    // by-value `for index in indices` this replaces does not compile against the wrapped
+    // type at all: the only way to read the indices is to leave the wiping owner in place.
+    for &index in indices.iter() {
         for shift in (0..BITS_PER_WORD).rev() {
             bits.push(char::from(b'0' + ((index >> shift) & 1) as u8));
         }
@@ -935,6 +1085,45 @@ mod tests {
         }
     }
 
+    /// [`nfkd_secret`] measures the normalized length and then fills a buffer of exactly
+    /// that size. Both halves are asserted here: the text must be what a plain `collect`
+    /// would have produced, and the buffer must still be the one it started with, because
+    /// a buffer that grew is a copy of the phrase nothing wipes.
+    #[test]
+    fn nfkd_secret_normalizes_exactly_and_never_reallocates() {
+        use unicode_normalization::UnicodeNormalization;
+
+        let cases = [
+            "",
+            "abandon abandon about",
+            // Halfwidth katakana with a combining voiced mark, and a fullwidth digit:
+            // NFKD both decomposes and folds these, so the output differs from the input
+            // in character count and in byte length, in opposite directions.
+            "\u{ff71}\u{ff9e}\u{ff10}",
+            // The same letter precomposed and decomposed; NFKD leaves only the latter.
+            "\u{00c5} A\u{030a}",
+            // The shape of the Trezor Japanese vectors: ideographic spaces and kana.
+            "\u{3042}\u{3044}\u{3046}\u{3000}\u{3048}\u{304a}",
+            // Long enough that an incrementally grown buffer would have doubled several
+            // times, which is the case the measuring pass exists for.
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+             abandon abandon about",
+        ];
+        for case in cases {
+            let want: String = case.nfkd().collect();
+            let got = nfkd_secret(case);
+            assert_eq!(*got, want, "{case:?}");
+            // Compared against a control rather than against `want.len()`: the claim is
+            // that the buffer is the one `String::with_capacity` handed over, whatever
+            // rounding that does, not that the allocator returned an exact fit.
+            assert_eq!(
+                got.capacity(),
+                String::with_capacity(want.len()).capacity(),
+                "{case:?}: the buffer grew, so an unwiped copy was left behind"
+            );
+        }
+    }
+
     /// Normalization is the whole of what the seed sees: the words as typed, one space
     /// between them. Case must survive it, because the reference page derives from the
     /// characters the user typed.
@@ -1040,6 +1229,67 @@ mod tests {
         }
     }
 
+    /// The final-word helper, checked against the checker rather than against a fixture:
+    /// every word it offers must produce a valid phrase, and it must offer EVERY word
+    /// that would. The second half is what makes it a helper instead of a shortlist - a
+    /// user whose missing word is not on the list would be told their backup is wrong.
+    #[test]
+    fn every_valid_last_word_is_offered_and_every_offered_word_is_valid() {
+        // Word count -> how many of the 2048 words can complete it: 2^(ENT - 11 * typed).
+        for (typed_count, expected) in [(11usize, 128usize), (14, 64), (17, 32), (20, 16), (23, 8)]
+        {
+            let head = ["abandon"; 1].repeat(typed_count).join(" ");
+            let offered = valid_last_words(&head);
+            assert_eq!(offered.len(), expected, "{typed_count} words typed");
+
+            for word in &offered {
+                assert_eq!(
+                    check_phrase(&format!("{head} {word}")).checksum,
+                    Checksum::Valid,
+                    "{typed_count} + {word} was offered but does not check out"
+                );
+            }
+            // ...and nothing else in the list does. The brute-force half is the one that
+            // catches an off-by-one in the checksum bit packing, which would still yield
+            // a plausible-looking list of the right length.
+            let all_valid: Vec<&str> = wordlist()
+                .iter()
+                .copied()
+                .filter(|w| check_phrase(&format!("{head} {w}")).checksum == Checksum::Valid)
+                .collect();
+            assert_eq!(offered, all_valid, "{typed_count} words typed");
+        }
+    }
+
+    /// The canonical vector's own last word is on its own list, and the list is sorted.
+    #[test]
+    fn the_test_vector_last_word_is_offered_in_wordlist_order() {
+        let head = ["abandon"; 11].join(" ");
+        let offered = valid_last_words(&head);
+        assert!(offered.contains(&"about"), "the BIP39 vector #1 last word must be offered");
+        let mut sorted = offered.clone();
+        sorted.sort_unstable();
+        assert_eq!(offered, sorted, "the helper must come out in wordlist order");
+    }
+
+    /// The helper answers only where a last word is actually determined, and refuses to
+    /// invent candidates for a phrase it cannot read.
+    #[test]
+    fn the_final_word_helper_declines_everything_that_is_not_one_word_short() {
+        // Counts that are not one short of 12/15/18/21/24.
+        for n in [0usize, 1, 5, 10, 12, 13, 15, 24, 25] {
+            let head = vec!["abandon"; n].join(" ");
+            assert!(valid_last_words(&head).is_empty(), "{n} words must offer nothing");
+        }
+        // One short, but with a word the list does not have: there is no entropy to
+        // complete, and a candidate offered here would belong to a phrase nobody typed.
+        let mut head = ["abandon"; 10].to_vec();
+        head.push("notaword");
+        assert!(valid_last_words(&head.join(" ")).is_empty());
+        // Case is folded for the lookup, exactly as `check_phrase` folds it.
+        assert_eq!(valid_last_words(&["ABANDON"; 11].join(" ")).len(), 128);
+    }
+
     /// The three things the checker is there to report, each on the phrase that produces it.
     #[test]
     fn check_phrase_reports_unknown_words_a_bad_checksum_and_an_unusable_word_count() {
@@ -1110,3 +1360,4 @@ mod tests {
         assert_eq!(rolls_for_bits(256), 154);
     }
 }
+
