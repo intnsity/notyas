@@ -1,7 +1,15 @@
 # 0.2.0 release bar - clause 2 evidence
 
 MILESTONES.md section 9 clause 2 is the only clause that can fail the release on its own.
-This is the run that satisfies it, on hardware, on 2026-08-19.
+This is the run that exercises it, on hardware, on 2026-08-19.
+
+**What this run is and is not, stated before the numbers.** Every step below was driven over
+the serial console of a `hil-console` image. That is a different image from the release
+artifact, by three deliberate fences (KNOWN-ISSUES K10), and it was the only interface that
+could drive this loop on the day it was run. The touch-UI path a shipped unit uses landed
+later the same day, and it has host tests and no hardware evidence at all (KNOWN-ISSUES K24).
+So this file evidences that the ENGINE does the loop on real silicon. It does not evidence
+that the PRODUCT does.
 
 ## What ran
 
@@ -24,38 +32,100 @@ device and handed back to itself.
 | unlock | `unlock ok=true ms=2061` |
 | register a 2-of-3 P2WSH | `register ok=true id=kydha6l8` |
 | verify the first receive address | matched, see below |
-| load a PSBT | `psbtload ok=true bytes=402` |
+| load a PSBT | `psbtload ok=true bytes=402`, over serial as hex |
 | review it | fee, amounts and roles matched, see below |
 | sign it | `psbtsign ok=true signatures_added=1 signatures_verified=1 ms=56` |
 | a coordinator accepts the result | Bitcoin Core 29.4, see below |
 
-## The three independent agreements
+The PSBT arrived as a hex string on the console, not off a card. `psbtload sd <path>` is
+advertised by the console's own help and returns
+`sd_unsupported_in_this_build_no_firmware_src_sd_module_at_compile_time`
+(`firmware/src/hil.rs:1897`), so no run in this file has ever exercised the microSD ingress
+the product path uses. That is KNOWN-ISSUES K28.
 
-**Fingerprint.** Device reported `b4e3f5ed` for the published vector under passphrase
-"TREZOR". psbtgen derived the same value independently.
+## What each cross-check proves, and what it does not
 
-**Descriptor checksum and address.** The device registered the 2-of-3 and returned
-`id=kydha6l8`; psbtgen's canonical descriptor ends `#kydha6l8`. The first receive address
-matched character for character:
+This section was titled "The three independent agreements" until 2026-08-19. That title was
+wrong in two ways at once, and both matter: `tools/psbtgen` is not independent of the device,
+and two of the three legs below are not agreements with anything outside this tree.
+Independence is the whole value of a cross-check, so it is now stated leg by leg rather than
+claimed in a heading.
+
+`tools/psbtgen` lives in this repository and takes exactly one dependency,
+`notyas-core = { path = "../../crates/notyas-core" }`, which is the crate the firmware signs
+with. Its BIP-32 derivation, its BIP-39 seed, its address rendering and its descriptor parsing
+are the device's own code called from a host binary (`tools/psbtgen/src/harness.rs`:
+`derive::master_fingerprint`, `address::for_key`, `multisig::parse`). Nothing that comes back
+from those calls is a second opinion.
+
+**Leg 1. Fingerprint. A self-consistency check, not an agreement.** The device reported
+`b4e3f5ed` for the published vector under passphrase "TREZOR"; psbtgen computed the same
+value. What that proves: the host and the board ran the same derivation over the same seed
+and got the same answer, so the board's BIP-39 stretch, its BIP-32 walk and its serial
+plumbing are not corrupting anything in transit. What it does not prove: that the derivation
+is right. A defect in `notyas_core::derive` would produce this exact match. The real evidence
+for the derivation being right is `notyas-core`'s suites against the published BIP-32 and
+BIP-39 vectors, and those are host tests, not this run.
+
+**Leg 2. Descriptor checksum and receive address. The same self-consistency check, on the
+most valuable property in the file, and it has no external witness.** The device registered
+the 2-of-3 and returned `id=kydha6l8`; psbtgen's canonical descriptor ends `#kydha6l8`. The
+first receive address matched character for character:
 
     device    bc1q8laelrqpks7gw6r252cktnkwzydrfxmw9njr70hd0prfxsqn2nyspdqwws
     psbtgen   bc1q8laelrqpks7gw6r252cktnkwzydrfxmw9njr70hd0prfxsqn2nyspdqwws
 
-That is BIP-67 sortedmulti key ordering agreeing between the device and an implementation
-that did not produce the descriptor. A disagreement here puts funds at an address no
-cosigner can spend from, so it is the single most valuable match in this table.
+The property under test is BIP-67 sortedmulti key ordering, and it deserves the emphasis the
+old wording gave it: a disagreement here puts funds at an address no cosigner can spend from.
+What the old wording got wrong is who is agreeing. `multisig::parse` and `address::for_key`
+are the device's own functions; psbtgen "did not produce the descriptor" only in the sense
+that a different process typed it. A wrong key ordering in `notyas_core::multisig` would sort
+both sides identically and this table would still read as a match.
 
-**The signature, judged by software that shares no code with ours.** Bitcoin Core 29.4
-(sha256-verified against the published SHA256SUMS) on the device-signed file:
+Nothing external has ever checked this address. Bitcoin Core was not asked to derive it -
+`deriveaddresses` was not run - and the harness that would ask both Core and embit has never
+executed (leg 4). Read this row as "the board agrees with the host running the board's own
+code". That is worth having, and it is a smaller claim than the one it replaced.
+
+**Leg 3. The signature and the fee, judged by software that shares no code with ours. The one
+genuinely external agreement in this run.** Bitcoin Core 29.4 (sha256-verified against the
+published SHA256SUMS) on the device-signed file:
 
     analyzepsbt   next: "finalizer"    fee: 0.00001500    estimated_vsize: 141
     finalizepsbt  "complete": true
 
 Core computed the same 1,500 sat fee the device displayed, judged the signature sufficient,
 and finalized it. The extracted transaction is byte-identical to the one `psbtgen verify`
-extracts.
+extracts. This is the strongest sentence in the file: an implementation with no shared
+lineage accepted a signature this device produced over a transaction it priced the same way.
+What it does not cover is scope - one single-sig input, one file, SIGHASH_ALL, and no
+multisig leg, because the 2-of-3 was registered and never signed on hardware.
 
-## What the review screen said, and one thing it got wrong
+**Leg 4. Bitcoin Core and embit over the 21-case corpus. Genuinely external, and it has never
+run.** `tools/xverify` exists to put Core and embit on the other side of every derivation,
+address and signature this tree produces, and `tools/ci/check-xverify.sh --require` is release
+gate B12. On this workstation it exits 1 for absence of the oracles, and
+`out/xverify/attestation.json` records `"status": "skipped"`, `"verified": false`,
+`"cases_verified": 0` of 21, `"harness_exit_code": 3`. That is the correct behaviour for a
+gate that refuses to report a pass it did not earn, and it means the external half of this
+release's evidence is one manual Core invocation on one file. KNOWN-ISSUES K25.
+
+**What psbtgen's own verifier is worth, since it is not independence.** `psbtgen verify` is
+not a second implementation, and it is not a rubber stamp either. The distinction is carried
+by `tools/psbtgen/src/selftest.rs` and `negatives.rs`: the verifier is aimed at the engine's
+own pinned fixture corpus and then at eight negatives, each a file that passed a moment
+earlier with exactly one thing changed - the payment output swapped before signing, a flipped
+signature bit, a stripped previous transaction, a forged second leg on the 2-of-3 - and each
+refusal names the change. It also strips any witness the file arrives with before judging
+anything, so the only transaction it extracts is one it assembled from signatures it checked
+itself. And since 2026-08-19 its segwit v0 digest goes straight to rust-bitcoin's
+`SighashCache` (`tools/psbtgen/src/verify.rs::segwit_v0_digest`) instead of calling
+`notyas_core::sign`, which was the previous shape and which would have let a signer and its
+verifier agree with each other about a wrong digest. That is a real second opinion on BIP-143,
+and it is still inside one `bitcoin` crate pin: a defect in rust-bitcoin's own BIP-143 cancels
+out on both sides. Core is what covers that, for the one case Core saw.
+
+## What the review screen said, and the defect the run exposed
 
     in_total_sat=200000  out_total_sat=198500  fee_sat=1500  fee_enforced=true
     in  i=0  200000 sat  amount=proven_by_prev_tx  claim=ours
@@ -64,21 +134,45 @@ extracts.
     review   leaving_sat=198500  change_sat=0  unproven_ours_outputs=1
 
 `fee_enforced=true` is the amount rule holding: the input amount was proven by its full
-previous transaction, so the fee the user approved is the fee that gets paid. That rule
-exists because a demonstrated attack got 0.9999 BTC past a signer that trusted claimed
-amounts.
+previous transaction, so the fee the user approved is the fee that gets paid. That rule exists
+because a demonstrated attack got 0.9999 BTC past a signer that trusted claimed amounts
+(KNOWN-ISSUES K11).
 
-**The defect: output 1 is the wallet's own change and the device could not prove it.**
-`change_sat=0` and `leaving_sat=198500` mean the review overstates what leaves by 78,500
-sat. It fails CLOSED - an unprovable output is treated as a payment, never as change, which
-is the safe direction - but single-sig change verification (ARCHITECTURE check 3) is not
-wired up, so every single-sig change output currently reads as an outgoing payment. This
-must be fixed or disclosed before release; it is not a loss risk but it is a review screen
-telling the user something untrue about where their money went.
+**The defect this run found: output 1 was the wallet's own change and the device could not
+prove it.** `change_sat=0` and `leaving_sat=198500` mean the review overstated what leaves by
+78,500 sat. It failed CLOSED - an unprovable output is treated as a payment, never as change,
+which is the safe direction - but it was a review screen telling the user something untrue
+about where their money went.
+
+**Fixed 2026-08-19**, after this run. The cause was that `firmware/src/signing.rs::review`
+called `psbt::inspect`, which is `inspect_with_accounts` with an EMPTY account slice, so check
+3 ran only its multisig half and a single-sig change output had nothing to be proven against.
+It now derives the device accounts from the open wallet's seed and passes them in
+(`derive::device_accounts`, then `psbt::inspect_with_accounts`), so both halves of check 3 run
+on hardware. `check_3_proves_singlesig_change` and
+`check_3_refuses_a_forged_singlesig_change_claim` in `crates/notyas-core/src/psbt/checks.rs`
+are the host coverage.
+
+The numbers above are left exactly as the run produced them. They are the record of what the
+device said on 2026-08-19 with the old call site, and re-running the loop is what would
+replace them - which has not happened, on this or any other interface.
 
 ## Not covered by this run
 
-- The multisig PSBT was generated and registered but not signed on hardware in this run.
-- Board B (Elecrow, the eFuse-provisioned unit) ran none of this. The storage and
-  device-binding claims rest on its evidence, not on board A's emulated key.
-- `-Mode pin` and `-Mode attempt` power-cut runs are still outstanding.
+- **The product path.** Every step was driven over the `hil-console` serial interface. No
+  touch-UI step - set a PIN, save a wallet, unlock, pick a file off a card, review, hold to
+  sign, write the signed file back - has been performed on hardware in any run. KNOWN-ISSUES
+  K24, and it is the largest gap between this file's title and its contents.
+- **The microSD ingress and egress.** The PSBT came in as console hex and the signed file went
+  out the same way. Nothing has read or written a card on a board.
+- **The multisig signature.** The 2-of-3 was generated and registered but never signed on
+  hardware, on any interface. Clause 2 names a 2-of-3.
+- **The single-sig change fix.** Wired after this run, host-tested, never on a board.
+- **Board B.** The Elecrow eFuse-provisioned unit ran none of this. The storage and
+  device-binding claims rest on its evidence, not on board A's emulated key; the loop evidence
+  rests on board A. Neither board has both.
+- **The external oracles.** Leg 4 above. One manual Bitcoin Core invocation is the whole of
+  the external evidence this release holds.
+- **`-Mode policy` and the 128-attempt overflow** power-cut cases, which are blocked on the
+  firmware gap in KNOWN-ISSUES K16 rather than on bench time. The `seal`, `pin` and `attempt`
+  modes have run; see `docs/m4a-power-cut-evidence.md` and KNOWN-ISSUES K5.

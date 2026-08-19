@@ -18,13 +18,16 @@ tools/release.sh              # the stage plan, and where this release stands
 
 ---
 
-## 0. What a 0.2.0 unit can and cannot do
+## 0. What a 0.2.0 unit can, cannot, and has not been shown to do
 
 This section is first because it is the one that decides whether a stranger's expectations
 are met. Everything in it was checked against the tree on 2026-08-19 by following each
 control from the panel down to the firmware arm that answers it. It describes a device
 flashed from a release artifact - not a bench unit running a `hil-console` build, which is a
 different image with different capabilities (K10).
+
+Three lists, not two. The third is the one an owner is most likely to collapse into one of
+the others, and collapsing it in either direction produces a false release note.
 
 **A 0.2.0 unit can:**
 
@@ -39,38 +42,91 @@ different image with different capabilities (K10).
 - Report on itself: firmware digests, eFuse security state, the running partition, and the
   boot counter, on the Verify device screen.
 - Choose mainnet or testnet for the next derivation.
+- **Set a first PIN and seal a wallet into flash**, on an eFuse-provisioned board. S-06 and
+  S-07 raise `UiRequest::SetPin`; `answer_set_pin` (`firmware/src/main.rs:1263`) formats the
+  sealed store, and `answer_persist_wallet` seals the wallet into the lowest free slot.
+- **Unlock a stored wallet after a power cycle** and open it, with the anti-phishing words
+  at half-PIN entry, an attempt counter, and a wallet list.
+- **Mount and browse a microSD card**, from the sign-source screen and the multisig import
+  screen (`UiRequest::ListCard` into `flow::list_card` into `firmware/src/sd/`).
+- **Load a PSBT off the card, review it, and sign it.** The file is read under a size cap,
+  decoded, and put through the ten-check pipeline with no signing key in scope; the hold
+  control exists only once every review page has been visited
+  (`crates/notyas-ui/src/screens/review.rs:1417`), and `flow::sign_tx` answers it.
+- **Write the signed transaction back to the card** under a name the panel showed before the
+  write, with a collision asked about rather than resolved, or discard it
+  (`flow::write_signed`, `flow::discard_signed`).
+- **Import, verify, register and delete a k-of-n P2WSH `sortedmulti` wallet** from a
+  descriptor or a Coldcard setup file on the card. Membership is proven from the seed before
+  any screen renders the wallet (`flow::read_and_verify`), and an approved registration is
+  sealed into the registry.
+
+The eight requests that used to be answered with a refusal - `ListCard`, `LoadPsbt`,
+`SignTx`, `WriteSigned`, `DiscardSigned`, `ImportRegistration`, `ApproveRegistration`,
+`DeleteRegistration` - are routed into `crate::sd` and `crate::signing` by
+`firmware/src/flow/mod.rs`, which holds one wallet open across the screens that need it.
+`RefusalCode::NotInThisBuild` now has no firmware caller at all.
 
 **A 0.2.0 unit cannot:**
 
-- **Sign a transaction.** There is no PSBT screen on the device. The engine is complete and
-  host-proven and the device cannot reach it (K17).
-- **Read or write a microSD card.** The subsystem is finished and compiled and no screen
-  opens a card (K18).
-- **Set a PIN, and therefore store anything at all.** Nothing in a shipped image can format
-  the sealed store, and no screen can collect a new PIN. The lock screen, PIN entry, the
-  wallet list, the wallet home, Settings and the wipe-policy editor exist, are tested, and
-  are unreachable on a device flashed from a release artifact (K13). The save button on the
-  keep-or-save screen is offered anyway and fails without saying so (K14). A fix for this
-  was landing while this section was written and is partly in the tree; K13 states which
-  pieces are in and which are not, and this section does not move until a shipped image can
-  put a PIN on a blank device and read a wallet back after a power cycle.
-- **Register a multisig wallet.** The storage and the verification exist; no screen creates a
-  registration (K19).
+- **Sign from a keep-in-session wallet.** Sign and Multisig are offered only on a wallet
+  that came out of a slot, because the only seed the firmware ever holds is one it unsealed
+  (`crates/notyas-ui/src/screens/wallet.rs:181`). A stateless signing entry does not exist.
+- **Store, and therefore sign, on a board that has not been eFuse-provisioned.** A release
+  image accepts one key provenance, `EfuseReadProtected` (`firmware/src/store/mod.rs:67`).
+  An unprovisioned board is the 0.1.0 stateless seed tool and public-key exporter, exactly
+  as before.
+- **Delete a stored wallet** (`firmware/src/main.rs:725`), **commit a wipe-policy change**
+  (`:740`), **change the PIN** (`:762`) or **remove the PIN** (`:778`). Four screens exist
+  for operations the firmware refuses: erasing a record has no published route through
+  `Store`, and the other three re-seal or destroy sealed records and need a fresh PIN
+  confirmation this UI cannot collect. K15 and K16 carry the detail; only one of the four
+  refusals reaches the user in words.
+- **Finalize a transaction.** `sd::plan` is called with `finalized: false` and nothing in
+  this workspace finalizes a PSBT. A coordinator does that.
+- **Take a transaction in over anything but the card.** No supported board has a camera, and
+  the UR2 and BBQr codecs have no screen.
+- **Receive a card at all on a Waveshare 4B in its OEM chassis or in the desk stand this
+  repository ships** (K6). The board runs plate-off for 0.2.0, and the release notes have to
+  say so.
+- **Scan the reserved flash spans** on the Verify screen: no reader in this build, so the
+  row answers `not read` (K22).
+- **Taproot multisig, BSMS, backup of any kind, BIP-85, BIP-137 message signing, SeedQR
+  decode.**
 
-So: **0.2.0 as an artifact is a stateless seed tool and public-key exporter with a
-device-verification screen.** It is a real improvement on 0.1.0 on that ground - the
-mandatory backup check, the keep-or-save fork, the session wallet home, the final-word
-helper, the Verify device screen, reproducible builds and signed artifacts are all new - and
-it is not a signer and not a storage device. The sealed store, the signing engine, the SD
-subsystem and the airgapped transport codecs are all real, all tested, and all unreached by
-the shipped UI. That is the sentence the release notes must carry; a document that lists the
-engines without it describes a product this artifact is not.
+**A 0.2.0 unit has not been shown to:**
+
+- **Do any of the card, review, signing or registration work from the panel of a device.**
+  That path is wired and compiled; the engines under it and the screens over it are
+  host-tested, `firmware/src/flow/model.rs` is host-tested as the device links it
+  (`firmware/hostcheck/tests/review_model.rs`), and the plumbing between them -
+  `firmware/src/flow/mod.rs`, which touches the store, the card and ESP-IDF - can only be
+  covered by a hardware run. No one has done that run. The end-to-end loop that has run on hardware was driven through the development
+  console, on a `hil-console,unsafe-emulated-key` build, on the board that is not
+  eFuse-provisioned (`docs/clause2-evidence.md`) - it shares the engine with the panel path
+  and none of the screen wiring.
+- **Do it on the only unit where it could be done.** Of the two verified boards only the
+  Elecrow 5inch is eFuse-provisioned, and the panel signing path needs a provisioned board.
+- **Report single-sig change correctly on hardware.** The hardware run found the firmware
+  calling `psbt::inspect` where it needed `inspect_with_accounts`, so half of validation
+  check 3 never ran on the device and single-sig change was counted as money leaving. Fixed
+  at `firmware/src/signing.rs:358-363` with host tests behind it, and not re-run on
+  hardware.
+
+So: **0.2.0 as an artifact is a signer, and no unit has yet been watched signing from its
+own panel.** On a provisioned board it creates or restores a seed, seals it under a PIN,
+survives a power cycle, registers a multisig, reads a PSBT off a card, reviews it, signs it
+and writes the result back. On an unprovisioned board it is the 0.1.0 stateless seed tool.
+Neither sentence is optional in a release note, and the second category above is the one
+that decides how the first is worded: the code path is real and the hardware evidence for
+that path is one console-driven run plus a host suite.
 
 Two consequences for the rest of this runbook. First, the pre-handover gauntlet in section
-2D and the exit gates in 2C cannot be met as written while the above holds - `MILESTONES.md`
-section 9 clause 2 requires the whole loop, including loading a PSBT from SD and delivering
-a signed one, and that loop has no on-device path. Second, section 5 below is not optional
-prose: on a release that ships in this state, items 8 through 11 there are the release.
+2D and the exit gates in 2C are now startable - `MILESTONES.md` section 9 clause 2 requires
+the whole loop including SD ingress and signed delivery, and that loop now has an on-device
+path, so the gate is a run to perform rather than a gap to disclose. Second, section 5 below
+still is not optional prose: items 8 through 12 there are what a buyer would otherwise
+assume the other way.
 
 ---
 
@@ -296,12 +352,18 @@ verify the first receive address against another signer, load a PSBT from SD, re
 sign it, and have a coordinator accept the result. If that loop has a gap, the release is
 not done regardless of what else is green.
 
-**As of 2026-08-19 that loop cannot be started on a device.** It has no on-device path at
-four separate points: no screen sets a PIN, so nothing can be saved under one; no screen
-opens an SD card; no screen reviews or signs a PSBT; and no screen registers a multisig.
-Section 0 states this and `docs/KNOWN-ISSUES.md` K13, K14, K17, K18 and K19 carry the
-evidence. This is a statement about the current tree, not a change to the bar - the bar is
-unchanged and it is not met.
+**As of 2026-08-19 that loop has an on-device path at every point, and has not been run
+over one.** Setting a PIN, opening a card, reviewing and signing a PSBT and registering a
+multisig are each answered by real firmware - `answer_set_pin` and the eight arms
+`firmware/src/flow/mod.rs` serves - so the gate is now a run somebody performs rather than a
+gap somebody discloses. Until that run happens on the eFuse-provisioned board, the bar is
+not met, and it is not met for a different reason than before: not "there is no path" but
+"the path has not been walked". Section 0's third list is the current statement of what that
+leaves unproven.
+
+The run needs the provisioned Elecrow unit specifically. A `hil-console` build does not
+satisfy this gate: it is a different image, and driving the engine from a console proves the
+engine and not the product (K10).
 
 And the release-unit runbook: a unit walks `docs/PROVISIONING.md`, one eFuse burn, and
 still passes every gate afterwards.
@@ -490,13 +552,13 @@ own hash list for a notyas tag (Q31).
 | Third-party build attestation | Q31 remains open. The invitation to produce one is in `docs/VERIFYING.md` |
 
 **This table is about decisions, and it is not the whole of what a unit cannot do.** A row
-here means the work was scoped out on purpose. There is a second category - subsystems that
-are written, compiled, tested and reached by no screen - and it is larger than this table:
-on-device PSBT review and signing, the microSD path, the QR transport codecs, PIN creation
-and therefore all sealed storage, and multisig registration. Section 0 lists them and
-`docs/KNOWN-ISSUES.md` K13 to K22 carry the evidence. Reading section 4 alone would leave a
-reader believing that everything absent from it is present in the artifact, which is the
-error this note exists to prevent.
+here means the work was scoped out on purpose. Two other categories exist and section 0 owns
+both: operations whose screens are on the panel and whose firmware arm refuses them - delete
+a wallet, change the PIN, remove the PIN, commit a wipe policy - and subsystems that are
+finished, host-tested and reached by no screen, which after the m6 wiring is a much shorter
+list than it was: the UR2 and BBQr transport codecs, SeedQR decode, BIP-85 and BIP-137
+message signing. Reading section 4 alone would leave a reader believing that everything
+absent from it is present in the artifact, which is the error this note exists to prevent.
 
 ---
 
@@ -527,25 +589,39 @@ These belong in the release notes verbatim, not behind a link.
    in the shipped image), K4 (the m4a power-cut window is sampled rather than swept). K2
    is a development-host defect with no exposure in the artifact and is recorded for
    completeness.
-8. **The device cannot sign a transaction.** There is no PSBT screen on the device. The
-   signing engine is complete and proven on the host - `notyas-core`'s lib tests plus the
-   PSBT, multisig and address vector suites all pass - and nothing on the panel reaches it.
-   Only the excluded bench console does (K17).
-9. **The device cannot read or write a microSD card.** The subsystem is written, compiled
-   and called by no screen, so 0.2.0's only planned ingress for a PSBT has no on-device
-   path (K18). The same applies to the QR transport codecs.
-10. **The device cannot set a PIN, and therefore stores nothing.** Formatting the sealed
-    store is reachable only from the bench console, which every product image excludes by
-    three independent build fences, and no screen can collect a new PIN. The lock screen,
-    PIN entry, the wallet list, the wallet home, Settings and the wipe-policy editor are
-    unreachable on a shipped unit (K13). The save button on the keep-or-save screen is
-    still offered and fails without telling the user (K14). Anything in `README.md` or
-    `docs/SECURITY.md` that describes storing a wallet behind a PIN describes a code path
-    that exists and an artifact that cannot reach it.
-11. **Multisig registration has no screen** (K19), and the Verify screen's reserved-space
-    scan always answers `not read` because this build has no reader for it (K22).
+8. **Signing, the card and multisig registration have never been driven from the panel of
+   a device.** The path is wired, compiled and covered by the host suite. The only
+   end-to-end hardware run to date was driven through the development console, on a
+   `hil-console,unsafe-emulated-key` build, on the board that is not eFuse-provisioned
+   (`docs/clause2-evidence.md`). A buyer is entitled to know that the first person to sign
+   a real transaction from the touch UI may be them.
+9. **Signing requires an eFuse-provisioned board and a stored wallet.** A release image
+   accepts only `EfuseReadProtected` key provenance, so an unprovisioned unit has no store,
+   no PIN and no Sign action; and even on a provisioned unit, a wallet kept in session
+   rather than sealed cannot sign, because the firmware never holds that seed. An
+   unprovisioned board is a seed tool and public-key exporter, which is a legitimate way to
+   own the hardware and is not what "signer" means.
+10. **Four operations have screens and no implementation**: delete a stored wallet (K15),
+    change the PIN and commit a wipe-policy change (K16), and remove the PIN. All four are
+    refused in `firmware/src/main.rs`, three of them without words on the panel. A user who
+    walks the delete flow, including its typed-name consent, watches the wallet survive.
+11. **A PSBT cannot reach a Waveshare 4B in the enclosure this repository ships** (K6): the
+    microSD slot is behind the backing plate, and the desk stand in `3dp/` does not open it.
+    That board runs plate-off for 0.2.0. **The Verify screen's reserved-space scan always
+    answers `not read`**, because this build has no reader for it (K22).
+12. **A cross-check this project published before 2026-08-19 was not independent.**
+    `tools/psbtgen verify`'s segwit-v0 path recomputed the BIP-143 digest by calling the
+    same `notyas_core::sign` function the device signs with, so a defect in that function
+    would have cancelled out and been reported as agreement. Every green segwit-v0 ECDSA
+    result that tool produced before that date is the signer agreeing with itself, and no
+    claim of independent segwit-v0 verification made before then holds. It is fixed - the
+    ECDSA path now goes straight to rust-bitcoin's `SighashCache`
+    (`tools/psbtgen/src/verify.rs:1300-1336`) - and the taproot path always went straight to
+    `taproot_key_spend_signature_hash`, so it was independent throughout and is unaffected.
+    The judgement in `docs/clause2-evidence.md` that never depended on this is Bitcoin Core
+    29.4 finalizing the device-signed file.
 
-Items 8 through 11 are the ones a buyer is most likely to have assumed the other way, and
+Items 8 through 12 are the ones a buyer is most likely to have assumed the other way, and
 section 0 states them together at the top of this document for that reason.
 
 ---
@@ -615,12 +691,15 @@ first:
 1. One paragraph on what 0.2.0 is, written from section 0 of this document and not from
    the milestone list. It must name what the unit does - dice and typed-word seed
    generation, an optional passphrase, the backup check, public-key and address export
-   with QR, the device-verification screen, reproducible builds and signed artifacts - and
-   it must name what the unit does not do in the same paragraph: no signing on the device,
-   no SD, no PIN and therefore no storage, no multisig registration. Listing the engines
-   that exist without saying that no screen reaches them is the specific way this paragraph
-   can be false while every clause in it is true.
-2. **Read this first**: section 5 of this document, items 1 to 11, in full.
+   with QR, the device-verification screen, sealed storage under a PIN, multisig
+   registration, and PSBT review and signing over microSD - and in the same paragraph it
+   must name the two conditions on that and the one thing missing behind it: signing needs
+   an eFuse-provisioned board and a stored wallet, and nobody has yet driven the signing
+   loop from a device's panel. Claiming the capability without the second half is the
+   specific way this paragraph can be false while every clause in it is true. So is the
+   opposite error - the previous draft of this runbook described the unit as unable to
+   sign at all, which stopped being true when m6 landed.
+2. **Read this first**: section 5 of this document, items 1 to 12, in full.
 3. The interop change: section 6, at least "what changed", "why" and "what a coordinator
    has to do".
 4. Verification: point at `docs/VERIFYING.md` and give the key fingerprint inline.
@@ -628,9 +707,9 @@ first:
    that a second machine matched or that the two-machine run did not happen for this tag.
 6. Provisioning: one eFuse burn, irreversible, `docs/PROVISIONING.md`. State the burn's
    purpose accurately - it binds the sealing key ladder to the silicon - and do not pair it
-   with a promise about what the device does afterwards. A shipped unit stores nothing with
-   or without the burn (section 0), so the sentence "a device without it runs and signs but
-   stores nothing", which earlier drafts of this runbook carried, is wrong in both halves.
+   with a promise about what the device does afterwards. The accurate pairing is the other
+   way round: without the burn a unit runs, derives and exports, and stores nothing and
+   signs nothing; with it, storing and signing become reachable (section 0).
 7. The artifact list and which board slug is which.
 
 ---
