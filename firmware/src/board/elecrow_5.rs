@@ -42,13 +42,57 @@ const PIN_VSYNC: i32 = 41;
 // DATA0..15 = B3-B7, G2-G7, R3-R7 (only 16 of the FPC's 24 pads are wired).
 const PIN_DATA: [i32; 16] = [8, 7, 6, 5, 4, 14, 13, 12, 11, 10, 9, 19, 18, 17, 16, 15];
 
-// Timings from factory bsp_display.h: RGB_LCD_PIXEL_CLOCK_HZ 25 MHz,
-// HSYNC pw 4 / HBP 8 / HFP 8, VSYNC pw 4 / VBP 16 / VFP 16, DE mode,
-// pclk_active_neg + pclk_idle_high. (The Arduino lessons use 18 MHz; the
-// factory IDF value is tried first per BOARDS.md TODO 4.)
-// HBP reduced from 8 to 5: the factory value shifts the visible area a few
-// pixels right, clipping the right edge of the UI on this panel.
-const PCLK_HZ: u32 = 25_000_000;
+// Timings from factory bsp_display.h: HSYNC pw 4 / HBP 8 / HFP 8, VSYNC pw 4 /
+// VBP 16 / VFP 16, DE mode, pclk_active_neg + pclk_idle_high.
+//
+// The porches are NOT a picture-position control on this panel. The glass is
+// DE-gated: it latches a pixel whenever DE is asserted and ignores the HSYNC
+// porches entirely, so no porch value can shift the visible area. What they do
+// set is the refresh rate and the blanking window the RGB DMA gets to catch up
+// in each line - which is why HBP is the vendor's 8 here and not the 5 an
+// earlier revision used: that change bought nothing and spent 3 of the 20
+// blanking pclk the DMA lives on.
+//
+// pclk is Elecrow's Arduino board_config.h value (18 MHz, 42 Hz refresh at this
+// blanking), not the 25 MHz in their IDF header. This unit is a pre-3.0
+// ESP32-P4, whose LCDCAM RGB FIFO holds 8 pixels (LCD_LL_FIFO_DEPTH,
+// hal/esp32p4/lcd_ll.h) - Espressif's own description of such parts is "super
+// sensitive to the bandwidth outage" (esp-idf#17967), and a starved FIFO on this
+// silicon is not a glitch but a permanent raster rotation (see BOUNCE_BUFFER_PX).
+// Raise it back towards 25 MHz only against a calibration frame
+// (`--features diag-display`) read while a PIN derivation is running, never
+// against a quiet screen: the failure needs a bandwidth event to appear, and once
+// it appears it never clears.
+const PCLK_HZ: u32 = 18_000_000;
+
+// Two DRAM bounce buffers of 20 lines each: the GDMA feeds the LCD FIFO from
+// internal RAM and the CPU refills them from the PSRAM framebuffer in the DMA
+// EOF ISR, so a PSRAM stall no longer reaches the pixel stream directly.
+//
+// This is the fix for the reported corruption, not a tuning knob. Reading the
+// PSRAM framebuffer straight into an 8-pixel FIFO means one bandwidth outage -
+// a whole-frame flush, or the 16 MiB random-access Argon2id working set every
+// PIN operation runs for ~1.8 s - can leave the DMA read pointer behind the
+// pixel the timing generator is emitting, and nothing re-aligns them: ESP-IDF
+// documents the result as "a permanently shifted image" (rgb_lcd programming
+// guide). Bounce buffers also revive the driver's own de-sync detector, which
+// compares DMA EOFs per frame against an expectation that is zero while
+// bounce_buffer_size_px is zero (esp_lcd_panel_rgb.c:297-301) - the underrun
+// interrupt that would otherwise catch it does not exist below chip rev 3.0
+// (LCD_LL_EVENT_UNDERRUN is #defined to 0), so "no underrun in the log" is not
+// evidence of no underrun on this board.
+//
+// Constraint the driver asserts: fb_size (800*480*2 = 768000 B) must be a whole
+// multiple of one bounce buffer (20*800*2 = 32000 B); 24 exactly. Cost: 64000 B
+// of internal SRAM held for the power cycle, plus a memcpy per 20 lines.
+//
+// One coupling this creates: bounce mode refills from PSRAM through the cache,
+// so the panel cannot run while the external memory cache is off - which is what
+// a write to main flash normally does, and this device writes flash on every
+// sealed-store commit. CONFIG_SPIRAM_XIP_FROM_PSRAM (sdkconfig.base.defaults) is
+// what keeps the cache up across those writes and is now load-bearing for the
+// display on this board, not just a performance option.
+const BOUNCE_BUFFER_PX: usize = 20 * DISPLAY_WIDTH as usize;
 
 // Touch + STC8 share I2C1 (factory bsp_i2c Kconfig: SDA 45 / SCL 46, 400 kHz;
 // schematic: 4.7K pullups on the GPIO45-54 bank rail).
@@ -110,10 +154,13 @@ fn try_display_init() -> Result<Display, DisplayError> {
     crate::display::acquire_ldo(4, 3300)?;
     log::info!("LDO channel 4 acquired at 3300 mV (GPIO45-54 bank)");
 
-    // RGB panel config, verbatim from factory bsp_display.c
-    // display_port_init(): 16-bit DE mode, dma_burst_size 64, fb in PSRAM.
-    // num_fbs = 1 (factory uses 2 for LVGL tear-avoidance; we draw into the
-    // single driver framebuffer exactly like the Waveshare DPI path).
+    // RGB panel config, from factory bsp_display.c display_port_init(): 16-bit
+    // DE mode, dma_burst_size 64, fb in PSRAM. num_fbs stays 1 - drawing goes
+    // into display.rs's back buffer and is published whole (the one mechanism
+    // every bus here shares), so a second driver framebuffer would only add a
+    // flip this path never performs. The price is that each publish is a
+    // full-frame CPU copy through PSRAM; BOUNCE_BUFFER_PX is what keeps that
+    // copy off the pixel stream.
     let mut config = sys::esp_lcd_rgb_panel_config_t {
         clk_src: sys::soc_periph_lcd_clk_src_t_LCD_CLK_SRC_DEFAULT,
         timings: sys::esp_lcd_rgb_timing_t {
@@ -121,7 +168,7 @@ fn try_display_init() -> Result<Display, DisplayError> {
             h_res: DISPLAY_WIDTH,
             v_res: DISPLAY_HEIGHT,
             hsync_pulse_width: 4,
-            hsync_back_porch: 5,
+            hsync_back_porch: 8,
             hsync_front_porch: 8,
             vsync_pulse_width: 4,
             vsync_back_porch: 16,
@@ -131,6 +178,7 @@ fn try_display_init() -> Result<Display, DisplayError> {
         data_width: 16,
         bits_per_pixel: 16,
         num_fbs: 1,
+        bounce_buffer_size_px: BOUNCE_BUFFER_PX,
         hsync_gpio_num: PIN_HSYNC,
         vsync_gpio_num: PIN_VSYNC,
         de_gpio_num: PIN_DE,
@@ -151,8 +199,9 @@ fn try_display_init() -> Result<Display, DisplayError> {
     esp_check!(sys::esp_lcd_panel_reset(panel), "esp_lcd_panel_reset");
     esp_check!(sys::esp_lcd_panel_init(panel), "esp_lcd_panel_init");
     log::info!(
-        "RGB panel initialized (800x480 RGB565 DE mode, pclk {} MHz)",
-        PCLK_HZ / 1_000_000
+        "RGB panel initialized (800x480 RGB565 DE mode, pclk {} MHz, bounce {} px x2)",
+        PCLK_HZ / 1_000_000,
+        BOUNCE_BUFFER_PX
     );
 
     let mut fb: *mut c_void = core::ptr::null_mut();

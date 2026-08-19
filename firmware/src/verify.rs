@@ -2,14 +2,14 @@
 //! (SECURITY.md invariant 5) - the app hash comes from the flash partition the
 //! chip is executing, the eFuse states from the eFuse controller, the radio
 //! state from the kill pin's actual pad level. A value this build cannot read
-//! reports "unavailable"; a fake value would defeat the screen's purpose.
+//! renders `not read`; a fake value would defeat the screen's purpose.
 //!
 //! Two surfaces live here and the split is deliberate.
 //!
-//! - [`build`] produces the nine-row `notyas_ui::VerifyInfo` the 0.1.0 screen
-//!   renders. Unchanged in shape; it now takes its values from the readout
-//!   rather than reading them a second time, so the screen and the log cannot
-//!   disagree about the same fact.
+//! - [`build`] produces the `notyas_ui::VerifyInfo` the S-46 sheet renders, in
+//!   VERIFY.md section 10's frozen field order. Every value comes from the
+//!   readout rather than being read a second time, so the screen and the log
+//!   cannot disagree about the same fact.
 //! - [`payload`] and [`log_readout`] produce the full `notyas-verify/1`
 //!   key=value readout (VERIFY.md 7.2) from [`crate::readout`]. That is the
 //!   export format, the boot-log format and the input to S-46's row set, and
@@ -20,11 +20,16 @@
 //! is measurement only and mixing a build's claims about itself into it would
 //! blur the line the whole screen rests on.
 
+use esp_idf_hmac::identity::DieUniqueId;
+use esp_idf_hmac::DigestSlot;
 use notyas_core::selftest::SelfTest;
-use notyas_ui::VerifyInfo;
+use notyas_ui::{Bit, HexValue, KeyBlockInfo, RegionDigest, ReservedSpace, VerifyInfo};
+
+use notyas_wallet::StoreState;
 
 use crate::board;
 use crate::readout::Readout;
+use crate::store::StoreReport;
 
 /// One-line self-test summary for the Verify screen and the boot log.
 pub fn selftest_summary(st: &SelfTest) -> String {
@@ -39,61 +44,192 @@ pub fn selftest_summary(st: &SelfTest) -> String {
     }
 }
 
-/// Build the VerifyInfo the UI will show, from values already read.
-pub fn build(st: &SelfTest, ro: &Readout) -> VerifyInfo {
+/// Build the [`VerifyInfo`] the S-46 sheet shows, from values already read.
+///
+/// One rule governs every line: this function TRANSLATES the readout into the screen's
+/// vocabulary and measures nothing itself, so the screen and the boot log cannot disagree
+/// about the same fact. A field this build did not read keeps the shape that says so -
+/// `None`, [`Bit::NotRead`], [`HexValue::NotRead`], an empty `Vec` - and never a plausible
+/// default (VERIFY.md contract, "read, never claim").
+///
+/// **Polarity, stated once.** Most download and debug fuses are `DIS_*`: the bit is set
+/// when the access is GONE. The screen names the ACCESS, so the inversion happens here and
+/// nowhere else, and a reader of `VerifyInfo` never has to remember which way a symbol
+/// points. `ENABLE_SECURITY_DOWNLOAD` is the one field that is already positive.
+///
+/// `store` is `None` when the storage stack could not be brought up at all, which is a
+/// different fact from a store that mounted and reported no key: the first says the device
+/// could not look, the second says it looked and found nothing.
+pub fn build(st: &SelfTest, ro: &Readout, store: Option<&StoreReport>) -> VerifyInfo {
     let board = if board::UNTESTED {
         format!("{} (UNTESTED CONFIG)", board::BOARD_NAME)
     } else {
         String::from(board::BOARD_NAME)
     };
 
-    let platform = format!(
-        "ESP-IDF {} | ESP32-P4 rev {}",
-        ro.app_idf_version, ro.chip_revision
-    );
-
-    // Radio: the compile-time kill mechanism plus the pad level as it reads RIGHT NOW
-    // (claim_output keeps the input buffer enabled for exactly this readback).
+    // The kill line's level as it reads RIGHT NOW (claim_output keeps the input buffer
+    // enabled for exactly this readback). One of the two rows on S-46 where semantic
+    // colour survives, and the WORD carries the meaning either way.
     let level = unsafe { esp_idf_svc::sys::gpio_get_level(board::RADIO_KILL_GPIO) };
     let radio_ok = level == 0;
-    let radio = format!(
-        "kill GPIO{} reads {} | {}",
-        board::RADIO_KILL_GPIO,
-        if radio_ok { "LOW (C6 held in reset)" } else { "HIGH - RADIO NOT HELD IN RESET" },
-        board::RADIO_KILL_DOC
-    );
 
-    // Dev boards run with secure boot / flash encryption off; the screen reports the
-    // true eFuse state either way (SECURITY.md invariant 6 - honesty over reassurance).
-    let secure_boot = if ro.secure_boot.enabled {
-        String::from("enabled (eFuse SECURE_BOOT_EN burned)")
-    } else {
-        String::from("disabled (dev unit; release units burn Secure Boot v2 RSA-3072)")
-    };
-    let flash_encryption = if ro.flash_encryption.enabled {
-        format!("enabled ({})", ro.flash_encryption.mode.idf_name())
-    } else {
-        String::from("disabled (dev unit; release units enable XTS-AES)")
-    };
+    let fe = &ro.flash_encryption;
+    let dl = &ro.download;
+    let jt = &ro.jtag;
 
     VerifyInfo {
-        firmware_version: String::from(env!("CARGO_PKG_VERSION")),
-        board,
-        platform,
-        app_sha256: ro
-            .app
-            .map(|r| hex(&r.sha256))
-            .unwrap_or_else(|| String::from("unavailable")),
-        // Reproducible-build source id ships with the release tooling (0.1.0 final);
-        // until then the screen says so instead of inventing one.
-        source_id: String::from("unavailable"),
-        self_test: selftest_summary(st),
-        self_test_ok: st.passed(),
-        radio,
+        // --- identity (VERIFY.md 10.1) ---
+        board: Some(board),
+        chip: Some(String::from("ESP32-P4")),
+        chip_revision: Some(ro.chip_revision.to_string()),
+        boot_rom: Some(format!("eco {}", ro.rom_eco_version)),
+        rom_chip_id: Some(format!("0x{:02x}", ro.rom_chip_id)),
+        // Colon-separated for the screen, matching what `esptool chip_id` prints and
+        // therefore what the owner wrote down; the readout's own line stays unspaced hex,
+        // which is what an off-device checker diffs.
+        mac: ro.mac.map(|m| {
+            m.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":")
+        }),
+        die_unique_id: match ro.die_unique_id {
+            DieUniqueId::Burned(id) => HexValue::Read(hex(&id)),
+            DieUniqueId::NotBurned => HexValue::NotBurned,
+        },
+
+        // --- firmware (VERIFY.md 10.2) ---
+        firmware_version: Some(String::from(env!("CARGO_PKG_VERSION"))),
+        idf_app: Some(ro.app_idf_version.clone()),
+        idf_bootloader: ro.bootloader_idf_version.clone(),
+        rollback_image: ro.image_secure_version.map(|v| v.to_string()),
+        rollback_efuse: Some(ro.efuse_secure_version.to_string()),
+        firmware_digest: opt_hex(ro.firmware_digest.as_ref().map(|d| &d[..])),
+        app: region(ro.app),
+        bootloader: region(ro.bootloader),
+        partition_table: region(ro.partition_table),
+
+        // --- flash (VERIFY.md 10.3) ---
+        flash_size_header: ro.flash_size_header.map(bytes_si),
+        flash_size_detected: ro.flash_size_detected.map(bytes_si),
+        // Manufacturer / type / capacity, spaced so the three codes are read as three.
+        jedec_id: ro.jedec_id.map(|id| {
+            format!("{:02x} {:02x} {:02x}", (id >> 16) & 0xff, (id >> 8) & 0xff, id & 0xff)
+        }),
+        flash_unique_id: ro.flash_unique_id.map(|id| group4(&format!("{id:016x}"))),
+        // The partition map, the two mutable-region digests and the reserved-space scan
+        // are the three readers `readout.rs` states are outside its scope. Until they
+        // land, each row says `not read` - which is the true statement about this build.
+        partitions: Vec::new(),
+        reserved_space: ReservedSpace::NotScanned,
+        wallets_digest: HexValue::NotRead,
+        counters_digest: HexValue::NotRead,
+
+        // --- efuse (VERIFY.md 10.4) ---
+        secure_boot: Bit::read(ro.secure_boot.enabled),
+        aggressive_revoke: Bit::read(ro.secure_boot.aggressive_revoke),
+        key_digests: core::array::from_fn(|i| match ro.secure_boot.digests[i] {
+            DigestSlot::Burned { digest, .. } => HexValue::Read(hex(&digest)),
+            DigestSlot::NotBurned => HexValue::NotBurned,
+            DigestSlot::Revoked => HexValue::Revoked,
+            DigestSlot::ReadProtected => HexValue::ReadProtected,
+        }),
+        flash_encryption: Bit::read(fe.enabled),
+        encryption_mode: Some(fe.mode.to_string()),
+        crypt_count: Some(fe.crypt_count),
+        xts_key_read_protected: Bit::present(fe.key_read_protected),
+        manual_encrypt: Bit::read(!fe.manual_encrypt_disabled),
+        uart_download: Bit::read(!dl.uart_download_disabled),
+        secure_download: Bit::read(dl.secure_download_enabled),
+        usb_serial_jtag_download: Bit::read(!dl.usb_serial_jtag_download_disabled),
+        usb_otg_download: Bit::read(!dl.usb_otg_download_disabled),
+        forced_download: Bit::read(!dl.force_download_disabled),
+        direct_boot: Bit::read(!dl.direct_boot_disabled),
+        jtag_pad: Bit::read(!jt.pad_disabled),
+        jtag_usb: Bit::read(!jt.usb_disabled),
+        jtag_soft: Some((jt.soft_disable_count, jt.soft_disable_width)),
+        // A selector, not an access: it names which JTAG path the strapping pin picks,
+        // so the raw bit is the value and "enabled" would be an interpretation.
+        jtag_select: Bit::read(jt.select_enabled),
+        rom_log: ro.rom_log.uart_print_control,
+        rom_log_usb: Bit::read(!ro.rom_log.usb_serial_jtag_print_disabled),
+        key_blocks: ro
+            .key_blocks
+            .iter()
+            .map(|b| KeyBlockInfo {
+                // IDF's own enumerator name, never translated: the screen row is compared
+                // character for character against `espefuse.py summary` and the m13 burn
+                // runbook, and a friendlier word would destroy the row's only use.
+                purpose: (!b.unused).then(|| b.purpose.to_string()),
+                read_protected: b.read_protected,
+                write_protected: b.write_protected,
+            })
+            .collect(),
+
+        // --- state (VERIFY.md 10.5) ---
+        // `not counted`, never `0`: on an unprovisioned or blank device nothing is
+        // written and nothing is read (VERIFY.md 6 / R24).
+        boot_count: store.and_then(|r| r.boot_count),
+        acknowledged_at: store.and_then(|r| r.acknowledged_at),
+        // The epoch is one-way and lives in the plaintext ledger head. It is a number
+        // only a wiped store carries today; a formatted store reports none rather than
+        // asserting zero.
+        wipe_epoch: match store.map(|r| r.state) {
+            Some(StoreState::Wiped { epoch }) => Some(epoch),
+            _ => None,
+        },
+        // Q2(a): `present` / `blank`, permanently and for all users. Never a count - the
+        // count is what a coercer gets for free from a device they cannot open.
+        storage: match store.map(|r| r.state) {
+            Some(StoreState::Formatted { .. }) => Some(String::from("present")),
+            Some(StoreState::Blank) => Some(String::from("blank")),
+            Some(StoreState::Wiped { .. }) => Some(String::from("blank")),
+            Some(StoreState::Unprovisioned) => Some(String::from("not provisioned")),
+            Some(StoreState::Inconsistent(kind)) => Some(format!("unreadable ({kind:?})")),
+            None => None,
+        },
+
+        // --- operation (VERIFY.md 10.6) ---
+        radio_gpio: u8::try_from(board::RADIO_KILL_GPIO).ok(),
+        radio: Some(String::from(if radio_ok {
+            "low"
+        } else {
+            "high - RADIO NOT HELD IN RESET"
+        })),
         radio_ok,
-        secure_boot,
-        flash_encryption,
+        self_test: Some(selftest_summary(st)),
+        self_test_ok: st.passed(),
     }
+}
+
+/// A hashed region with its offset and length, which travel with the digest because a
+/// digest without them is a number rather than a checkable number.
+fn region(r: Option<crate::readout::Region>) -> Option<RegionDigest> {
+    r.map(|r| RegionDigest { offset: r.offset, len: r.len, sha256: hex(&r.sha256) })
+}
+
+fn opt_hex(bytes: Option<&[u8]>) -> HexValue {
+    match bytes {
+        Some(b) => HexValue::Read(hex(b)),
+        None => HexValue::NotRead,
+    }
+}
+
+/// A byte count as the unit the part is sold in. Exact powers of two only: anything else
+/// is printed as bytes rather than rounded, because a rounded flash size is a value the
+/// owner cannot compare against a datasheet.
+fn bytes_si(n: u32) -> String {
+    match n {
+        n if n >= 1 << 20 && n % (1 << 20) == 0 => format!("{} MB", n >> 20),
+        n if n >= 1 << 10 && n % (1 << 10) == 0 => format!("{} KB", n >> 10),
+        n => format!("{n} B"),
+    }
+}
+
+/// Hex in groups of four, which is how the screen's mono column is read and compared.
+fn group4(hex: &str) -> String {
+    hex.as_bytes()
+        .chunks(4)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The complete `notyas-verify/1` payload, in VERIFY.md section 10's frozen

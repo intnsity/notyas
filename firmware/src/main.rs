@@ -26,7 +26,17 @@
 //! surface re-exported by `board`; this file is board-agnostic.
 
 mod board;
+/// Panel calibration instrument (src/diag.rs). Not part of the product image:
+/// `--features diag-display` is the only thing that compiles it in, and such a
+/// build holds the calibration frame forever (see the call site below).
+#[cfg(feature = "diag-display")]
+mod diag;
 mod display;
+/// The work in flight between one screen and the next (0.2.0-m6/m7): the open wallet, the
+/// reviewed transaction, the signed bytes and a registration awaiting approval. Every
+/// request that needs a seed held ACROSS screens is answered there; this file holds the
+/// value and decides when it dies.
+mod flow;
 /// 0.2.0-m4a hardware-in-the-loop test console. `--features hil-console` is the only
 /// thing that compiles it in, build.rs refuses that feature in a release profile, and
 /// the release symbol check asserts its absence from a shipped binary (Q41).
@@ -44,12 +54,25 @@ mod hmac_check;
 #[cfg(feature = "measure")]
 mod measure;
 mod readout;
+/// The microSD subsystem (0.2.0-m5): the slot, mounted only inside a flow, under the
+/// bounded card layer in `notyas_wallet::sd`. Called by `crate::flow`, which is where the
+/// picker, the loader and the deliver screen's write are answered.
+mod sd;
+/// The signing pipeline (0.2.0-m6): bytes in, a reviewed transaction, bytes out. All I/O
+/// stays outside it - the transport hands it a `&[u8]` and takes a `Vec<u8>` back - which
+/// is the same split `store` keeps against the sealing engine. Its callers are the review
+/// and deliver screens, through `crate::flow`.
+mod signing;
 /// The sealed store: the two `esp_partition` regions, the device-binding MAC, the PSRAM
 /// Argon2id working set and the session lifetime. Product code, always compiled.
 mod store;
 mod theme;
 mod touch;
 mod verify;
+/// The unlocked wallet (0.2.0-m6/m7): the sealed record schema, the one place a seed
+/// exists, and the only source of the `psbt::Context` the signing pipeline validates
+/// against. Product code, always compiled.
+mod wallet;
 
 use std::ffi::CStr;
 use std::thread;
@@ -59,9 +82,17 @@ use embedded_graphics::prelude::*;
 use esp_idf_svc::sys;
 use notyas_core::selftest::{self, SelfTest};
 use notyas_fonts::{draw_text, TextStyle, MONO_REGULAR_32, SANS_REGULAR_32, SANS_SEMIBOLD_44};
-use notyas_ui::{QrData, TouchEvent, Ui, UiRequest};
+use notyas_ui::{
+    BackupState, Bit, Network, QrData, ReservedSpace, ScreenId, TouchEvent, Ui, UiRequest,
+    UnsealOutcome, VerifyInfo, WalletDraft, WalletInfo, WalletKind, WalletRow,
+};
+use notyas_wallet::{Pin, SlotState};
+use zeroize::Zeroizing;
 
 use crate::display::Display;
+use crate::flow::Flow;
+use crate::wallet::record::{RegistrationRecord, SealedWallet, WalletRecord};
+use crate::wallet::{Wallet, WalletError};
 
 /// Firmware semver (workspace releases in lockstep, so this is the product version).
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -99,6 +130,42 @@ fn main() {
         );
     }
 
+    // The sealed store is MOUNTED here, before the self-test, and this boot is counted
+    // here (VERIFY.md 6, ratified Q61(i)). The order is the requirement, not an
+    // optimisation: a boot that ends on the failure screen is still a boot, and counting
+    // after the self-test would make a forced failure a free way to power the device on
+    // without advancing the counter that exists to reveal unattended power-ups.
+    //
+    // Mounting allocates nothing - the Argon2id working set is taken after the panel is
+    // up (`attach_scratch`), so the heap numbers in the boot log still answer the
+    // question m4a asks of them: does the working set fit ALONGSIDE the framebuffers.
+    //
+    // A failure here is not fatal. The stateless flow needs no storage at all, and a
+    // device that cannot mount its store must still be usable as a 0.1.0 device and must
+    // say why on the Verify screen rather than refusing to boot.
+    let mut store = match store::Store::mount() {
+        Ok(mut s) => {
+            let r = s.report().clone();
+            log::info!(
+                "store: key {} | state {} | records @0x{:x} | ledger @0x{:x}",
+                r.provenance,
+                store::state_label(r.state),
+                r.records_base,
+                r.ledger_base
+            );
+            // Writes NOTHING while the store is unprovisioned, blank or wiped: SECURITY
+            // invariant 2a keeps the 0.1.0 stateless property verbatim for a device that
+            // has never stored a wallet, and a convenience row does not get to falsify it
+            // (R24). The Verify row then renders `not counted`, never `0`.
+            s.record_boot();
+            Some(s)
+        }
+        Err(e) => {
+            log::error!("store: unavailable: {e:?} - the stateless flow is unaffected");
+            None
+        }
+    };
+
     // Boot self-test, before any peripheral bring-up: pure computation over
     // pinned vectors (notyas-core::selftest), same verdict every boot.
     let t0 = Instant::now();
@@ -120,11 +187,19 @@ fn main() {
     // here - after the self-test proves the crypto core, before any peripheral
     // takes PSRAM or the flash bus - and never come back. Argon2id scratch
     // sizing depends on the PSRAM heap being untouched, and the flash timings
-    // depend on nothing else driving the bus.
+    // depend on nothing else driving the bus. The mount above reads flash and
+    // may program one boot cell, but it has finished and freed its buffers by
+    // the time this runs, and nothing it left behind holds the bus or the heap.
     #[cfg(feature = "measure")]
     measure::run();
 
     let mut display = board::display_init();
+
+    // Calibration build (feature `diag-display`, off by default): what this
+    // instrument measures is the bring-up that just ran, so it goes here - with
+    // nothing above it having taken PSRAM or the flash bus - and never comes back.
+    #[cfg(feature = "diag-display")]
+    diag::run(&mut display);
 
     if !st.passed() {
         // Invariant 5: hard failure, surfaced. The panel shows the verdict and
@@ -139,53 +214,51 @@ fn main() {
         }
     }
 
-    // The sealed store, brought up AFTER the panel so the heap numbers it reports are
-    // the ones that matter: what is left with the framebuffers already standing. A
-    // failure here is not fatal - the stateless flow needs no storage at all, and a
-    // device that cannot mount its store must still be usable as a 0.1.0 device and must
-    // say why on the Verify screen rather than refusing to boot.
-    let mut store = match store::Store::bring_up() {
-        Ok(mut s) => {
-            let r = s.report().clone();
-            log::info!(
-                "store: key {} | state {} | records @0x{:x} | ledger @0x{:x}",
-                r.provenance,
-                store::state_label(r.state),
-                r.records_base,
-                r.ledger_base
-            );
-            log::info!(
-                "store: argon2 scratch {} bytes in PSRAM | free PSRAM {} -> {} (delta {}) | free internal {}",
-                r.scratch_bytes,
-                r.free_psram_before,
-                r.free_psram_after,
-                r.free_psram_before.saturating_sub(r.free_psram_after),
-                store::free_internal()
-            );
-            // VERIFY.md 6 / Q61: counted before the user is shown any verdict, and only
-            // on a formatted store (R24 - a blank device still writes nothing).
-            s.record_boot();
-            Some(s)
+    // The Argon2id working set, taken with the framebuffers already standing so the
+    // numbers below are the ones that matter: what is left AFTER the panel took its
+    // share. Failing here leaves a device that boots, counts and shows every screen, and
+    // refuses every PIN operation with a reason.
+    if let Some(s) = store.as_mut() {
+        match s.attach_scratch() {
+            Ok(()) => {
+                let r = s.report();
+                log::info!(
+                    "store: argon2 scratch {} bytes in PSRAM | free PSRAM {} -> {} (delta {}) | free internal {}",
+                    r.scratch_bytes,
+                    r.free_psram_before,
+                    r.free_psram_after,
+                    r.free_psram_before.saturating_sub(r.free_psram_after),
+                    store::free_internal()
+                );
+            }
+            Err(e) => log::error!(
+                "store: no Argon2 working set: {e:?} - PIN operations will refuse, \
+                 the stateless flow is unaffected"
+            ),
         }
-        Err(e) => {
-            log::error!("store: unavailable: {e:?} - the stateless flow is unaffected");
-            None
-        }
-    };
+    }
 
     // The product UI, laid out for this board's panel, fed with measured facts.
     let mut ui = Ui::new(board::DISPLAY_WIDTH, board::DISPLAY_HEIGHT);
+    // The one long-lived seed on this device, and everything derived from it. Empty until
+    // a user opens a wallet, emptied again by every route out of one (see `close_flow`).
+    let mut flow = Flow::default();
     // One pass over the chip and flash, then everything downstream is a
     // rendering of it: the nine-row screen, the boot-log readout and (at m4b)
     // the QR export all read the same struct, so they cannot disagree.
     let ro = readout::read();
-    let info = verify::build(&st, &ro);
-    log::info!("verify: fw {} | {} | {}", info.firmware_version, info.board, info.platform);
-    log::info!("verify: radio: {}", info.radio);
+    let info = verify::build(&st, &ro, store.as_ref().map(store::Store::report));
+    log::info!(
+        "verify: fw {} | {} | {}",
+        stated(&info.firmware_version),
+        stated(&info.board),
+        stated(&info.chip)
+    );
+    log::info!("verify: radio: {}", stated(&info.radio));
     log::info!(
         "verify: secure boot: {} | flash encryption: {}",
-        info.secure_boot,
-        info.flash_encryption
+        bit_words(info.secure_boot),
+        bit_words(info.flash_encryption)
     );
     verify::log_readout(&ro);
 
@@ -196,6 +269,13 @@ fn main() {
     hmac_check::run();
 
     ui.set_verify_info(info);
+    ui.set_lock_info(lock_info(store.as_ref()));
+    // A device with a PIN starts locked. `Ui::lock` refuses on any other state, which is
+    // what keeps R20 true without a check at this call site: on an unprovisioned or blank
+    // device the lock screen - and the device words behind it - cannot be reached at all.
+    if ui.lock() {
+        log::info!("store: PIN set - starting on the lock screen");
+    }
 
     // First frame, timed: every repaint is a full-screen draw into the back
     // buffer plus a whole-frame publish (driver copy + cache writeback - see
@@ -251,6 +331,8 @@ fn main() {
     let mut last_screen = ui.screen();
     let mut last_network = ui.network();
     let mut last_heartbeat = Instant::now();
+    // Wall clock of the previous pass, so `Ui::tick` is fed real elapsed milliseconds.
+    let mut last_pass = Instant::now();
     // Total repaints since boot, reported in every heartbeat: an untouched
     // device must show the same number for the whole idle stretch - the
     // provable form of "static screens repaint zero times".
@@ -266,8 +348,21 @@ fn main() {
         // result only, leaving the panel frozen on the passphrase screen for
         // the whole computation - the m4 glitch this ordering fixes.
         let t_tick = Instant::now();
-        let mut dirty = ui.tick();
-        if dirty {
+        // Wall-clock elapsed, not a pass count: `Ui::tick` ages the press in flight, and
+        // the C4c hold-to-confirm it drives is a time interlock. A pass that spent 1.8 s
+        // inside a derivation must age the press by 1.8 s or the hold is not 1.5 s long.
+        let elapsed_ms = u32::try_from(last_pass.elapsed().as_millis()).unwrap_or(u32::MAX);
+        last_pass = Instant::now();
+        // A tick is dirty for two unrelated reasons now - a finished derivation and a
+        // filling hold bar - so the log line asks which one this was instead of reading
+        // the flag. A hold repaints on every pass, and logging that as a derivation would
+        // bury the boot log in lines about a finger resting on a button.
+        let was_deriving = ui.screen() == ScreenId::Deriving;
+        let ticked = ui.tick(elapsed_ms);
+        let mut dirty = ticked.dirty;
+        publish_before_answering(&ui, &mut display, &mut repaints, &ticked.request, &mut dirty);
+        answer_request(&mut ui, &mut store, &mut flow, ticked.request);
+        if was_deriving && ui.screen() != ScreenId::Deriving {
             // Duration only - no seed, phrase or passphrase material. Worth a
             // line: this is the one operation slow enough for a user to call
             // the device hung, so a regression here is a user-visible freeze.
@@ -280,6 +375,16 @@ fn main() {
         // charged to the session it happened during, not to the next pass. A pass that
         // locks is a pass that must repaint.
         if store.as_mut().is_some_and(store::Store::tick) {
+            // The seed goes with the session, on the same pass. An auto-lock that left a
+            // wallet open would leave a signed transaction and a live seed behind a lock
+            // screen, which is the opposite of what locking means.
+            close_flow(&mut flow, "the session timed out");
+            // The session is gone; the screens above it go with it. `Ui::lock` clears the
+            // navigation stack, and each entry wipes its screen's secrets on drop, so the
+            // auto-lock is a wipe on both sides of the boundary and not just on the
+            // std one.
+            ui.set_lock_info(lock_info(store.as_ref()));
+            ui.lock();
             dirty = true;
         }
 
@@ -311,8 +416,16 @@ fn main() {
             (None, None) => None,
         };
         last_point = point;
+        // Any touch is user activity: it restarts the idle timer that would otherwise
+        // lock the device out from under a user who is reading a long address.
+        if point.is_some() {
+            if let Some(s) = store.as_mut() {
+                s.touch();
+            }
+        }
 
-        answer_qr_request(&mut ui, request);
+        publish_before_answering(&ui, &mut display, &mut repaints, &request, &mut dirty);
+        answer_request(&mut ui, &mut store, &mut flow, request);
 
         // Screen transitions are the UI's audit trail (ScreenId carries no
         // data, so this is safe to log - notyas-ui's Debug discipline). The
@@ -321,6 +434,14 @@ fn main() {
         if screen != last_screen {
             last_screen = screen;
             log::info!("screen: {screen:?}");
+            // The panel is the only thing that knows the user has finished with a wallet:
+            // the UI raises no "close" request, and Back out of S-21 is a navigation rather
+            // than an answer. So the seed's life is tied to what is on the glass, and the
+            // moment that is a screen outside the wallet - the list, the lock, home - it is
+            // wiped. See `holds_a_wallet`.
+            if !holds_a_wallet(screen) {
+                close_flow(&mut flow, "the panel left this wallet");
+            }
         }
         let network = ui.network();
         if network != last_network {
@@ -329,17 +450,27 @@ fn main() {
         }
 
         if dirty {
-            ui.draw(&mut display).unwrap();
-            display.flush().expect("frame publish");
-            repaints += 1;
+            publish(&ui, &mut display, &mut repaints);
             log::debug!("repaint {repaints} ({screen:?})");
         }
+
+        // MILESTONES.md m5's "the mount is never held outside an SD flow, asserted in
+        // code". This is the one place that can observe it: every card flow lives inside a
+        // single `answer_request` above and drops its guard on the way out, so a mount
+        // still standing here is a flow that returned holding one. A debug build aborts on
+        // it; a release build logs, because a stuck mount is worth a loud line and not
+        // worth bricking a device that is otherwise working.
+        sd::assert_idle();
 
         if last_heartbeat.elapsed() >= Duration::from_secs(1) {
             last_heartbeat = Instant::now();
             log::info!(
-                "notyas {VERSION} | IDF {idf_version} | free heap {} bytes | repaints {repaints}",
-                unsafe { sys::esp_get_free_heap_size() }
+                "notyas {VERSION} | IDF {idf_version} | free heap {} bytes | repaints                  {repaints} | card mounts {}",
+                unsafe { sys::esp_get_free_heap_size() },
+                // The other half of the m5 claim, and the half an assertion cannot make:
+                // `assert_idle` says no mount is standing NOW, and this says how many there
+                // have ever been. An untouched device holds both numbers still.
+                sd::mounts()
             );
         }
 
@@ -347,15 +478,870 @@ fn main() {
     }
 }
 
-/// Answer a [`UiRequest`] from `Ui::touch`. The UI never computes a QR (it is
-/// no_std; the encoder needs std): a tap on a QR button surfaces here as a
-/// request naming a PUBLIC value - receive address or account xpub, the only
-/// QR targets that exist in 0.1.0 - and the finished matrix goes back in
-/// before the same iteration's repaint. The label is a derivation path /
-/// caption (safe to log); the payload is not logged, as a matter of general
-/// log hygiene even for public values.
-fn answer_qr_request(ui: &mut Ui, request: Option<UiRequest>) {
-    let Some(UiRequest::Qr(target)) = request else { return };
+/// Draw the current state into the back buffer and publish the whole frame.
+///
+/// The one place a frame reaches the panel, so that "how many frames has this device
+/// painted" stays a number the heartbeat can be trusted with.
+fn publish(ui: &Ui, display: &mut Display, repaints: &mut u64) {
+    // Infallible on this target: the framebuffer target cannot fail a draw, and a flush
+    // that does is a dead panel rather than a condition this loop can carry on through.
+    ui.draw(display).unwrap();
+    display.flush().expect("frame publish");
+    *repaints += 1;
+}
+
+/// Publish the frame that is on screen BEFORE the blocking work behind `request` starts.
+///
+/// C3's law (UX-SCREENS.md): any operation that can block the input loop for more than
+/// 150 ms paints a Busy frame and publishes it to the panel before the work. Every request
+/// in this vocabulary is such an operation - an Argon2id stretch, a card mount, a PSBT
+/// inspection, a flash erase - and the screen that raised it has already switched to the
+/// frame that says so. This is the only moment at which both of those are true: after the
+/// state changed, before the answer that will change it again.
+///
+/// 0.1.0 learned this the hard way on the derivation path and solved it there by parking
+/// the work for the NEXT loop pass (`Ui::tick`). That trick does not generalise - an answer
+/// has to arrive in the same pass as the request, or the embedder is holding a card mount
+/// across a repaint - so the publish moves here instead, and `dirty` is set because the
+/// answer will always want the frame after it.
+fn publish_before_answering(
+    ui: &Ui,
+    display: &mut Display,
+    repaints: &mut u64,
+    request: &Option<UiRequest>,
+    dirty: &mut bool,
+) {
+    if request.is_none() {
+        return;
+    }
+    publish(ui, display, repaints);
+    *dirty = true;
+}
+
+/// A [`VerifyInfo`] string for the boot log, rendered the way S-46 renders it.
+///
+/// `not read` is a statement about this build, and it is the one the screen makes; a bare
+/// `None` on a line an owner is asked to compare against a release manifest would be this
+/// firmware reporting a value it never read as if it were one.
+fn stated(value: &Option<String>) -> &str {
+    value.as_deref().unwrap_or("not read")
+}
+
+/// A [`Bit`] in the words S-46 prints beside the same two rows, so the boot log and the
+/// panel cannot disagree about a fuse.
+///
+/// The four states stay four. An absent field and an unread one must not collapse into
+/// `disabled`, which would be this line claiming a fuse state nothing measured - the same
+/// rule [`Bit`] itself is shaped around.
+fn bit_words(b: Bit) -> &'static str {
+    match b {
+        Bit::Set => "enabled",
+        Bit::Clear => "disabled",
+        Bit::Absent => "not present",
+        Bit::NotRead => "not read",
+    }
+}
+
+/// The lock and PIN screens' values, from what the store actually reports.
+///
+/// The nickname and the lock word are Settings values and Settings is m4b, so both are
+/// empty here and the lock screen renders its own edge state. Nothing invents a word: the
+/// anti-phishing words are derived from the eFuse key on demand (`PinShowWords`), and the
+/// lock word is user-chosen and does not exist until the user sets one (R20).
+fn lock_info(store: Option<&store::Store>) -> notyas_ui::LockInfo {
+    let Some(s) = store else {
+        return notyas_ui::LockInfo::default();
+    };
+    notyas_ui::LockInfo {
+        status: s.ui_status(),
+        nickname: String::new(),
+        lock_word: String::new(),
+        attempts_left: s.attempts_remaining(),
+        wipe_after: s.wipe_after(),
+        // The PIN floor is the STORE's, read from the policy this device was formatted
+        // with, and the UI draws and gates Unlock from it. Passed rather than left to the
+        // crate default so that a device formatted at any floor - not just the one the
+        // default happens to name - can be unlocked through the panel.
+        min_pin_len: s.min_pin_len(),
+        // The device does not know how long its PIN is. `notyas_wallet` retains no length -
+        // a PIN is stretched and dropped - and this firmware records none at unlock either,
+        // so there is nothing to read back. `None` is the field's own word for exactly that
+        // case, and the wipe-policy screen renders it as an unknown exhaustive-search time
+        // rather than printing a number for a PIN this device never measured.
+        pin: None,
+        // The published bench figure, because nothing here can better it: `Store::unlock`
+        // measures the real cost of an attempt and the boot log prints it, but no part of
+        // the store keeps that number, so there is no measured value to prefer.
+        unlock_ms: notyas_ui::UNLOCK_MS_M1,
+    }
+}
+
+/// Drop the open wallet, and say so once.
+///
+/// One function rather than a `flow.close()` at each site, so that "the seed died and the
+/// log says why" is one obligation instead of four. Silent when nothing was open, because a
+/// line per screen change on a device with no wallet open would bury the ones that matter.
+fn close_flow(flow: &mut Flow, why: &str) {
+    if flow.close() {
+        log::info!("wallet: closed and wiped - {why}");
+    }
+}
+
+/// Whether this screen belongs to an open wallet.
+///
+/// Exhaustive on purpose. A seed's lifetime is the most security-relevant thing this file
+/// decides, and a screen added to `notyas_ui` must not inherit an answer: a new variant
+/// fails to compile here until someone says whether a wallet may still be open behind it.
+///
+/// The direction to get wrong is the safe one. Answering `false` for a screen that does hold
+/// a wallet costs the user a re-open; answering `true` for one that does not leaves a seed
+/// alive behind a screen nobody associates with a wallet.
+fn holds_a_wallet(screen: ScreenId) -> bool {
+    match screen {
+        // S-21 and everything reachable from it: the export tabs, the card, the review,
+        // the signature, the delivery and the registry.
+        ScreenId::WalletHome
+        | ScreenId::Schemes
+        | ScreenId::SignSource
+        | ScreenId::FilePicker
+        | ScreenId::Working
+        | ScreenId::Refusal
+        | ScreenId::ReviewTransaction
+        | ScreenId::Signing
+        | ScreenId::Deliver
+        | ScreenId::MultisigList
+        | ScreenId::MultisigImport
+        | ScreenId::MultisigDetail => true,
+        // The wallet list is where a wallet is CHOSEN, so arriving there means the user has
+        // left the one they had. Everything else is the create flow, the store surfaces or
+        // a locked device, and none of them is behind a wallet at all.
+        ScreenId::WalletList
+        | ScreenId::Home
+        | ScreenId::DiceEntry
+        | ScreenId::MnemonicDisplay
+        | ScreenId::PhraseEntry
+        | ScreenId::PassphraseEntry
+        | ScreenId::Deriving
+        | ScreenId::VerifyDevice
+        | ScreenId::ScanningFlash
+        | ScreenId::Lock
+        | ScreenId::PinEntry
+        | ScreenId::PinCreate
+        | ScreenId::BackupCheck
+        | ScreenId::KeepOrSave
+        | ScreenId::NameWallet
+        | ScreenId::Settings
+        | ScreenId::WipePolicy => false,
+    }
+}
+
+/// Answer a [`UiRequest`]. This function IS the std side of the boundary: every flash
+/// access, every key-ladder step and every QR encode happens here, and the no_std UI does
+/// none of them. It asks; this answers.
+///
+/// A request whose answer needs a store the device does not have is answered with the
+/// refusal rather than dropped, because a screen waiting for an answer that never comes
+/// is a hung screen.
+///
+/// Four of the m4b requests are answered with a refusal in EVERY build of this image, and
+/// each arm states its own reason at the site. Erasing a record, committing a wipe policy
+/// and removing the PIN are operations `Store` publishes no route to at all; changing the
+/// PIN is one it does publish, and the new PIN that route needs is a value no screen in
+/// this UI can hand over. Three of the four re-seal or destroy sealed records, which is
+/// why "close enough" is not one of the options: a refusal is a screen the user can read
+/// and act on, while a handler that quietly did nothing would teach the UI - and through
+/// it the user - that a destructive operation had succeeded.
+///
+/// A device's FIRST PIN is the exception and arrives here through `UiRequest::SetPin`,
+/// collected by S-06/S-07. That route formats a store holding nothing, so it re-seals
+/// no record and destroys none - which is why it can be answered while the four that
+/// re-key existing records cannot.
+///
+/// The eight card, transaction and registry requests are dispatched to `crate::flow`, which
+/// holds the wallet they all need and answers each on the channel it documents. `flow` is
+/// threaded through this function rather than parked in a static because a seed with a
+/// lifetime is a seed somebody can reason about, and a static one has none.
+fn answer_request(
+    ui: &mut Ui,
+    store: &mut Option<store::Store>,
+    flow: &mut Flow,
+    request: Option<UiRequest>,
+) {
+    let Some(request) = request else { return };
+    match request {
+        UiRequest::Qr(target) => answer_qr(ui, target),
+        UiRequest::DeviceWords(prefix) => {
+            // Costs no attempt: showing the words is not a guess.
+            match store.as_mut().map(|s| s.anti_phishing_words(prefix.as_str())) {
+                Some(Ok(words)) => ui.show_device_words(words),
+                Some(Err(e)) => log::error!("store: device words unavailable: {e}"),
+                None => log::error!("store: device words unavailable: no store"),
+            }
+        }
+        UiRequest::UnsealWallet(pin) => answer_unseal(ui, store, flow, pin),
+        UiRequest::SetPin(pin) => answer_set_pin(ui, store, pin),
+        UiRequest::PersistWallet(draft) => answer_persist_wallet(ui, store, &draft),
+        UiRequest::LockSession => {
+            if let Some(s) = store.as_mut() {
+                s.lock();
+            }
+            // The wallet is part of the session, so it goes with it. `Ui::lock` below
+            // clears the screens; this clears what was behind them.
+            close_flow(flow, "the device was locked");
+            ui.set_lock_info(lock_info(store.as_ref()));
+            ui.lock();
+            log::info!("store: locked on request - session dropped");
+        }
+        UiRequest::ScanReservedSpace => {
+            // VERIFY.md 3.3's raw read of every must-be-blank span is the one row on this
+            // screen this build has no reader for yet (readout.rs states the scope). It is
+            // answered rather than dropped anyway, and answered with `NotRead` rather than
+            // an empty scan: the rule at the top of this function is not suspended because
+            // a feature is unfinished, and "it looked and found nothing" would be a
+            // sentence this device has not earned. The screen leaves its C3 Busy frame and
+            // the row reads `not read`, which is the true statement about this image.
+            log::warn!(
+                "verify: reserved-space scan requested, and this build has no reader for it"
+            );
+            ui.set_flash_scan(ReservedSpace::NotRead);
+        }
+        UiRequest::AcknowledgeBoots => {
+            match store.as_mut().map(store::Store::acknowledge_boots) {
+                Some(Ok(_)) => {}
+                Some(Err(e)) => log::error!("store: acknowledgement refused: {e}"),
+                None => log::error!("store: acknowledgement refused: no store"),
+            }
+            // The screen re-reads what the write produced rather than assuming it.
+            if let Some(s) = store.as_ref() {
+                let r = s.report();
+                ui.set_verify_info(VerifyInfo {
+                    boot_count: r.boot_count,
+                    acknowledged_at: r.acknowledged_at,
+                    ..ui.verify_info().clone()
+                });
+            }
+        }
+        UiRequest::OpenWallet(slot) => answer_open_wallet(ui, store, flow, slot),
+        UiRequest::DeleteWallet(slot) => {
+            // REFUSED, and the refusal is the whole handler. Erasing a record is
+            // `Vault::clear`, and `Store` publishes no method that reaches it: every sealed
+            // path this file can call WRITES a record. Writing an empty one into the slot
+            // would leave something that reads as occupied and decodes as nothing - a
+            // corrupted wallet wearing a delete's clothes - so nothing is written at all.
+            //
+            // The answer is the one the C4d sheet documents: the list as it now reads. It
+            // still holds this wallet, which is the evidence either way - the user watches
+            // the wallet survive instead of being told it is gone.
+            log::error!(
+                "store: delete of wallet slot {slot} refused: this build has no erase path"
+            );
+            install_wallets(ui, store);
+        }
+        UiRequest::SetWipePolicy { wipe_after } => {
+            // REFUSED. Committing a policy is `Vault::set_policy`, and it takes the PIN:
+            // the policy is authenticated INSIDE the AEAD (PIN-MODES.md), so the commit is
+            // a re-seal and the format demands a fresh confirmation of the PIN at the
+            // moment of it. This request carries a threshold and no PIN, the session holds
+            // a derived key and never the PIN itself, and `Store` publishes no route to
+            // `set_policy` - there is nothing here to write with.
+            //
+            // Answered on both channels the request documents: the verdict says the write
+            // did not happen, and the lock info behind it is the policy still in force,
+            // read back from the store rather than echoed from the screen's edit.
+            log::error!(
+                "store: wipe policy ({}) refused: committing it re-seals the store under \
+                 the PIN, and this build cannot ask for one",
+                match wipe_after {
+                    Some(n) => format!("wipe after {n}"),
+                    None => String::from("wipe off"),
+                }
+            );
+            ui.policy_result(false);
+            ui.set_lock_info(lock_info(store.as_ref()));
+        }
+        UiRequest::ChangePin => {
+            // REFUSED. `Store::change_pin` exists and re-seals every record correctly, and
+            // it needs the new PIN. This request carries none, and no screen in the UI can
+            // collect one FOR A DEVICE THAT ALREADY HAS ONE: S-06/S-07 collect the first
+            // PIN and raise `SetPin`, but they are reachable only where `has_pin` is
+            // false, and PIN entry - the surface a provisioned device has - raises
+            // `UnsealWallet`. So the sequence cannot be started, and half of it must not
+            // be: a change-PIN re-keys every stored wallet, which is the operation with
+            // the least room to be approximately right.
+            //
+            // The UI documents no failure channel for this request, so the refusal is a log
+            // line and the screens are re-fed the state as it still stands. Nothing is left
+            // waiting for an answer.
+            log::error!("store: change PIN refused: this build cannot collect a new PIN");
+            ui.set_lock_info(lock_info(store.as_ref()));
+        }
+        UiRequest::RemovePin => {
+            // REFUSED, and this is the one refusal that reaches the user in words:
+            // `Ui::pin_removed(false)` is the failure line the settings screen renders.
+            //
+            // `Vault::remove_pin` is what performs it, and it takes the PIN for the same
+            // reason `set_policy` does - it destroys every sealed record, so the format
+            // asks for a fresh confirmation first. `Store` publishes no route to it and
+            // this request carries no PIN. Nothing is destroyed here, and nothing tells a
+            // device with eight sealed slots that it is stateless again.
+            log::error!(
+                "store: PIN removal refused: it destroys every sealed record and needs a \
+                 fresh PIN confirmation this build cannot ask for"
+            );
+            ui.pin_removed(false);
+        }
+        // The card, the transaction and the registry. Every one of these needs a wallet
+        // held open ACROSS screens, so the state lives in `crate::flow` and so do the
+        // handlers; what is left here is the dispatch. Each returns the answer's own
+        // follow-up request, which goes straight back through this function.
+        UiRequest::ListCard { dir, filter } => {
+            let next = flow::list_card(ui, dir, filter);
+            answer_request(ui, store, flow, next);
+        }
+        UiRequest::LoadPsbt { dir, name } => {
+            let next = flow::load_psbt(ui, flow, dir, name);
+            answer_request(ui, store, flow, next);
+        }
+        UiRequest::SignTx => {
+            let next = flow::sign_tx(ui, flow);
+            answer_request(ui, store, flow, next);
+        }
+        UiRequest::WriteSigned { overwrite } => {
+            let next = flow::write_signed(ui, flow, overwrite);
+            answer_request(ui, store, flow, next);
+        }
+        UiRequest::DiscardSigned => {
+            let next = flow::discard_signed(ui, flow);
+            answer_request(ui, store, flow, next);
+        }
+        UiRequest::ImportRegistration { dir, name } => {
+            let next = flow::import_registration(ui, flow, dir, name);
+            answer_request(ui, store, flow, next);
+        }
+        UiRequest::ApproveRegistration { replace } => {
+            let next = flow::approve_registration(ui, store, flow, replace);
+            answer_request(ui, store, flow, next);
+        }
+        UiRequest::DeleteRegistration(slot) => {
+            let next = flow::delete_registration(ui, store, flow, slot);
+            answer_request(ui, store, flow, next);
+        }
+    }
+}
+
+/// Seal the wallet the create flow just confirmed, and answer the screen either way.
+///
+/// # The identity that gets stored is the identity that was on the panel
+///
+/// The draft carries the fingerprint the derivation produced WITH whatever BIP-39
+/// passphrase the user typed, and that value goes into the record as data. Nothing here
+/// re-derives it, because the only passphrase this path could re-derive with is an empty
+/// one - Q22 keeps the real one out of every structure that outlives the screen that took
+/// it - and an empty-passphrase fingerprint sealed under the name of a passphrased wallet
+/// inverts the guarantee the field exists for: the user's real passphrase would be refused
+/// by `Wallet::open` forever, and an empty one would open a wallet they never approved.
+///
+/// # The slot
+///
+/// Chosen here, by the store, because the request carries none: the lowest free payload
+/// slot ([`Wallet::seal_into_free_slot`], which carries the reasoning). A full device is a
+/// refused save, not an eviction.
+///
+/// # What the UI still cannot be told, and it is not this function's to fix
+///
+/// C12 (UX-SCREENS.md 525-539) requires the write notice to NAME the slot before the write
+/// happens, and S-20 renders it that way. It cannot be satisfied from here:
+/// `UiRequest::PersistWallet` carries no slot and `Ui::persist_result` takes none back, so
+/// the screen has no way to learn the number before or after. Reinstalling the wallet list
+/// is the half that is reachable - it is the one route by which the slot a wallet actually
+/// landed in gets to the screens, and without it the wallet home keeps rendering the slot
+/// the create flow guessed.
+fn answer_persist_wallet(ui: &mut Ui, store: &mut Option<store::Store>, draft: &WalletDraft) {
+    let sealed = match store.as_mut() {
+        Some(s) => match seal_draft(s, draft) {
+            Ok(slot) => {
+                log::info!("store: wallet {} sealed into slot {slot}", draft.fingerprint);
+                true
+            }
+            // Every refusal is a sentence, and each one is a different thing to do about
+            // it: a full device, a slot that filled underneath us, a record too big for a
+            // slot, a fingerprint that would not parse, a session that expired mid-flow.
+            // The screen gets the verdict; the log gets which of them it was.
+            Err(e) => {
+                log::error!("store: wallet {} not saved: {e}", draft.fingerprint);
+                false
+            }
+        },
+        None => {
+            log::error!("store: wallet {} not saved: no store", draft.fingerprint);
+            false
+        }
+    };
+    ui.persist_result(sealed);
+    // Only after a save that happened, and always after one: this is the only channel that
+    // carries the real slot to the screens (see the note above).
+    if sealed {
+        install_wallets(ui, store);
+    }
+    ui.set_lock_info(lock_info(store.as_ref()));
+}
+
+/// The draft as a sealed record, in the slot the store picked.
+///
+/// Split out so that the arm above has one thing to report and one place to report it:
+/// every way this can fail - the fingerprint parse, the free-slot walk, the encode, the
+/// write - arrives as one [`WalletError`] with a sentence already in it.
+fn seal_draft(s: &mut store::Store, draft: &WalletDraft) -> Result<u8, WalletError> {
+    let new = SealedWallet::confirmed(
+        &draft.name,
+        draft.network,
+        draft.phrase(),
+        &draft.fingerprint,
+        draft.passphrase,
+    )?;
+    Wallet::seal_into_free_slot(s, &new)
+}
+
+/// Open the wallet in `slot`, hand the screens its identity AND its derivation, and keep the
+/// seed for as long as the panel is inside that wallet.
+///
+/// # The passphrase
+///
+/// Empty, and not as a placeholder for one this function should have been given:
+/// [`UiRequest::OpenWallet`] names a slot and nothing else, and a BIP-39 passphrase is never
+/// stored (Q22), so a wallet sealed with one cannot be opened from this request at all. That
+/// case arrives here as a refusal naming both fingerprints, which is exactly right - opening
+/// under the wrong passphrase silently derives a DIFFERENT wallet, and the fingerprint in the
+/// record exists so that `Wallet::open` refuses instead of doing that.
+///
+/// # Why the derivation is produced here
+///
+/// [`Ui::wallet_opened`] carries the public identity and nothing else, and a wallet opened
+/// that way can do exactly one thing: be deleted. Export, the receive addresses, the QR codes
+/// and the whole signing path are gated on the UI HOLDING a derivation, because the UI owns
+/// no key ladder and cannot re-derive one from a slot number. Unsealing the record is what
+/// produces the seed, so this is the one moment the device can hand it over, and
+/// [`Wallet::derivation`] is what turns it into the public report S-26 renders. A stored
+/// wallet that offered only Delete was the whole of the gap that made the PIN worth less than
+/// the "use once, keep nothing" flow it protects.
+///
+/// It costs one BIP-39 stretch and four account derivations, which is the same work the
+/// create flow spends on its own interstitial. The frame on the panel has already been
+/// published before this runs (`publish_before_answering`), so the wallet list is on the
+/// glass throughout rather than a half-drawn screen.
+///
+/// # Why the wallet is kept
+///
+/// Because the screens behind it need the seed: `crate::flow` answers eight requests that
+/// cannot exist without one, and every one of them belongs to the wallet this call opened.
+/// The lifetime is stated once, in `crate::flow`'s module docs, and enforced by `close_flow`
+/// at three sites - a lock, an auto-lock, and the panel leaving this wallet's screens.
+///
+/// # Every failure reaches the user
+///
+/// A refused open produces NO screen change, so a handler that only logged would leave a row
+/// that does nothing when it is tapped. [`Ui::wallet_open_failed`] is the other half: the
+/// list stays where it is and says why it stayed.
+fn answer_open_wallet(ui: &mut Ui, store: &mut Option<store::Store>, flow: &mut Flow, slot: u8) {
+    let Some(s) = store.as_mut() else {
+        log::error!("wallet: slot {slot} not opened: no store");
+        ui.wallet_open_failed(String::from(
+            "This device could not reach its sealed storage, so no wallet was opened.",
+        ));
+        return;
+    };
+    let t0 = Instant::now();
+    let wallet = match Wallet::open(s, slot, "") {
+        Ok(w) => w,
+        // The mismatch is the one refusal worth its own sentence, because the sentence the
+        // error type writes is about a passphrase the user was never asked for. Both
+        // fingerprints are public, and both readings of them are stated: this record was
+        // sealed under a passphrase, or it did not come back from flash intact.
+        Err(WalletError::PassphraseMismatch { expected, derived }) => {
+            log::error!(
+                "wallet: slot {slot} did not open with no passphrase: its words derive \
+                 wallet {derived} and the record was sealed for {expected} - either it has \
+                 a BIP-39 passphrase, which this request carries no way to ask for, or the \
+                 record did not come back intact"
+            );
+            ui.wallet_open_failed(format!(
+                "Wallet slot {slot} did not open. Its words derive wallet {derived} and the \
+                 record was sealed for {expected}, so either it has a BIP-39 passphrase - \
+                 which this release cannot ask for - or the record did not come back intact."
+            ));
+            return;
+        }
+        // Everything else is already a sentence: a locked store, a slot that holds nothing,
+        // a record that will not decode. Printing it is what turns "it did not open" into
+        // something an owner can act on, and showing it is what stops the row looking dead.
+        Err(e) => {
+            log::error!("wallet: slot {slot} not opened: {e}");
+            ui.wallet_open_failed(format!("Wallet slot {slot} did not open: {e}."));
+            return;
+        }
+    };
+    // A registration that did not survive its re-proof is a multisig wallet the user
+    // believes is registered and is not, and the next PSBT from it would be refused with
+    // nothing to say why. One line each, at error level.
+    for fault in wallet.registry_faults() {
+        log::error!(
+            "wallet: slot {slot} registry slot {}: {}",
+            fault.slot,
+            fault.reason
+        );
+    }
+    // What the RECORDS say, which is what S-41 compares its proven list against. Counted
+    // rather than taken from the proven set, because the GAP between the two is the only way
+    // that screen can say "this device has registrations and could not read them" - a proven
+    // count on both sides would report a wallet with a broken registration as a wallet with
+    // one fewer registration.
+    let claimed = registration_counts(s)
+        .get(usize::from(slot))
+        .copied()
+        .unwrap_or(0);
+    log::info!(
+        "wallet: slot {slot} opened in {} ms | {} | {} of {claimed} registrations proven, {} \
+         faults",
+        t0.elapsed().as_millis(),
+        wallet.fingerprint(),
+        wallet.registrations().len(),
+        wallet.registry_faults().len()
+    );
+
+    let t1 = Instant::now();
+    // The empty passphrase again, and it is the SAME one the record was just opened with.
+    // `Wallet::derivation` re-checks that what it produced belongs to the wallet in hand and
+    // returns nothing rather than a report about somebody else's keys.
+    let report = wallet.derivation("", notyas_ui::ADDRESS_ROWS);
+    match &report {
+        Some(_) => log::info!(
+            "wallet: slot {slot} derivation ready in {} ms",
+            t1.elapsed().as_millis()
+        ),
+        // Not fatal and not silent: the wallet still opens, and the home screen then offers
+        // what a wallet with no derivation can do. Saying so is what keeps "Export is
+        // missing" from being a mystery.
+        None => log::error!(
+            "wallet: slot {slot} opened and its public derivation could not be produced - \
+             export and signing will not be offered"
+        ),
+    }
+
+    let info = WalletInfo {
+        registrations: claimed,
+        // MEASURED. This open used an empty passphrase and the seed it produced derived the
+        // fingerprint the record was sealed with, so this wallet has no passphrase. One that
+        // does never reaches this line.
+        passphrase: false,
+        ..stored_wallet(
+            wallet.slot(),
+            String::from(wallet.label()),
+            // The fingerprint of the LIVE seed, which is the value `Wallet` derives and
+            // never the copy the record carries.
+            wallet.fingerprint().to_string(),
+            wallet.network(),
+        )
+    };
+
+    // The wallet moves into the flow BEFORE the screens are told, so that any request the
+    // resulting frame raises already has a seed to be answered from.
+    flow.open(wallet);
+    flow::install_registrations(ui, flow);
+    match report {
+        Some(report) => ui.wallet_opened_with_keys(info, report),
+        None => ui.wallet_opened(info),
+    }
+}
+
+/// Read the wallet list out of the store and install it.
+///
+/// The answer to every request whose contract is "the list as it now reads", and the only
+/// way the list can ever be filled: the UI owns no flash and computes no part of this.
+fn install_wallets(ui: &mut Ui, store: &mut Option<store::Store>) {
+    let Some(s) = store.as_mut().filter(|s| s.is_unlocked()) else {
+        // No session, no list - and nothing installed rather than an empty one. An empty
+        // list is the statement "this device holds no wallets", which a store nobody has
+        // unlocked has not made. `Ui::lock` has already cleared whatever was there.
+        log::error!("store: wallet list unavailable: no unlocked store");
+        return;
+    };
+    let rows = wallet_rows(s);
+    log::info!("store: wallet list installed: {} occupied slots", rows.len());
+    ui.set_wallets(rows);
+}
+
+/// Every occupied payload slot, as the post-PIN screens read it.
+///
+/// Metadata only: no seed is derived here, so the whole list costs one AEAD open per slot
+/// rather than one PBKDF2 run per slot. Deriving is what OPENING a wallet is for, and it
+/// happens once, for the one slot the user tapped.
+///
+/// A slot this device cannot read becomes a row and never a gap ([`WalletRow::Unreadable`],
+/// R-32). The counts on the destruction sheet are counted from these rows, so a slot
+/// dropped because its state would not read would understate what a wipe destroys.
+fn wallet_rows(s: &mut store::Store) -> Vec<WalletRow> {
+    let registrations = registration_counts(s);
+    // Zeroizing because a wallet record IS a mnemonic: this buffer holds the user's words
+    // between the AEAD and the parse, and it is reused across slots, so a plain Vec would
+    // leave the last one read in freed heap.
+    let mut body = Zeroizing::new(vec![0u8; store::Store::max_payload_bytes()]);
+    let mut rows = Vec::new();
+    for slot in 0..store::Store::payload_slots() {
+        match s.payload_state(slot) {
+            Ok(SlotState::Empty) => {}
+            // Another PIN identity's record, or one whose tag did not verify under this
+            // session's key. Either way this session cannot read it, which is what the row
+            // says and all it says.
+            Ok(SlotState::Opaque) => rows.push(WalletRow::Unreadable { slot }),
+            Ok(SlotState::Occupied { .. }) => {
+                let count = registrations.get(usize::from(slot)).copied().unwrap_or(0);
+                rows.push(wallet_row(s, slot, &mut body, count));
+            }
+            Err(e) => {
+                log::error!("store: payload slot {slot} did not read: {e}");
+                rows.push(WalletRow::Unreadable { slot });
+            }
+        }
+    }
+    rows
+}
+
+/// One occupied payload slot as a row, or the unreadable row when the record will not come
+/// back as a wallet.
+///
+/// The decoded record carries the recovery phrase and is dropped as this function returns;
+/// its `Zeroizing` wipes it, and nothing on the row is derived from it.
+fn wallet_row(s: &mut store::Store, slot: u8, body: &mut [u8], registrations: u8) -> WalletRow {
+    let n = match s.read_payload(slot, body) {
+        Ok(n) => n,
+        Err(e) => {
+            log::error!("store: payload slot {slot} did not open: {e}");
+            return WalletRow::Unreadable { slot };
+        }
+    };
+    let Some(bytes) = body.get(..n) else {
+        log::error!("store: payload slot {slot} reported {n} bytes into a shorter buffer");
+        return WalletRow::Unreadable { slot };
+    };
+    let record = match WalletRecord::decode(bytes) {
+        Ok(r) => r,
+        // A body that survived its AEAD and is not a wallet record this build understands.
+        // It is still an occupied slot, so it is still a row - with no name, no fingerprint
+        // and no path, because inventing blank fields for it would be describing a record
+        // this device could not read (R-32).
+        Err(e) => {
+            log::error!("store: payload slot {slot} is not a readable wallet record: {e}");
+            return WalletRow::Unreadable { slot };
+        }
+    };
+    WalletRow::Wallet(WalletInfo {
+        registrations,
+        // Unknown here, and false is the closest the vocabulary comes to saying so: the
+        // record carries no passphrase flag and cannot (Q22 keeps the passphrase out of
+        // storage entirely). It becomes a measured fact at open, where an empty passphrase
+        // either reproduces the record's fingerprint or does not. No row renders it.
+        passphrase: false,
+        ..stored_wallet(slot, record.label, record.fingerprint.to_string(), record.network)
+    })
+}
+
+/// How many registry records name each payload slot.
+///
+/// Counted once for the whole list rather than per wallet: the registry is a flat class of
+/// slots, and the alternative re-reads all of it for every wallet on the device.
+///
+/// This is what is STORED against a slot, not what has been proven. A registration is
+/// re-parsed and re-proven against the live seed every time a wallet is opened, and only
+/// that can say whether it still holds; a count needs no seed, and the list is a surface
+/// that exists before any wallet is open.
+fn registration_counts(s: &mut store::Store) -> Vec<u8> {
+    let mut counts = vec![0u8; usize::from(store::Store::payload_slots())];
+    // A registration record is public - cosigner xpubs, a threshold, a name - so this
+    // buffer needs no wiping, unlike the payload one.
+    let mut body = vec![0u8; store::Store::max_registry_bytes()];
+    for slot in 0..store::Store::registry_slots() {
+        match s.registry_state(slot) {
+            Ok(SlotState::Occupied { .. }) => {}
+            // Empty is empty; `Opaque` belongs to another identity and is not this
+            // session's to count.
+            Ok(_) => continue,
+            Err(e) => {
+                log::error!("store: registry slot {slot} did not read: {e}");
+                continue;
+            }
+        }
+        let n = match s.read_registry(slot, &mut body) {
+            Ok(n) => n,
+            Err(e) => {
+                log::error!("store: registry slot {slot} did not open: {e}");
+                continue;
+            }
+        };
+        let Some(bytes) = body.get(..n) else {
+            log::error!("store: registry slot {slot} reported {n} bytes into a shorter buffer");
+            continue;
+        };
+        let record = match RegistrationRecord::decode(bytes) {
+            Ok(r) => r,
+            // An occupied registry slot this build cannot read. It is not counted against
+            // any wallet: a number on the destruction sheet has to come from a record that
+            // was read, and this one was not.
+            Err(e) => {
+                log::error!("store: registry slot {slot} is not a readable registration: {e}");
+                continue;
+            }
+        };
+        match counts.get_mut(usize::from(record.wallet_slot)) {
+            Some(c) => *c = c.saturating_add(1),
+            // A registration naming a slot this layout does not have. Reported and counted
+            // against nothing: adding it to some other wallet's total would put a number on
+            // the destruction sheet that no record supports.
+            None => log::error!(
+                "store: registry slot {slot} names payload slot {}, and this layout has {}",
+                record.wallet_slot,
+                store::Store::payload_slots()
+            ),
+        }
+    }
+    counts
+}
+
+/// A stored wallet as the post-PIN screens read it, with the four fields the sealed record
+/// does not carry filled the same way at every call site.
+///
+/// - `path` is `m` and `script_type` is "every scheme" because the record names NO scheme
+///   (it holds the phrase, the network, a label and a fingerprint) and this device derives
+///   all four from the one seed - the export screen has a tab per scheme. Naming one of
+///   them here would be this file choosing a scheme the owner never chose. The stateless
+///   "use once" wallet already renders exactly this, for exactly this reason.
+/// - `kind` is single-sig because a payload slot holds one seed. Multisig membership is a
+///   registration held AGAINST that seed, not a different kind of record.
+/// - `backup` is verified with no date. The record keeps no evidence of the check and does
+///   not need to: the only paths that reach a save are the ones that proved the words -
+///   the backup quiz, or a restore of words the user already held - so a record's existence
+///   is the evidence. The date is empty because none was stored, and an empty `Verified`
+///   renders as the bare badge rather than as a fabricated one.
+///
+/// `registrations` and `passphrase` are left at the values a caller who has measured
+/// neither would have to state; both callers here override them with what they read.
+fn stored_wallet(slot: u8, name: String, fingerprint: String, network: Network) -> WalletInfo {
+    WalletInfo {
+        slot,
+        name,
+        fingerprint,
+        path: String::from("m"),
+        script_type: String::from("every scheme"),
+        kind: WalletKind::SingleSig,
+        backup: BackupState::Verified(String::new()),
+        network,
+        registrations: 0,
+        stored: true,
+        passphrase: false,
+    }
+}
+
+/// One unlock attempt. The measured milliseconds are the number m4a's exit gate asks for:
+/// the whole cost a user waits through between the last digit and an open device.
+/// The label this device's own superblock carries, distinguishing a store the PRODUCT
+/// formatted from one the test console did (`b"hil"`). Sixteen bytes, padded by the vault.
+///
+/// Worth spending a field on: a store's origin is not otherwise recoverable after the fact,
+/// and "was this device ever formatted by a test build" is a question an owner and an
+/// auditor can both reasonably ask of a signer holding real money.
+const STORE_LABEL: &[u8] = b"notyas";
+
+/// Install the FIRST PIN, answering [`UiRequest::SetPin`], and report the verdict.
+///
+/// This is the device's first write - it creates the ledger and the superblock - and until
+/// 0.2.0 the only route to it was the test console, which a product build compiles out. A
+/// release image therefore could not be given a PIN, and so could not store a wallet.
+///
+/// Every arm answers. `Ui::pin_created(false)` is what puts a refusal on the panel, and a
+/// handler that logged and returned here would leave the user staring at a confirm screen
+/// that did nothing - the failure mode this function exists to remove, and the one the rule
+/// at the top of `answer_request` names.
+fn answer_set_pin(ui: &mut Ui, store: &mut Option<store::Store>, pin: notyas_ui::Secret) {
+    let Some(s) = store.as_mut() else {
+        log::error!("store: PIN not set: no store on this device");
+        ui.pin_created(false);
+        return;
+    };
+    // Length only, like the unlock path: the sealing layer has no opinion about character
+    // classes, and the SCREEN owns the floor (LockInfo::min_pin_len, read from the store's
+    // own policy so the two can never disagree). A PIN that gets here and is still refused
+    // is a bug in that agreement, so it is logged as one rather than blamed on the user.
+    let Ok(parsed) = Pin::from_normalized_utf8(pin.as_str()) else {
+        log::error!(
+            "store: PIN not set: the sealing layer refuses this length, which the screen              should have caught at its own floor"
+        );
+        ui.pin_created(false);
+        return;
+    };
+    match s.format(&parsed, STORE_LABEL) {
+        Ok(ms) => {
+            // No PIN, no length, and nothing derived from either.
+            log::info!("store: formatted with the first PIN in {ms} ms");
+            ui.pin_created(true);
+        }
+        Err(e) => {
+            log::error!("store: format refused: {e}");
+            ui.pin_created(false);
+        }
+    }
+    // Whether it worked or not: status, attempt budget and the PIN floor all move on a
+    // format, and every screen downstream reads them from here.
+    ui.set_lock_info(lock_info(store.as_ref()));
+}
+
+fn answer_unseal(
+    ui: &mut Ui,
+    store: &mut Option<store::Store>,
+    flow: &mut Flow,
+    pin: notyas_ui::Secret,
+) {
+    let Some(s) = store.as_mut() else {
+        ui.unseal_result(UnsealOutcome::Unreadable);
+        return;
+    };
+    let Ok(parsed) = Pin::from_normalized_utf8(pin.as_str()) else {
+        // Length only; the crate has no opinion about character classes. A PIN the
+        // sealing layer will not accept is a wrong PIN that costs no attempt.
+        ui.unseal_result(UnsealOutcome::WrongPin { attempts_left: s.attempts_remaining() });
+        return;
+    };
+    let outcome = match s.unlock(&parsed) {
+        Ok(ms) => {
+            log::info!("store: unlocked in {ms} ms");
+            UnsealOutcome::Unsealed
+        }
+        Err(e) => {
+            log::info!("store: unlock refused: {e:?}");
+            if matches!(s.state(), notyas_wallet::StoreState::Wiped { .. }) {
+                UnsealOutcome::Wiped
+            } else {
+                UnsealOutcome::WrongPin { attempts_left: s.attempts_remaining() }
+            }
+        }
+    };
+    ui.set_lock_info(lock_info(store.as_ref()));
+    let next = ui.unseal_result(outcome);
+    if matches!(outcome, UnsealOutcome::Unsealed) {
+        // The wallet list is where an unlock lands, and this is the only thing that can
+        // fill it: the UI owns no flash and keeps no list across a lock. AFTER
+        // `unseal_result`, which is the call that navigates there, and after the session
+        // exists - reading a slot needs one.
+        install_wallets(ui, store);
+    }
+    answer_request(ui, store, flow, next);
+}
+
+/// The UI never computes a QR (it is no_std; the encoder needs std): a tap on
+/// a QR button surfaces here as a request naming a PUBLIC value - receive
+/// address or account xpub - and the finished matrix goes back in before the
+/// same iteration's repaint. The label is a derivation path / caption (safe to
+/// log); the payload is not logged, as a matter of general log hygiene even
+/// for public values.
+fn answer_qr(ui: &mut Ui, target: notyas_ui::QrTarget) {
     match notyas_core::qr::matrix(&target.payload) {
         Ok(matrix) => match QrData::from_matrix(&matrix) {
             Some(data) => {

@@ -28,9 +28,10 @@ mod scratch;
 use std::time::Instant;
 
 use esp_idf_svc::sys;
+use notyas_ui::StoreStatus;
 use notyas_wallet::{
     Config, KdfParams, KeyProvenance, Layout, Liveness, Occupancy, Pin, PolicyRequest, Session,
-    SlotClass, SlotId, StoreState, UnlockError, Vault,
+    SlotClass, SlotId, SlotState, StoreState, UnlockError, Vault,
 };
 
 pub use flash::{FlashError, OpenError, PartitionFlash};
@@ -69,6 +70,10 @@ pub const CONFIG: Config = Config {
     disable_wipe_min_pin_len: None,
 };
 
+/// The layout as a borrow, so the const geometry helpers below can be `const fn`.
+/// `&CONFIG.layout` is not writable inside a `const fn` body; a const item is.
+const LAYOUT: &Layout = &CONFIG.layout;
+
 /// Idle timeout before the session is dropped and the device relocks.
 ///
 /// Two minutes is `notyas_wallet::DEFAULT_AUTO_LOCK_MS`, restated here because it is a
@@ -86,11 +91,25 @@ pub struct StoreReport {
     /// `not counted` rather than `0` (VERIFY.md 6 / R24: a convenience row does not get
     /// to falsify the stateless property of a device that has stored nothing).
     pub boot_count: Option<u64>,
+    /// The boot index the owner last marked as seen. `None` renders `not acknowledged`.
+    pub acknowledged_at: Option<u64>,
     pub free_psram_before: usize,
     pub free_psram_after: usize,
     pub scratch_bytes: usize,
     pub records_base: u32,
     pub ledger_base: u32,
+}
+
+/// Why an unlock attempt did not produce a session.
+///
+/// Distinguishes "the device cannot try" from "the device tried and the PIN was wrong",
+/// because only the second consumes an attempt and only the second is the user's fault.
+#[derive(Debug)]
+pub enum UnlockFailure {
+    /// The Argon2id working set was never allocated, so no guess was made and no attempt
+    /// was consumed.
+    NoScratch,
+    Refused(UnlockError<FlashError, MacError>),
 }
 
 /// Why the storage stack could not be brought up at all. Distinct from a store that
@@ -109,7 +128,12 @@ pub enum BringUpError {
 /// The device's store, plus the session it may or may not be holding.
 pub struct Store {
     vault: Vault<PartitionFlash, DeviceHmac>,
-    scratch: PsramScratch,
+    /// The Argon2id working set. `None` between [`Store::mount`] and
+    /// [`Store::attach_scratch`], which is the window the boot counter is written in:
+    /// counting a boot needs the ledger and nothing else, and the ratified Q61(i) puts
+    /// that write before the self-test, which is before the panel exists to allocate
+    /// framebuffers against.
+    scratch: Option<PsramScratch>,
     session: Option<Session>,
     report: StoreReport,
     /// Wall clock of the last `tick`, so the auto-lock counts real elapsed milliseconds
@@ -128,12 +152,16 @@ impl core::fmt::Debug for Store {
 }
 
 impl Store {
-    /// Find the partitions, read the key state, take the working set, and mount.
+    /// Find the partitions, read the key state, and mount. Allocates nothing.
     ///
-    /// Call AFTER display bring-up: the free-PSRAM numbers in the report are only
-    /// meaningful with the framebuffers already standing, and proving the working set
-    /// fits alongside them is the whole question m4a asks of the heap.
-    pub fn bring_up() -> Result<Store, BringUpError> {
+    /// Call FIRST, before the boot self-test: the boot counter has to advance before any
+    /// check that can abort the boot, or a failure becomes a free way to power the device
+    /// on without being counted (ratified Q61(i)). Mounting reads flash and derives the
+    /// device keys; it takes no heap, so it can run before the panel exists.
+    ///
+    /// The Argon2id working set is deliberately NOT taken here - see
+    /// [`Store::attach_scratch`].
+    pub fn mount() -> Result<Store, BringUpError> {
         let layout = CONFIG.layout;
         let flash = PartitionFlash::open(
             layout.records_bytes(),
@@ -145,11 +173,6 @@ impl Store {
 
         let mac = DeviceHmac::detect();
         let provenance = mac.label();
-
-        let free_psram_before = free_psram();
-        let scratch = PsramScratch::allocate(&CONFIG.kdf).map_err(BringUpError::Scratch)?;
-        let free_psram_after = free_psram();
-        let scratch_bytes = scratch.bytes();
 
         let vault = Vault::mount(flash, mac, &CONFIG).map_err(|e| {
             // The mount error types are generic over both backends' error types, which
@@ -164,20 +187,43 @@ impl Store {
             provenance,
             state,
             boot_count: None,
-            free_psram_before,
-            free_psram_after,
-            scratch_bytes,
+            acknowledged_at: None,
+            free_psram_before: 0,
+            free_psram_after: 0,
+            scratch_bytes: 0,
             records_base,
             ledger_base,
         };
         Ok(Store {
             vault,
-            scratch,
+            scratch: None,
             session: None,
             report,
             last_tick: Instant::now(),
         })
     }
+
+    /// Take the Argon2id working set.
+    ///
+    /// Call AFTER display bring-up, and in that order for a reason the boot log then
+    /// prints as arithmetic: the free-PSRAM numbers are only meaningful with the
+    /// framebuffers already standing, and proving the working set fits ALONGSIDE them is
+    /// the whole question m4a asks of the heap. Splitting the mount from this allocation
+    /// is what lets the boot counter run early without moving that allocation earlier
+    /// too, which would have changed the answer to that question.
+    ///
+    /// Without it the device still boots and still counts, and every PIN operation
+    /// refuses with `no Argon2 working set` rather than the device pretending to work.
+    pub fn attach_scratch(&mut self) -> Result<(), BringUpError> {
+        let free_psram_before = free_psram();
+        let scratch = PsramScratch::allocate(&CONFIG.kdf).map_err(BringUpError::Scratch)?;
+        self.report.free_psram_before = free_psram_before;
+        self.report.free_psram_after = free_psram();
+        self.report.scratch_bytes = scratch.bytes();
+        self.scratch = Some(scratch);
+        Ok(())
+    }
+
 
     pub fn report(&self) -> &StoreReport {
         &self.report
@@ -200,6 +246,29 @@ impl Store {
         self.vault.failures()
     }
 
+    /// The wipe threshold in force, or `None` when the wipe is off. Always shown on the
+    /// screens that name it (Q37): it tells the user the consequence of their next
+    /// mistake and leaks nothing a coercer cannot get by trying one wrong PIN.
+    pub fn wipe_after(&self) -> Option<u8> {
+        let n = self.vault.policy().wipe_after;
+        if n == 0 {
+            None
+        } else {
+            Some(n)
+        }
+    }
+
+    /// The shortest PIN this store will accept, from the policy its format was written
+    /// with.
+    ///
+    /// Read rather than assumed, and handed to the UI, because the UI is what decides
+    /// whether Unlock is pressable: 0.2.0 shipped a screen carrying its own literal floor
+    /// of 6 against a store formatted at 4, so a provisioned device could type its whole
+    /// PIN and never enable the button. The store owns the number; every other layer asks.
+    pub fn min_pin_len(&self) -> u8 {
+        self.vault.policy().min_pin_len
+    }
+
     /// Count this boot in the ledger, BEFORE the self-test runs its verdict past the
     /// user (VERIFY.md 6, ratified Q61): a boot that ends on the failure screen is still
     /// a boot, and a failed self-test must not be a free way to avoid advancing the
@@ -217,7 +286,11 @@ impl Store {
         match self.vault.record_boot() {
             Ok(n) => {
                 self.report.boot_count = Some(n);
-                log::info!("store: boot counter advanced to {n}");
+                self.report.acknowledged_at = self.vault.acknowledged_at();
+                log::info!(
+                    "store: boot counter advanced to {n} (acknowledged at {:?})",
+                    self.report.acknowledged_at
+                );
             }
             Err(e) => {
                 // Surfaced, never swallowed. The counter failing is not a reason to
@@ -229,12 +302,60 @@ impl Store {
         }
     }
 
+    /// Write the boot-counter acknowledgement mark (VERIFY.md 6.3).
+    ///
+    /// Post-PIN only, and the check is here rather than only on the screen: a coercer who
+    /// can press the button erases the very gap the counter exists to show, so the write
+    /// is gated on a session existing and not on which screen asked.
+    pub fn acknowledge_boots(&mut self) -> Result<u64, String> {
+        if self.session.is_none() {
+            return Err(String::from("locked"));
+        }
+        let at = self.vault.acknowledge_boots().map_err(|e| format!("{e:?}"))?;
+        self.report.acknowledged_at = Some(at);
+        log::info!("store: boots acknowledged at {at}");
+        Ok(at)
+    }
+
+    /// The two anti-phishing words for a typed PIN prefix, as words.
+    ///
+    /// The derivation is `notyas-wallet`'s (device-bound, host-tested); the wordlist
+    /// lookup is here because the list lives in `notyas-core` and the sealing crate does
+    /// not depend on it. Costs no attempt-counter decrement, and answers for ANY prefix:
+    /// refusing an unreal one would turn the words into an oracle for prefix correctness.
+    pub fn anti_phishing_words(&mut self, prefix: &str) -> Result<[String; 2], String> {
+        let idx = self
+            .vault
+            .anti_phishing_words(prefix.as_bytes())
+            .map_err(|e| format!("{e:?}"))?;
+        let list = notyas_core::bip39::wordlist();
+        let word = |i: u16| {
+            list.get(i as usize).copied().map(String::from).ok_or("word index out of range")
+        };
+        Ok([word(idx[0])?, word(idx[1])?])
+    }
+
+    /// What the lock and PIN screens are allowed to know about this store.
+    ///
+    /// The mapping is one-way and lossy on purpose: `StoreStatus` cannot express a wallet
+    /// COUNT, so no pre-PIN surface can render one (ratified Q2(a)).
+    pub fn ui_status(&self) -> StoreStatus {
+        match self.vault.state() {
+            StoreState::Unprovisioned => StoreStatus::NotProvisioned,
+            StoreState::Blank | StoreState::Wiped { .. } => StoreStatus::Blank,
+            StoreState::Inconsistent(_) => StoreStatus::Unreadable,
+            StoreState::Formatted { .. } if self.session.is_some() => StoreStatus::Unlocked,
+            StoreState::Formatted { .. } => StoreStatus::Locked,
+        }
+    }
+
     /// Install the first PIN. Returns the measured milliseconds on success.
     pub fn format(&mut self, pin: &Pin, label: &[u8]) -> Result<u128, String> {
         let t0 = Instant::now();
+        let scratch = self.scratch.as_mut().ok_or("no Argon2 working set")?.borrow();
         let session = self
             .vault
-            .format(pin, label, self.scratch.borrow())
+            .format(pin, label, scratch)
             .map_err(|e| format!("{e:?}"))?;
         let ms = t0.elapsed().as_millis();
         self.adopt(session);
@@ -246,9 +367,10 @@ impl Store {
     ///
     /// Returns the measured milliseconds, which is the number m4a's exit gate asks for:
     /// the whole cost a user waits through between the last digit and an open device.
-    pub fn unlock(&mut self, pin: &Pin) -> Result<u128, UnlockError<FlashError, MacError>> {
+    pub fn unlock(&mut self, pin: &Pin) -> Result<u128, UnlockFailure> {
         let t0 = Instant::now();
-        let session = self.vault.unlock(pin, self.scratch.borrow())?;
+        let scratch = self.scratch.as_mut().ok_or(UnlockFailure::NoScratch)?.borrow();
+        let session = self.vault.unlock(pin, scratch).map_err(UnlockFailure::Refused)?;
         let ms = t0.elapsed().as_millis();
         self.adopt(session);
         Ok(ms)
@@ -295,10 +417,7 @@ impl Store {
 
     /// Milliseconds of idle time left before the auto-lock fires, for the UI.
     pub fn idle_remaining_ms(&self) -> Option<u32> {
-        match self.session.as_ref()?.liveness() {
-            Liveness::Live { idle_ms } => Some(AUTO_LOCK_MS.saturating_sub(idle_ms)),
-            Liveness::Expired => Some(0),
-        }
+        Some(self.session.as_ref()?.remaining_ms())
     }
 
     /// Seal `plaintext` into payload slot `index`. Requires an open session.
@@ -324,11 +443,119 @@ impl Store {
             .ok_or_else(|| format!("no payload slot {index}"))
     }
 
+    // -----------------------------------------------------------------------
+    // The registry class (0.2.0-m7)
+    //
+    // A multisig registration is a PUBLIC record - cosigner xpubs, a threshold and a name,
+    // no key material - and it gets its own slot class rather than a field inside a
+    // wallet's body for the reason ESP-SEAL.md 3.2 gave it one: the classes are sized
+    // separately (two sectors a side here, one for a payload), and the AEAD's associated
+    // data binds `slot_class`, so a registry record cannot be replayed into a payload slot
+    // or the other way round. It is sealed all the same, because the set of wallets a
+    // device is a member of is exactly the metadata a flash dump should not yield.
+    //
+    // These four methods are `write_payload`/`read_payload` for that class and nothing
+    // more: what the bytes mean is `crate::wallet::record`'s business, and this file stays
+    // the board's answer to where the flash is.
+    // -----------------------------------------------------------------------
+
+    /// Seal `plaintext` into registry slot `index`. Requires an open session.
+    pub fn write_registry(&mut self, index: u8, plaintext: &[u8]) -> Result<(), String> {
+        let slot = self.registry_slot(index)?;
+        let session = self.session.as_ref().ok_or("locked")?;
+        self.vault
+            .write(session, slot, plaintext)
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// Read registry slot `index` back. Requires an open session.
+    pub fn read_registry(&mut self, index: u8, out: &mut [u8]) -> Result<usize, String> {
+        let slot = self.registry_slot(index)?;
+        let session = self.session.as_ref().ok_or("locked")?;
+        self.vault
+            .read(session, slot, out)
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// Erase registry slot `index`. Requires an open session.
+    ///
+    /// The one destructive record operation this file publishes, and it is published for
+    /// the registry class alone. A registration is a PUBLIC record that the user can import
+    /// again from the coordinator that issued it, so erasing one costs a re-import; a
+    /// payload slot holds the only copy of somebody's words, and a delete path reachable
+    /// from a screen is not something to add to this file at the same time as the screen
+    /// that would call it.
+    ///
+    /// `Vault::clear` is what performs it, and under `Occupancy::AlwaysFilled` it REWRITES
+    /// the slot with device-derived filler rather than erasing it: leaving an erased-flash
+    /// signature where a registration used to be is the occupancy leak that mode exists to
+    /// close.
+    pub fn clear_registry(&mut self, index: u8) -> Result<(), String> {
+        let slot = self.registry_slot(index)?;
+        let session = self.session.as_ref().ok_or("locked")?;
+        self.vault
+            .clear(session, slot)
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// What payload slot `index` holds, as seen by this session's key.
+    ///
+    /// `Empty` covers both erased flash and the device-derived filler this store writes
+    /// under `Occupancy::AlwaysFilled`, which is what makes a caller able to ask "is this
+    /// slot free" without the answer leaking occupancy to anyone who has not proved a PIN.
+    pub fn payload_state(&mut self, index: u8) -> Result<SlotState, String> {
+        let slot = self.payload_slot(index)?;
+        let session = self.session.as_ref().ok_or("locked")?;
+        self.vault
+            .slot_state(session, slot)
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// What registry slot `index` holds, as seen by this session's key.
+    pub fn registry_state(&mut self, index: u8) -> Result<SlotState, String> {
+        let slot = self.registry_slot(index)?;
+        let session = self.session.as_ref().ok_or("locked")?;
+        self.vault
+            .slot_state(session, slot)
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    fn registry_slot(&self, index: u8) -> Result<SlotId, String> {
+        SlotId::new(SlotClass::Registry, index, &CONFIG.layout)
+            .ok_or_else(|| format!("no registry slot {index}"))
+    }
+
+    /// Payload slots this layout provides: how many wallets the device can hold.
+    pub const fn payload_slots() -> u8 {
+        LAYOUT.payload_slots
+    }
+
+    /// Registry slots this layout provides: how many multisig wallets can be registered.
+    pub const fn registry_slots() -> u8 {
+        LAYOUT.registry_slots
+    }
+
+    /// Largest record body a payload slot takes, side minus header, AEAD tag and length
+    /// prefix. The record encoder checks against this before anything is written, so a
+    /// wallet that will not fit is refused with a sentence about the record rather than
+    /// with `StorageError::Capacity`.
+    pub const fn max_payload_bytes() -> usize {
+        SlotClass::Payload.max_payload(LAYOUT) as usize
+    }
+
+    /// The same for a registry slot, which is two sectors a side.
+    pub const fn max_registry_bytes() -> usize {
+        SlotClass::Registry.max_payload(LAYOUT) as usize
+    }
+
     /// Re-seal every record of the open identity under a new PIN.
     pub fn change_pin(&mut self, new_pin: &Pin) -> Result<u128, String> {
         let session = self.session.take().ok_or("locked")?;
         let t0 = Instant::now();
-        match self.vault.change_pin(session, new_pin, self.scratch.borrow()) {
+        let Some(scratch) = self.scratch.as_mut().map(PsramScratch::borrow) else {
+            return Err(String::from("no Argon2 working set"));
+        };
+        match self.vault.change_pin(session, new_pin, scratch) {
             Ok(s) => {
                 let ms = t0.elapsed().as_millis();
                 self.adopt(s);
@@ -350,8 +577,8 @@ impl Store {
     }
 
     #[cfg(feature = "hil-console")]
-    pub fn scratch_mut(&mut self) -> &mut PsramScratch {
-        &mut self.scratch
+    pub fn scratch_mut(&mut self) -> Option<&mut PsramScratch> {
+        self.scratch.as_mut()
     }
 
     #[cfg(feature = "hil-console")]
