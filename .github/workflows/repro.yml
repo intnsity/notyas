@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# notyas - the reproducible firmware build, in CI.
+#
+# Permissively licensed with the container definition it drives: this workflow
+# and tools/repro/ are the copyable half of the recipe (MILESTONES 0.2.0-m12).
+#
+# Why this is a second workflow rather than a job in ci.yml: ci.yml is host-only,
+# runs on every push and finishes in minutes, and that property is worth keeping.
+# This one needs a multi-gigabyte container and tens of minutes per board, so it
+# runs on tags, on a schedule, and on pull requests that touch the things that
+# can change a firmware byte.
+#
+# What it proves, precisely: that the artifacts a stranger builds from this
+# source are the artifacts the maintainer published. It does that by building
+# each board twice, in deliberately different conditions, and comparing every
+# byte - a single build proves only that the build works.
+#
+# What it must never do: sign anything. The release key does not touch a hosted
+# runner (REPRODUCIBLE.md 6.3). CI computes hashes; a human signs them.
+
+name: repro
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "firmware/**"
+      - "crates/**"
+      - "tools/repro/**"
+      - "tools/ci/check-repro-pins.sh"
+      - "Cargo.lock"
+      - ".github/workflows/repro.yml"
+  schedule:
+    # Weekly, because reproducibility rots silently: a mutable base image, a
+    # yanked crate or a re-tagged component breaks it without anyone touching
+    # the repository. A build nobody runs is a claim nobody checks.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repro-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The cheap gate, first and separately: if the pins disagree with each other
+  # there is no point spending an hour discovering it downstream.
+  pins:
+    name: pins agree (no container)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Reproducible-build pins are consistent
+        run: bash tools/ci/check-repro-pins.sh
+
+  build:
+    name: reproduce ${{ matrix.board }}
+    needs: pins
+    runs-on: ubuntu-latest
+    # One board per runner. A GitHub-hosted runner has 14 GB of disk and the
+    # binding constraint is disk, not RAM or time: the IDF image unpacks to
+    # several GB and each board's tree adds the IDF C build, -Zbuild-std and
+    # secp256k1. Two board trees on one runner is how this job starts failing
+    # for a reason that looks like a reproducibility bug and is not.
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [waveshare-4b, elecrow-5]
+    steps:
+      # fetch-depth 0: the build reads the tag's committer date for
+      # SOURCE_DATE_EPOCH and refuses a dirty tree, and a shallow clone is
+      # exactly the ESP-IDF `git describe` trap REPRODUCIBLE.md item 9 records.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Free disk before pulling a multi-GB image
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+
+      - name: Build the release container
+        run: docker build -t notyas-repro -f tools/repro/Dockerfile .
+
+      # The double build is the gate. It varies the host checkout path, the
+      # container hostname, the umask, the CPU count and the wall clock, and it
+      # hands the second run a hostile environment (TZ, LC_ALL,
+      # SOURCE_DATE_EPOCH, RUSTFLAGS) that build.sh is supposed to discard. Then
+      # it compares every artifact byte for byte, including VERIFY.json.
+      - name: Build twice and compare every byte
+        run: bash tools/repro/check-repro.sh ${{ matrix.board }}
+
+      - name: Record the hashes in the job log
+        run: cat out/check-repro/a/${{ matrix.board }}/SHA256SUMS.txt
+
+      # Uploaded for the maintainer to compare against a local build before
+      # signing: the release rule is that CI's hashes and the maintainer's hashes
+      # must agree BEFORE anything is signed.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notyas-${{ matrix.board }}
+          path: out/check-repro/a/${{ matrix.board }}/
+          if-no-files-found: error

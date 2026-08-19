@@ -1,0 +1,67 @@
+# notyas reproducible build - the toolchain pin.
+#
+# Every version that can change a byte of the released image, in one file that
+# tools/repro/build.sh asserts against reality before it compiles anything. The
+# container image digest pins most of these already; recording them separately
+# is what turns "the image changed under us" from an invisible divergence into a
+# named build failure.
+#
+# Format: key = value, one per line, "#" comments, no quoting.
+#
+# A value of "pending" means the pin has not yet been read off the container on
+# this bench. build.sh records the observed value for every pending key and
+# REFUSES to produce release artifacts while any remain; pass --bootstrap for
+# the one run that fills them in, then paste the printed block over this file
+# and commit it. Pending is therefore a visible, self-clearing state rather than
+# a silent hole - the alternative, guessing the versions, would make the lock
+# assert a fiction.
+#
+# Verified on this bench, 2026-08-18, from the sources named:
+#   rustc_channel / rust_src        firmware/rust-toolchain.toml
+#   rustc_*                         rustc +nightly-2026-07-27 -vV
+#   cargo_version                   cargo +nightly-2026-07-27 -V
+#   ldproxy_version                 the installed host tool
+#   espflash_version                the installed host tool (espflash -V)
+#   idf_version                     firmware/.cargo/config.toml ESP_IDF_VERSION
+#   image_digest                    docs/plan-0.2.0/REPRODUCIBLE.md 3.2, observed 2026-08-17
+# Everything marked pending needs the first container run on a Linux host with
+# Docker, which this bench does not have.
+
+# --- the container -----------------------------------------------------------
+# The image is the pin for CMake, Ninja, Python and the RISC-V cross-compiler:
+# Espressif's own reproducible-builds page names those four as the residue
+# CONFIG_APP_REPRODUCIBLE_BUILD cannot control, and pinning the image is their
+# recommended remedy. Re-read the digest at release time and record it in the
+# release notes; a tag is mutable, a digest is not.
+image_ref = espressif/idf:v5.5.4
+image_digest = sha256:b9f2d6ea1c19e0c9f7959bdb74a9e3c775642f9d0f3b841937c5fa3363db892b
+
+# --- Rust --------------------------------------------------------------------
+# A channel name is a name resolved against a mutable server, so the commit hash
+# is the real pin. Under -Zbuild-std the standard library is compiled here, from
+# this toolchain's rust-src, so rustc identity is an input to every byte of the
+# image and not only to our own crates.
+rustc_channel = nightly-2026-07-27
+rustc_version = 1.99.0-nightly
+rustc_commit_hash = dc3f85158a955a87a6e4363af1fbe9cf2d063cce
+rustc_commit_date = 2026-07-26
+cargo_version = 1.99.0-nightly
+
+# --- host tools in the artifact path ------------------------------------------
+# ldproxy is the linker wrapper firmware/.cargo/config.toml names; espflash turns
+# the ELF into app.bin and the CSV into partition-table.bin, so it sits directly
+# in the artifact path (REPRODUCIBLE.md item 17).
+ldproxy_version = 0.3.5
+espflash_version = 4.5.0
+esptool_version = pending
+
+# --- ESP-IDF and its toolchain ------------------------------------------------
+# v5.5.5 is rejected on purpose: it backports struct fields that break
+# esp-idf-hal 0.46.2 (firmware/.cargo/config.toml records the two names).
+idf_version = v5.5.4
+idf_git_describe = pending
+gcc_version = pending
+clang_version = pending
+cmake_version = pending
+ninja_version = pending
+python_version = pending

@@ -157,8 +157,8 @@ this bench does today that would break a byte-comparison.
 
 **1. The source tree lives on a UNC share, the target dir is machine-local.
 [live problem]**
-`tools/build.ps1` sets `CARGO_TARGET_DIR` to `C:\nyt-ws` (Waveshare) or
-`C:\nyt-e5` (Elecrow) while the sources sit on a UNC network share
+`tools/build.ps1` sets `CARGO_TARGET_DIR` to `C:\nb\ws` (Waveshare) or
+`C:\nb\e5` (Elecrow) while the sources sit on a UNC network share
 (`\\<host>\<share>\...\notyas`). So a single build mixes two unrelated
 absolute path roots, one of them a host name and a share name. Both reach the
 binary: the source root through `file!()` in panic locations and DWARF, the
@@ -199,7 +199,7 @@ Check: `strings` grep; `readelf --debug-dump=info` shows `/IDF`, `/IDF_BUILD`,
 **5. `OUT_DIR` inside the generated esp-idf-sys bindings. [live problem]**
 esp-idf-sys generates `bindings.rs` into `OUT_DIR` and includes it with
 `include!(concat!(env!("OUT_DIR"), "/bindings.rs"))`. Any code generated there
-that can panic carries `C:\nyt-ws\...\out\bindings.rs` as its `file!()`. Our
+that can panic carries `C:\nb\ws\...\out\bindings.rs` as its `file!()`. Our
 `firmware/Cargo.toml` declares seven `bindings_header` entries, so this is a
 large generated surface, not a corner case.
 Fix: `trim-paths` remaps build output to `/cargo/build-dir`.
@@ -658,6 +658,7 @@ exists once per slug, and the m12 bit-identical rebuild matrix gains that slug:
 | `notyas-<ver>-<board>.elf` | unstripped release ELF; enables real triage (section 4.5) |
 | `notyas-<ver>-<board>-sdkconfig.txt` | merged sdkconfig actually used |
 | `notyas-<ver>-<board>-BUILDINFO.txt` | toolchain versions, env, input hashes |
+| `notyas-<ver>-<board>-VERIFY.json` | the verification manifest (ratified Q52, VERIFY.md 7.3): both digests and the length of each member of the trusted path, the composite `firmware_digest`, and the parsed partition table. Emitted by `tools/repro/build.sh`, produced and checked by `tools/repro/verify-manifest.py`, and reproduced like every other row - a published artifact that is not reproduced is a hole in the chain this milestone closes |
 | `notyas-<ver>-src.tar.gz` | `git archive` of the tag, deterministic packing |
 | `notyas-<ver>-components.tar.gz` | archival mirror of the managed components (item 19) |
 | `SHA256SUMS.txt` | over every file above |
@@ -680,12 +681,18 @@ it is ours to be accountable for.
 ```sh
 # 1. Get the source at the exact tag and check the tag's own signature.
 git clone https://github.com/<org>/notyas && cd notyas
-git tag -v v0.2.0                       # must show the fingerprint in section 5
+# NOT `git tag -v`: that prints the tag MESSAGE, which the signer chose. An impostor
+# can sign a tag whose message names the real fingerprint, and gpg will still say
+# "Good signature" for THEIR key. Read gpg's machine status stream instead, which the
+# signer cannot write into:
+git verify-tag --raw v0.2.0 2>&1   | grep -q '^\[GNUPG:\] VALIDSIG A1E953B25C6A623B77A1D5223AC4BBCFE51AB37D'   || { echo "tag is NOT signed by the notyas release key"; exit 1; }
 
 # 2. Get the published artifacts (release page) into ./published/
 
 # 3. Check the publisher's signature over the hash list.
-gpg --verify published/SHA256SUMS.txt.asc published/SHA256SUMS.txt
+# Again the status stream, not the human line: `gpg --verify` exits 0 for ANY key in
+# your keyring, and its "Good signature from intnsity" is reading a UID the signer chose.
+gpg --status-fd 1 --verify published/SHA256SUMS.txt.asc published/SHA256SUMS.txt 2>/dev/null   | grep -q '^\[GNUPG:\] VALIDSIG A1E953B25C6A623B77A1D5223AC4BBCFE51AB37D'   || { echo "hash list is NOT signed by the notyas release key"; exit 1; }
 
 # 4. Rebuild, exactly as in section 3.3.
 docker build -t notyas-repro:0.2.0 -f tools/repro/Dockerfile .
@@ -889,7 +896,7 @@ under (a) the *unsigned* image must also be published and be the object of the
 reproducibility claim (this is exactly how Jade frames it: the only expected
 difference between local and official is the appended signature block).
 
-### 5.3 VERIFYING.md outline (repo root, aimed at a non-expert)
+### 5.3 VERIFYING.md outline (`docs/VERIFYING.md`, aimed at a non-expert)
 
 Written for someone who has never used GPG, on the assumption they will read
 three screens and no more. Ordered by effort, with the honest value of each
@@ -1027,7 +1034,7 @@ publication.
 1. **M-REPRO-1 - inventory and baseline.** Build both boards twice on this bench
    with today's toolchain; `cmp` the outputs. Record what already differs. Gate:
    a written baseline in the tracking issue (expected: differs, with a `strings`
-   grep naming the UNC path and `C:\nyt-*`).
+   grep naming the UNC path and `C:\nb\nyt-*`).
 2. **M-REPRO-2 - sdkconfig pins.** Add to `firmware/sdkconfig.base.defaults`:
    `CONFIG_APP_REPRODUCIBLE_BUILD=y`, `CONFIG_APP_PROJECT_VER_FROM_CONFIG=y`,
    `CONFIG_APP_PROJECT_VER="0.2.0"`. Gate: both boards still boot and the Verify
@@ -1062,8 +1069,9 @@ publication.
    script). Gate: the value on screen matches a documented one-line command a
    verifier can run against the published source. Note this is a firmware
    change - it belongs to the firmware owner's queue, not to this document's.
-9. **M-REPRO-9 - VERIFYING.md.** Write it to the section 5.3 outline, at the
-   repository root. Gate: someone who has not used GPG completes levels 1-2
+9. **M-REPRO-9 - VERIFYING.md.** Write it to the section 5.3 outline, as
+   `docs/VERIFYING.md` - the path `tools/release.sh` requires and
+   `tools/ci/check-repro-pins.sh` reads. Gate: someone who has not used GPG completes levels 1-2
    unaided; the level-3 timing statement matches the measured CI numbers.
 10. **M-REPRO-10 - key publication and hygiene.** Key in `docs/keys/`, on
     keys.openpgp.org, and on the maintainer profile; resolve the hardware-token
