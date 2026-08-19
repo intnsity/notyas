@@ -1,0 +1,101 @@
+#!/bin/sh
+# pre-commit: refuse any commit that would put an identity other than the owner's into
+# this repository's history, or tool attribution into its contents.
+#
+# WHY THIS EXISTS AS A HOOK AND NOT ONLY AS A CI CHECK. This repository was deleted and
+# recreated on 2026-08-19 because a tool identity appeared in GitHub's contributor list.
+# GitHub builds that list from the AUTHOR and CO-AUTHOR fields of commits, not from the
+# prose of the message, and it does so on push - by the time CI has an opinion, the
+# contributor entry already exists and cannot be removed by a later commit. Rewriting
+# history is the only remedy, and on a published branch that is a worse event than the
+# one it fixes. So the check has to run BEFORE the commit object exists, which means a
+# hook.
+#
+# A CI check is still worth having and still runs (tools/ci/check-commit-messages.sh):
+# a hook lives in .git and travels with nobody, so it protects this working copy and
+# makes no promise about any other. The two are not redundant, they cover different
+# failure modes - this one catches the mistake, CI catches the missing hook.
+#
+# Install with tools\git-hooks\install-git-hooks.ps1. Bypassing with --no-verify is
+# possible and is exactly the thing not to do here.
+
+set -e
+
+fail() {
+    echo ""
+    echo "COMMIT REFUSED - attribution policy"
+    echo ""
+    printf '%s\n' "$1"
+    echo ""
+    echo "  intnsity is the sole author of this repository. See the header of"
+    echo "  tools/git-hooks/pre-commit for why this is enforced before the commit"
+    echo "  object exists rather than afterwards."
+    echo ""
+    exit 1
+}
+
+# --- 1. Identity ---------------------------------------------------------------------
+#
+# Checked here rather than trusted from repo config, because the value that lands in the
+# commit is whatever git resolves at commit time - a repo-local setting, a global one, or
+# an environment override. Reading the resolved values is the only way to know.
+name=$(git var GIT_AUTHOR_IDENT | sed 's/ <.*//')
+mail=$(git var GIT_AUTHOR_IDENT | sed 's/.*<\(.*\)>.*/\1/')
+cname=$(git var GIT_COMMITTER_IDENT | sed 's/ <.*//')
+cmail=$(git var GIT_COMMITTER_IDENT | sed 's/.*<\(.*\)>.*/\1/')
+
+identity_ok() {
+    case "$1 <$2>" in
+        "intnsity <at@intnsity.com>") return 0 ;;
+        "intnsity <85849955+intnsity@users.noreply.github.com>") return 0 ;;
+        "GitHub <noreply@github.com>") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+identity_ok "$name" "$mail" || fail "  author:    $name <$mail>
+  This is not an allowed identity. Note that a correct EMAIL with a different
+  NAME still fails: GitHub keys contributors on the account, but the name is
+  what a reader of the log sees. Fix with:
+    git config user.name intnsity
+    git config user.email at@intnsity.com"
+
+identity_ok "$cname" "$cmail" || fail "  committer: $cname <$cmail>
+  The committer field is separate from the author field and GitHub reads both.
+  Fix with the same two git config lines."
+
+# --- 2. Tool attribution in the staged content ---------------------------------------
+#
+# Only the staged diff is scanned, not the whole tree: this hook must be fast enough that
+# nobody is tempted to --no-verify past it, and anything already committed is history's
+# problem rather than this commit's. The patterns are the ones that actually appear in
+# generated output; "assistant" and "model" are deliberately NOT here because they are
+# ordinary words in a codebase that has a UI and a threat model.
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+if [ -n "$staged" ]; then
+    hits=""
+    for f in $staged; do
+        # Skip the two hooks and the CI checker: all three must NAME the forbidden
+        # strings in order to look for them, and a check that cannot describe itself is
+        # worse than the one false positive it avoids.
+        case "$f" in
+            tools/git-hooks/pre-commit|tools/git-hooks/commit-msg|tools/ci/check-commit-messages.sh) continue ;;
+        esac
+        [ -f "$f" ] || continue
+        if git show ":$f" 2>/dev/null | grep -nEi \
+            'co-authored-by|claude|anthropic|generated with|ai-generated|\bLLM\b' >/dev/null 2>&1
+        then
+            hits="$hits
+  $f:
+$(git show ":$f" | grep -nEi 'co-authored-by|claude|anthropic|generated with|ai-generated|\bLLM\b' | head -3 | sed 's/^/      /')"
+        fi
+    done
+    [ -z "$hits" ] || fail "  Tool attribution found in staged content:$hits"
+fi
+
+# --- 3. Tool attribution in the message ----------------------------------------------
+#
+# The message is checked in commit-msg rather than here, because at pre-commit time the
+# message may not exist yet (git commit with no -m opens the editor afterwards).
+
+exit 0

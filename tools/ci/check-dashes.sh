@@ -24,7 +24,14 @@ EN=$(printf '\xe2\x80\x93') # U+2013 EN DASH
 
 # `|| true`: grep exits 1 when nothing matches, which is the success case here,
 # and xargs propagates that. A real error would show up as output on stderr.
-HITS=$(git ls-files -z | xargs -0 grep -nIHF -e "$EM" -e "$EN" 2>/dev/null || true)
+# Tracked AND untracked-but-not-ignored. `git ls-files` alone lists only tracked
+# files, so every newly created file was invisible to this gate until it was
+# committed - which is exactly backwards, since a gate exists to catch a violation
+# BEFORE it lands. Measured on 2026-08-18: of fifteen files a working session
+# created or modified, one was tracked and fourteen were never opened, while the
+# gate reported OK. --exclude-standard keeps .gitignore honoured so build output
+# is still skipped.
+HITS=$({ git ls-files -z; git ls-files -z --others --exclude-standard; } | xargs -0 grep -nIHF -e "$EM" -e "$EN" 2>/dev/null || true)
 
 if [ -n "$HITS" ]; then
     echo "DASH CHARACTER VIOLATION"
@@ -47,5 +54,5 @@ EOF
     exit 1
 fi
 
-echo "check-dashes: OK - no em dash or en dash in any tracked text file"
+echo "check-dashes: OK - no em dash or en dash in any tracked or untracked text file"
 exit 0

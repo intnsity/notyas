@@ -53,9 +53,55 @@ fi
 COUNT=0
 VIOLATIONS=0
 
+# Identities permitted to author or commit here: the owner, in the two spellings
+# git and GitHub use for him, plus GitHub's own web-UI committer, which is what
+# signs a commit made through the web editor or the merge button.
+#
+# This list exists because the message check alone is NOT sufficient, and the gap
+# was found the expensive way. A commit can carry a perfectly clean message and
+# still be AUTHORED by a tool identity, and GitHub builds its contributor list
+# from the author and co-author fields rather than from the prose. Checking the
+# words without checking the name leaves the exact hole that matters.
+ALLOWED_IDENTITIES=(
+    "intnsity <at@intnsity.com>"
+    "intnsity <85849955+intnsity@users.noreply.github.com>"
+    "GitHub <noreply@github.com>"
+)
+
+identity_allowed() {
+    local who="$1"
+    local ok
+    for ok in "${ALLOWED_IDENTITIES[@]}"; do
+        [ "$who" = "$ok" ] && return 0
+    done
+    return 1
+}
+
 for sha in $COMMITS; do
     COUNT=$((COUNT + 1))
     message=$(git log -1 --format=%B "$sha")
+
+    # Authorship is checked per commit for the same reason the message is: a
+    # later commit cannot correct an earlier one's author field.
+    author=$(git log -1 --format="%an <%ae>" "$sha")
+    committer=$(git log -1 --format="%cn <%ce>" "$sha")
+    for role_and_who in "author:$author" "committer:$committer"; do
+        role="${role_and_who%%:*}"
+        who="${role_and_who#*:}"
+        if ! identity_allowed "$who"; then
+            VIOLATIONS=$((VIOLATIONS + 1))
+            echo
+            echo "COMMIT IDENTITY POLICY VIOLATION"
+            echo "  commit:    $(git log -1 --format="%h %s" "$sha")"
+            echo "  $role:    $who"
+            echo "  allowed:   ${ALLOWED_IDENTITIES[*]}"
+            echo
+            echo "  Fix by rewriting that commit's identity, not by a follow-up:"
+            echo "    git rebase -i <commit-before-it>"
+            echo "    git commit --amend --author=\"intnsity <at@intnsity.com>\" --no-edit"
+            echo "    git push --force-with-lease"
+        fi
+    done
     for hex in "${TOKENS[@]}"; do
         token=$(unhex "$hex")
         if printf '%s' "$message" | grep -qiF -- "$token"; then
@@ -101,5 +147,5 @@ EOF
     exit 1
 fi
 
-echo "check-commit-messages: OK - ${COUNT} commit(s) in '${RANGE}', no forbidden token"
+echo "check-commit-messages: OK - ${COUNT} commit(s) in '${RANGE}', no forbidden token, no foreign identity"
 exit 0

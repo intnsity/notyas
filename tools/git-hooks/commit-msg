@@ -1,0 +1,39 @@
+#!/bin/sh
+# commit-msg: refuse a commit message that attributes the work to anything but the owner.
+#
+# Separate from pre-commit because the message does not reliably exist yet at pre-commit
+# time - `git commit` with no -m opens the editor after pre-commit has already run and
+# passed. This hook receives the finished message file as $1, which is the only point at
+# which the text is known.
+#
+# The trailer is the one that matters. GitHub reads `Co-Authored-By:` and adds that
+# identity to the repository's contributor list, which is how a tool identity ended up
+# there once before and cost this repository a deletion and a recreation. The prose
+# patterns are a weaker net for the same intent.
+#
+# Install with tools\git-hooks\install-git-hooks.ps1.
+
+msg_file="$1"
+[ -f "$msg_file" ] || exit 0
+
+# Comment lines are git's own scaffolding and are stripped before the message is stored,
+# so scanning them would fail commits over text that never lands in history.
+body=$(grep -v '^#' "$msg_file")
+
+hits=$(printf '%s\n' "$body" | grep -nEi \
+    'co-authored-by|claude|anthropic|generated with|ai-generated|\bLLM\b' || true)
+
+if [ -n "$hits" ]; then
+    echo ""
+    echo "COMMIT REFUSED - attribution policy (message)"
+    echo ""
+    printf '%s\n' "$hits" | sed 's/^/      /'
+    echo ""
+    echo "  intnsity is the sole author of this repository. A Co-Authored-By trailer is"
+    echo "  the specific failure that matters: GitHub builds its contributor list from"
+    echo "  that field on push, and no later commit can remove the entry it creates."
+    echo ""
+    exit 1
+fi
+
+exit 0
