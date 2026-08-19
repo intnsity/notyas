@@ -1,0 +1,9 @@
+# The shipped shape. Secure Boot v2 and flash encryption are deferred (Q32, confirmed by
+# Q63), so the options are absent - and where a reader might expect them, they are named
+# as not set rather than left to inference. A commented option is not an enabled one, and
+# the detector has to know the difference.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+CONFIG_APP_REPRODUCIBLE_BUILD=y
+# CONFIG_SECURE_BOOT is not set
+# CONFIG_SECURE_FLASH_ENC_ENABLED is not set

@@ -12,10 +12,12 @@
 #   reqwest, hyper, http, tokio,         - invariant 1 (no radio/network stack)
 #   mio, socket2, libsqlite3-sys        - invariant 1 (no I/O surface)
 #
-# The firmware crate (std on ESP-IDF) is excluded from the no-std invariant
-# but still checked for RNG/networking crates: the firmware calls into the
-# crypto crates and owns hardware, but must never pull a random source or a
-# network stack into the image.
+# The firmware crate (std on ESP-IDF) is excluded from the no_std invariant but is
+# checked for RNG/networking crates exactly as every other device-image package is: it
+# calls into the crypto crates and owns the hardware, and it is the artefact that ships,
+# so a random source or a network stack reaching it is the failure this whole invariant
+# is about. Its legitimate host-side build tooling is separated out by dependency EDGE
+# KIND rather than by crate name - see the per-package section at the bottom.
 #
 # Exit 0 = clean, 1 = violation found.
 
@@ -26,21 +28,53 @@ cd "$(dirname "$0")/.."
 # Crates that must never appear as a RUNTIME dependency. Build-only deps
 # (embuild, cc, bindgen - pulled by esp-idf-sys at build time, never linked
 # into the firmware image) are exempt: they run on the host during `cargo
-# build`, not on the device. We approximate this by checking the notyas-core
-# and notyas-ui lockfiles strictly (they are no_std, no build-deps, no host
-# code), and the firmware lockfile with build-dep exemptions.
+# build`, not on the device.
+#
+# The script draws that runtime/build line twice, because the two data sources it has
+# can see different things:
+#
+#   the LOCKFILE arm       one flat resolution of the whole workspace, no edge kinds.
+#   (first loop below)     Networking and closed-crypto crates are banned outright;
+#                          RNG crates are banned unless the only packages naming them
+#                          are the host-side build tools listed in BUILD_DEP_EXEMPT.
+#                          It is the only arm that can see a stray Cargo.lock outside
+#                          the workspace, and the only one that has to trust a name.
+#
+#   the PER-PACKAGE arm    cargo's resolved graph per package, walked over normal
+#   (bottom of the file)   edges only, for every target. It knows which package pulled
+#                          what and by which kind of edge, so it needs no exemptions
+#                          and grants none. This is the arm that covers the firmware.
 BANNED_RNG="rand rand_core getrandom"
 BANNED_NET="ring reqwest hyper http mio socket2 libsqlite3-sys"
 BANNED_ALL="$BANNED_RNG $BANNED_NET"
 
 # Crates that pull banned deps only as build-dependencies (host-side tools).
 # Their Cargo.lock entries are expected; we do not flag them.
+#
+# This list is a concession to the LOCKFILE arm and to nothing else. A lockfile is a
+# flat resolution with no edge kinds recorded in it, so the only way it can tell
+# embuild's host-side tempfile from a device-side one is by name - and a name is a weak
+# thing to hang an invariant on, because exempting it here exempts it EVERYWHERE at
+# once. The per-package arm at the bottom of this script does not use this list: there
+# the distinction is structural, and no crate is trusted by name.
 BUILD_DEP_EXEMPT="embuild tempfile getrandom"
 
-# The crates that link into the device image and are no_std by contract. Their
-# dependency SUBTREES admit no exemption at all - see the strict section at the
-# bottom of this script for why the rule lives there rather than here.
-STRICT_PACKAGES="notyas-core notyas-ui notyas-fonts notyas-wallet"
+# The packages that link into the device image. Their dependency SUBTREES admit no
+# exemption at all - see the per-package section at the bottom of this script for how
+# the subtree is read and why the rule lives there rather than here.
+#
+# notyas-firmware IS the device image and belongs in this list before any of the others.
+# It was missing until 0.2.0, which left the only edge-aware arm of this gate covering
+# the libraries and not the thing that ships: adding `getrandom` to the firmware's
+# [dependencies] was a one-line manifest edit that resolved, linked, and passed this
+# check - because the lockfile arm above sees only that getrandom is SOMEWHERE in the
+# lockfile (it always is, under embuild) and cannot see who pulled it. On ESP-IDF that
+# crate resolves to the platform entropy source, i.e. the P4 TRNG that SECURITY.md
+# invariant 3 exists to keep out of a seed, and the reason seeds come from dice.
+#
+# crates/esp-idf-hmac is not named here because it is a normal dependency of the
+# firmware, so it is walked as part of the firmware's own subtree.
+IMAGE_PACKAGES="notyas-core notyas-ui notyas-fonts notyas-wallet notyas-firmware"
 
 # Find all Cargo.lock files (workspace + any stragglers).
 # -prune, not -not -path: the filter form still DESCENDS into every pruned
@@ -113,25 +147,51 @@ for lock in $LOCKS; do
         done
 done
 
-# --- strict: the crates that link into the device image ----------------------
+# --- strict: the packages that link into the device image --------------------
 #
-# notyas-core, notyas-ui and notyas-fonts are no_std by contract and carry no
-# build dependencies, so nothing in their subtrees has a host-only excuse: ANY
-# banned crate anywhere under them is a violation, full stop. The subtree is
-# read from cargo rather than from the lockfile because the lockfile is one flat
-# resolution of the whole workspace - it cannot tell which package pulled what,
-# which is precisely how a `rand` reaching the crypto core would hide behind a
+# ANY banned crate reachable from one of these by a normal dependency edge is a
+# violation, full stop, with no exemption of any kind. The subtree is read from cargo
+# rather than from the lockfile because the lockfile is one flat resolution of the whole
+# workspace - it cannot tell which package pulled what, which is precisely how a `rand`
+# reaching the crypto core, or a `getrandom` reaching the firmware, would hide behind a
 # host tool's exemption above.
 #
-# The default feature set is used deliberately: it is the set the firmware links
-# (notyas-core's `qr`, for instance), so it is the set the invariant is about.
+# Three properties of the query carry the meaning of "links into the device image", and
+# each one is load-bearing:
+#
+#   --edges normal    Build-dependencies and dev-dependencies are host code: they run on
+#                     the machine doing the build and are never linked into the
+#                     artefact. This is what makes the firmware checkable at all - it
+#                     carries embuild (-> tempfile -> getrandom) as a build-dependency
+#                     by necessity - and it draws that line STRUCTURALLY, from the edge
+#                     kind, instead of trusting the crate names in BUILD_DEP_EXEMPT. A
+#                     banned crate that moves from [build-dependencies] to
+#                     [dependencies] therefore starts failing here, which is the whole
+#                     distinction this gate has to make. Proc-macro crates deliberately
+#                     stay in scope: they do not link into the image, but they EMIT the
+#                     code that does, and an RNG on the build machine is a
+#                     reproducibility hazard - invariant 3's other half - as much as a
+#                     seed one.
+#   --target all      Otherwise cargo answers for the runner's own triple, and a
+#                     dependency declared [target.'cfg(...)'.dependencies] for
+#                     riscv32imafc-esp-espidf - the form crates/esp-idf-hmac uses - is
+#                     invisible on an x86 CI runner while shipping on the device.
+#   default features  The set the firmware actually links (notyas-core's `qr`; NOT
+#                     notyas-wallet's `testkit`, nor the firmware's own `measure`,
+#                     `hil-console` or `unsafe-emulated-key`) is the set the invariant
+#                     is about. --all-features would report on a graph nobody ships.
+#
+# tools/ci/check-supply-chain.sh walks the same subtrees for the same reason and adds
+# provenance and checksum assertions this script does not make. The overlap is
+# deliberate: this file is the check SECURITY.md's invariant text points at, so it has
+# to stand on its own rather than on a sibling script being wired into CI.
 if ! command -v cargo >/dev/null 2>&1; then
     echo "VIOLATION: cargo not found - the per-crate strict check cannot run, and a"
     echo "           security gate that skips silently is worse than no gate at all"
     VIOLATIONS=$((VIOLATIONS + 1))
 else
-    for pkg in $STRICT_PACKAGES; do
-        if ! TREE=$(cargo tree --locked --package "$pkg" --edges normal --prefix none 2>&1); then
+    for pkg in $IMAGE_PACKAGES; do
+        if ! TREE=$(cargo tree --locked --package "$pkg" --edges normal --prefix none --target all 2>&1); then
             echo "VIOLATION: cannot resolve ${pkg}'s dependency tree:"
             echo "$TREE" | sed 's/^/           /'
             VIOLATIONS=$((VIOLATIONS + 1))
@@ -140,7 +200,8 @@ else
         for crate in $BANNED_ALL; do
             if printf '%s\n' "$TREE" | grep -q "^${crate} v"; then
                 echo "VIOLATION: banned crate '${crate}' in ${pkg}'s dependency tree"
-                echo "           (no_std crate that links into the device image - no exemptions)"
+                echo "           (links into the device image; build-dependencies are already"
+                echo "            excluded, so this is a runtime edge and there is no exemption)"
                 printf '%s\n' "$TREE" | grep -n "^${crate} v" | sed 's/^/           /'
                 VIOLATIONS=$((VIOLATIONS + 1))
             fi

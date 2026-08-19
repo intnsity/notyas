@@ -1,14 +1,38 @@
-# notyas CI - host-only.
+# notyas CI - the host tree, plus every firmware check that runs without ESP-IDF.
 #
-# There is deliberately no firmware build here. Building the ESP32-P4 image needs
-# ESP-IDF v5.5.4, a pinned nightly, -Zbuild-std and a multi-GB toolchain download;
-# reproducing that in CI would be slow, fragile, and would still not prove anything
-# the hardware bring-up log does not already record. What CI *can* prove cheaply is
-# that the portable half of the tree is correct: every host crate passes its vector
-# suites and stays lint-clean, the crypto core and the UI still compile for a
-# bare-metal no_std target, no banned crate has crept into the dependency graph,
-# the committed screenshots are what the UI renders today, and the repository's
-# own hygiene rules (sole authorship, ASCII hyphens) hold over what was pushed.
+# THERE IS NO FIRMWARE BUILD HERE, and that is a limitation rather than a design.
+# Building the ESP32-P4 image needs ESP-IDF v5.5.4, the nightly pinned in
+# firmware/rust-toolchain.toml, -Zbuild-std, a multi-GB toolchain download and several
+# fetches from the ESP component registry. On a hosted runner that is a long job whose
+# red builds would mostly be upstream outages rather than our defects, so the image is
+# built by tools/build.ps1 on a maintainer's machine and by the reproducible container
+# in .github/workflows/repro.yml instead.
+#
+# What that costs is written down here rather than left to be inferred:
+#
+#   NOT VERIFIED BY THIS FILE
+#     * that firmware/src compiles at all for riscv32imafc-esp-espidf. A push that
+#       breaks the firmware build is caught by a person, not by CI.
+#     * anything about a LINKED IMAGE. That means tools/ci/check-release-symbols.sh
+#       (Q41's only actual evidence - it reads symbols out of an ELF) and the image
+#       tier of tools/ci/check-airgap.sh cannot run here. Both are release gates,
+#       driven by tools/release.sh against a real build, and the release is where the
+#       claim about the shipped artefact is made.
+#
+#   VERIFIED BY THIS FILE
+#     * the two build-script refusals that keep the HIL console and the emulated
+#       device key out of a product image - executed, not assumed (`firmware_fences`).
+#       Until 0.2.0 nothing automated had ever run them.
+#     * every firmware check that reads sources rather than artefacts: the airgap
+#       source tier, and the dependency-graph invariants over the firmware's own
+#       runtime subtree.
+#
+# What CI proves about the rest of the tree is unchanged: every host crate passes its
+# vector suites and stays lint-clean, the crypto core and the UI still compile for a
+# bare-metal no_std target, no banned crate has crept into the dependency graph, no
+# dependency carries a published advisory, the committed screenshots are what the UI
+# renders today, and the repository's own hygiene rules (sole authorship, ASCII
+# hyphens) hold over what was pushed.
 #
 # Toolchain: the runner's preinstalled stable Rust. The crates declare
 # rust-version = 1.85; the firmware's nightly pin (firmware/README.md) is a
@@ -57,6 +81,14 @@ jobs:
       # testing something other than the release.
       - name: Test every host crate
         run: cargo test --locked
+      # Key material must not survive in freed heap. Run apart from the suite above:
+      # the residue tests share process-global allocator statics and cargo runs them
+      # on parallel threads in one binary, where a sibling resetting the instrument
+      # mid-window makes a test count nothing and PASS while the leak it exists to
+      # catch is present. A security test that can go green for the wrong reason is
+      # worse than no test.
+      - name: Heap residue, measured one test at a time
+        run: bash tools/ci/check-heap-residue.sh
 
       # Same reasoning for the lint pass, and `-- -D warnings` rather than a
       # global RUSTFLAGS: a warning in a third-party dependency is not ours to
@@ -135,6 +167,65 @@ jobs:
       - name: Run build-graph check
         run: bash tools/build-graph-check.sh
 
+      # The same invariant approached from the other side: where every crate came
+      # from, that each carries a checksum, and that no [patch]/[replace]/git source
+      # substitutes one. It also re-walks the runtime subtree of every package that
+      # links into the image. Two gates over one invariant is deliberate - this one
+      # fails for supply-chain reasons and the one above for graph-content reasons,
+      # and a reader should not have to work out which half broke.
+      - name: Dependency provenance and integrity
+        run: bash tools/ci/check-supply-chain.sh
+
+  firmware_fences:
+    name: firmware build fences (Q41, ESP-SEAL 6.4 fence 2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # firmware/build.rs refuses `hil-console` and `unsafe-emulated-key` in an image
+      # built without debug assertions. Those two panics only execute inside a full
+      # ESP-IDF firmware build, which this workflow does not do - so the one fence that
+      # stops a HIL-console artefact EXISTING had never been run by any automated
+      # process, while the console behind it grew the ability to sign a transaction
+      # over the UART with no PIN. check-hil-fence.sh compiles that build script
+      # against a stub of the single embuild call it makes and runs it directly, both
+      # directions, in about a second and with no ESP-IDF and no nightly.
+      - name: Build-script fences refuse a product image
+        run: bash tools/ci/check-hil-fence.sh
+
+      # The source tier of the airgap gate: no radio component in the ESP-IDF component
+      # list, no sdkconfig default that turns one on, the kill GPIO driven before any
+      # peripheral. It reads firmware sources only, so it runs anywhere. Its image tier
+      # cannot run here (see the header) and the script says so loudly rather than
+      # reporting a pass it did not earn.
+      - name: Airgap, source tier (SECURITY.md invariant 1)
+        run: bash tools/ci/check-airgap.sh --source-only
+
+  advisories:
+    name: RustSec advisory database
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Pinned, and installed from crates.io rather than through a marketplace action:
+      # a third-party action is code from outside this repository running with the
+      # workflow's token, which is a poor trade for saving a few minutes on the one job
+      # whose whole purpose is supply-chain hygiene. --locked builds it from its own
+      # committed lockfile. Bump this pin deliberately; tools/ci/check-advisories.sh
+      # asserts a minimum version, because an older cargo-deny would silently skip the
+      # parts of tools/ci/deny.toml it does not understand.
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny --version 0.20.2
+
+      # The only check in this workflow whose answer comes from outside the tree: a
+      # memory-safety advisory against argon2, chacha20poly1305, sha2, subtle, zeroize,
+      # bitcoin or secp256k1 changes nothing about what any other gate prints. It needs
+      # network access for the advisory database and the crates.io index, and it FAILS
+      # rather than skips when it cannot reach them - policy and reasoning in
+      # tools/ci/deny.toml.
+      - name: Dependency graph against the RustSec advisory database
+        run: bash tools/ci/check-advisories.sh
+
   hygiene:
     name: repository hygiene (authorship, dashes)
     runs-on: ubuntu-latest
@@ -175,7 +266,101 @@ jobs:
           fi
           echo "range: $range"
           bash tools/ci/check-commit-messages.sh "$range"
+      # And prove that gate can FAIL. A gate nobody has watched refuse is a gate
+      # nobody knows the shape of: this one is the last line between a tool identity
+      # and GitHub's contributor list, which is built from author and co-author fields
+      # on push and cannot be undone by a later commit. 21 fixture repos, each built
+      # under mktemp and torn down, each aiming the REAL gate at a known-bad commit.
+      - name: The commit identity gate rejects a foreign author
+        run: bash tools/ci/selftest-commit-identity.sh
 
       # ASCII hyphens only, in every tracked text file.
       - name: No em dash or en dash in the tree
         run: bash tools/ci/check-dashes.sh
+      # The tree still matches the answers the owner ratified.
+      #
+      # This gate existed with zero references in ci.yml, repro.yml, release.sh or
+      # any hook - 43 KB of assertions that fired only when somebody typed its name,
+      # which is precisely the failure a gate exists to prevent. It had five real
+      # violations sitting in it when it was finally run by hand, including a
+      # superseded PIN floor in three plan documents and a release identity naming a
+      # retired key. Wired here so a ratified answer and the tree cannot drift apart
+      # silently again.
+      - name: The tree matches the ratified decisions
+        run: bash tools/ci/check-ratified.sh
+
+      # The reproducibility claim rests on a set of exact versions written in
+      # four files that must agree: firmware/rust-toolchain.toml,
+      # firmware/.cargo/config.toml, tools/repro/Dockerfile and
+      # tools/repro/toolchain.lock. Nothing stops them drifting apart, and drift
+      # surfaces as a mismatched release hash weeks later rather than as a red
+      # build now. Cheap enough to run here rather than only in the container
+      # workflow: no Docker, no ESP-IDF, no nightly. It also runs the manifest
+      # tool's own test suite, which exercises the image parser and the
+      # firmware_digest construction against synthetic images.
+      - name: Reproducible-build pins are consistent
+        run: bash tools/ci/check-repro-pins.sh
+
+  xverify:
+    name: third-party cross-check (bitcoin core + embit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The job installs the oracles rather than tolerating their absence, and
+      # that is the whole point of it existing. tools/ci/check-xverify.sh is
+      # deliberately forgiving on a developer's machine - making the tree
+      # unbuildable for anyone without a Bitcoin node would end with somebody
+      # deleting the gate - so CI has to be the lane where "we could not check"
+      # is not an available answer. It runs with --require.
+      #
+      # The cost of that choice, stated rather than assumed: this job goes red
+      # if bitcoincore.org cannot be reached. It is a separate job, so a network
+      # blip fails only this gate and masks nothing else, and the fix is a
+      # re-run. A cross-check that could be silently absent would be worth less
+      # than that inconvenience is worth avoiding.
+      #
+      # Pinned by version AND by digest: an unpinned oracle is an oracle
+      # somebody else controls. Same rule tools/ci/check-supply-chain.sh applies
+      # to every crate in the graph.
+      - name: Install Bitcoin Core 29.4
+        run: |
+          set -eu
+          version=29.4
+          sha=e15bff6f6d21a315c4af25d2e8ae933a22bd51e924e0e90ab0474e1e11516331
+          file=bitcoin-${version}-x86_64-linux-gnu.tar.gz
+          curl -sS --retry 5 --retry-all-errors --max-time 300 -O \
+            "https://bitcoincore.org/bin/bitcoin-core-${version}/${file}"
+          echo "${sha}  ${file}" | sha256sum -c -
+          tar xzf "${file}"
+          echo "${PWD}/bitcoin-${version}/bin" >> "$GITHUB_PATH"
+
+      # setup-python rather than the image's system interpreter: recent Ubuntu
+      # images mark the system Python as externally managed (PEP 668) and refuse
+      # a bare pip install into it.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install embit
+        run: python3 -m pip install --disable-pip-version-check embit
+
+      - name: Versions
+        run: |
+          bitcoind -version | head -1
+          python3 -c "import embit; print('embit ok')"
+
+      # --require: on this runner the oracles are present, so an absence here is
+      # a real failure of the gate rather than a missing tool.
+      - name: Cross-check every derivation and signature against both oracles
+        run: bash tools/ci/check-xverify.sh --require
+
+      # The attestation is the record a release gate reads. Keeping it as an
+      # artifact means a release can point at the run that produced it.
+      - name: Keep the attestation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xverify-attestation
+          path: out/xverify/attestation.json
+          if-no-files-found: error

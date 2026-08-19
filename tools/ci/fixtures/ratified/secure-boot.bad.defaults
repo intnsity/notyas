@@ -1,0 +1,6 @@
+# Q63: 0.2.0 burns only HMAC_UP. No secure-boot digest, no anti-rollback, no
+# flash-encryption key. This overlay switches on the two that were deferred, which would
+# make the shipped image depend on a burn no release unit has taken.
+CONFIG_SECURE_BOOT=y
+CONFIG_SECURE_BOOT_V2_ENABLED=y
+CONFIG_SECURE_FLASH_ENC_ENABLED=y

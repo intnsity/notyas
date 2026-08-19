@@ -1,0 +1,54 @@
+# tools/ci/deny.toml - configuration for the RustSec advisory gate.
+#
+# Read by tools/ci/check-advisories.sh (and by nothing else). It lives here rather than
+# at the repository root so that a bare `cargo deny check` in a developer's checkout
+# cannot pick up a half-remembered policy: the policy is the file the gate names.
+#
+# Scope: advisories ONLY. cargo-deny can also enforce licences, duplicate versions and
+# crate sources; this repository already answers the last of those in
+# tools/ci/check-supply-chain.sh, which asserts crates.io provenance, a SHA-256 for
+# every external package and the absence of [patch]/[replace]. Two tools enforcing one
+# rule is how the two drift apart, so this file does the one job that had no gate at
+# all: asking the RustSec database whether anything we depend on is known-broken.
+
+[graph]
+# Every feature, on purpose. The default resolution would omit notyas-wallet's
+# `testkit`, the firmware's `measure` / `hil-console` / `unsafe-emulated-key` and
+# notyas-core's non-default features, i.e. exactly the code paths that are least
+# reviewed and most likely to pull an unusual crate. An advisory against a crate that
+# only a bench build links is still an advisory a maintainer should read, and the cost
+# of that wider graph here is a few seconds.
+#
+# Targets are deliberately NOT filtered. A dependency written
+# [target.'cfg(target_os = "espidf")'.dependencies] - which crates/esp-idf-hmac uses -
+# is invisible when the graph is resolved for the runner's own triple, and that subtree
+# is precisely the one that ships.
+all-features = true
+
+[advisories]
+# The upstream database, by URL. Naming it explicitly means a future cargo-deny default
+# change cannot silently point this gate at something else.
+db-urls = ["https://github.com/rustsec/advisory-db"]
+
+# A yanked crate is a crate its author withdrew, usually because the release was broken
+# or dangerous. Determining this needs the crates.io index, so it is one more reason
+# this gate must have network access rather than degrading quietly to a partial answer.
+yanked = "deny"
+
+# Unmaintained advisories at every depth, not just for crates this workspace names
+# directly. The narrower "workspace" setting was measured on 2026-08-18: it produced
+# the same single finding as "all" on this graph, so the wider setting costs nothing
+# today and covers the case that actually worries a signer - an abandoned crate buried
+# three levels under something we do trust.
+#
+# The cost is that an advisory published against any transitive crate turns CI red on a
+# day nobody changed anything. That is the intended behaviour: the answer is to triage
+# it into the ignore list below WITH a reason, or to update the dependency. It is not
+# to loosen this line.
+unmaintained = "all"
+
+# Triaged findings. Every entry states what it is, why the risk is accepted, and what
+# would make it stop being acceptable. An entry without that is not triage.
+ignore = [
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained; it is not a vulnerability and the advisory offers no upgrade path. It enters this workspace only through tools/fonts/atlasgen (directly and via fontdue), the host-side rasterizer that regenerates crates/notyas-fonts/src/gen/ from the committed IBM Plex TTFs and is run by hand through tools/fonts/regen.ps1. It is absent from the runtime graph of every package that links into the device image: verified with cargo tree --edges normal --target all for notyas-firmware, notyas-core, notyas-ui, notyas-fonts and notyas-wallet. Remove this entry if atlasgen moves to skrifa, or if a VULNERABILITY is published against ttf-parser - that would carry a different advisory id, which this gate would still fail on." },
+]
