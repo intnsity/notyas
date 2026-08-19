@@ -338,10 +338,25 @@ if ($mode -eq 'attempt') {
         Write-Output "  Where the cuts fell : $($phases -join ', ')"
     }
     Write-Output ''
+    # The stretch is MEASURED from this run's own rows, not asserted. It read '1.9 s' as a
+    # hard-coded string until 2026-08-19, which is the one thing a summariser must never do:
+    # a number printed beside real data is read as data, and this one was quoted onward as a
+    # measurement. This board measures about 2.35 s, so the constant was wrong as well as
+    # unearned.
+    $stretch = $rows | Where-Object { $_.stretch_ms } | ForEach-Object { [double]$_.stretch_ms }
+    $stretchNote = if ($stretch) {
+        $mean = [math]::Round((($stretch | Measure-Object -Average).Average) / 1000.0, 2)
+        $lo   = [math]::Round((($stretch | Measure-Object -Minimum).Minimum) / 1000.0, 2)
+        $hi   = [math]::Round((($stretch | Measure-Object -Maximum).Maximum) / 1000.0, 2)
+        "about $mean s (measured this run: $lo to $hi s over $($stretch.Count) rounds)"
+    } else {
+        'an unmeasured time - this run recorded no stretch_ms column'
+    }
     Write-Output '  WHAT THIS MODE DOES NOT PROVE, and the reason it cannot. Vault::unlock spends'
-    Write-Output '  about 1.9 s in Argon2id before it programs the attempt cell - deliberately, so a'
-    Write-Output '  cut during the stretch buys no uncounted verification. The counted region is'
-    Write-Output '  therefore microseconds wide at the very end of a two second operation, and a'
+    Write-Output "  $stretchNote in Argon2id before it programs the attempt cell -"
+    Write-Output '  deliberately, so a cut during the stretch buys no uncounted verification. The'
+    Write-Output '  counted region is therefore microseconds wide at the very end of that operation,'
+    Write-Output '  and a'
     Write-Output '  hand-timed pull will almost never land inside it: a `cut_phase` column full of'
     Write-Output '  uncounted_stretch is the expected result, not a weak run. The exhaustive sweep of'
     Write-Output '  that boundary is the host fuzzer, notyas-wallet tests/powerloss.rs, at Op::UnlockBad'
