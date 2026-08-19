@@ -98,11 +98,10 @@ The empty `git status` is not a formality. The container build takes `git archiv
 so an untracked file is invisible to it: the release would silently lack a file you can see
 on disk. `tools/release.sh preflight` fails on any output here.
 
-> **State on 2026-08-19:** the tree at `C:\notyas` is **dirty** - dozens of modified files
-> and at least one deletion (`crates/notyas-ui/src/screens.rs`). The release commit has not
-> been made. Commit or discard everything before starting; the hooks in `.git/hooks`
-> (`pre-commit`, `commit-msg`) enforce authorship and dash hygiene on the way in, and they
-> are not to be bypassed.
+> **State on 2026-08-19:** the 0.2.0 body of work is committed and `git status` is clean.
+> Any later change has to be committed the same way before starting: the hooks in
+> `.git/hooks` (`pre-commit`, `commit-msg`) enforce authorship and dash hygiene on the way
+> in, and they are not to be bypassed.
 
 ### 1.3 The tag does not exist yet
 
@@ -154,13 +153,13 @@ Expected: exit 0 from each. Last verified: 1034 host tests passing with 0 failur
 graphics gate 6/6, clippy clean, `check-ratified`, `check-dashes` and `check-hil-fence`
 all PASS.
 
-> **`check-target-dir.sh` currently FAILS**, on a stale `C:\notyas\target` tree left behind
-> by an earlier `check-screenshots.sh` run. It is red for a real reason and it is **not**
-> invoked by `tools/release.sh` or by CI, so nothing downstream will stop for it. Remove
-> the tree yourself before starting:
+> `check-target-dir.sh` is red whenever a `target/` tree exists at the repository root -
+> `check-screenshots.sh` leaves one behind on its failure path. It is **not** invoked by
+> `tools/release.sh` or by CI, so nothing downstream stops for it; remove the tree yourself
+> before starting:
 >
 > ```sh
-> rm -rf /c/notyas/target
+> rm -rf "$(git rev-parse --show-toplevel)/target"
 > bash tools/ci/check-target-dir.sh    # expected: exit 0, silent
 > ```
 
