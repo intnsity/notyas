@@ -1,0 +1,32 @@
+# The notyas side of the third-party cross-check. NOT a workspace member.
+#
+# `[workspace]` with no members makes this its own workspace root, which is the
+# whole point: this package depends on notyas-core by path, and nothing depends
+# on it. It therefore cannot appear in the root workspace's Cargo.lock, in
+# `cargo tree -p notyas-core`, or in any firmware image, and
+# tools/build-graph-check.sh keeps seeing the same graph it saw before.
+#
+# It is also why the oracles are NOT here. foundation-ur could not enter the
+# workspace at m8 because it pulls an RNG (SECURITY.md invariant 3); Bitcoin
+# Core and embit could not enter it either, for the plainer reason that an
+# oracle linked into the tree under test is not an oracle. Both live outside the
+# Rust graph entirely and are driven by tools/xverify/xverify.py, which talks to
+# them over a process boundary.
+[workspace]
+
+[package]
+name = "xverify-device"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+# The subject of the cross-check. Default features: the set the firmware links.
+notyas-core = { path = "../../crates/notyas-core" }
+# Both are leaves. serde_json pulls serde/itoa/ryu/memchr and hex pulls nothing;
+# none of them is on tools/build-graph-check.sh's ban list, which matters because
+# that gate walks EVERY Cargo.lock in the tree, this one included.
+serde_json = "1"
+hex = "0.4"

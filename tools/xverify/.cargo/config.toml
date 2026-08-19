@@ -1,0 +1,6 @@
+# Same rule as the root workspace: artifacts never land on the working tree, and
+# never on the share. A directory of its own rather than the root's C:/nb/host,
+# so a cross-check build cannot invalidate the fingerprints of a firmware or
+# host build that is already warm there.
+[build]
+target-dir = "C:/nb/host/xverify-build"
