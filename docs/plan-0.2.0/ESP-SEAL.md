@@ -728,7 +728,10 @@ added when the decision was ratified, because this section did not name them: a 
 already draws the state but neither enum can express it, so the refusal would otherwise
 degrade into a generic hardware fault); specified behaviour for the PIN-pad permutation
 and the backup-quiz distractors, both of which are HMAC_efuse-derived and so cannot run
-unprovisioned; a refusal on the RESTORE path, not only on first save
+unprovisioned (**one of those two consumers is gone: the PIN pad stopped being derived on
+2026-08-19 when Q35 was reversed, so an unprovisioned device renders its PIN pad like any
+other. The quiz distractors are unaffected and the requirement stands for them. Q45 itself
+is unchanged - what shrank is the list of things it has to cover**); a refusal on the RESTORE path, not only on first save
 (BACKUP-FEATURES.md 2.6 currently burns there); the burn ORDER written into the runbook -
 HMAC key before flash encryption and secure boot, because Release-mode flash encryption
 disables the UART download path `espefuse.py` uses - to be worded jointly with the
@@ -1315,19 +1318,34 @@ conflates them:
 
 ### 6.3 Dev-board allocation, given exactly two boards
 
-Both bench units are rev v1.3 (`docs/HARDWARE.md`, `docs/BOARDS.md`). The allocation:
+Both bench units are rev v1.3 (`docs/HARDWARE.md`, `docs/BOARDS.md`). The allocation,
+**corrected 2026-08-18 against the ratified Q63 (a): 0.2.0 burns the HMAC_UP key and
+nothing else, on any device including a release unit, so no board here runs flash
+encryption**:
 
 | Board | Role | eFuse state | Flash encryption | esp-seal mode |
 |---|---|---|---|---|
 | Waveshare 4B (COM3, 32 MB) | daily driver, UI and logic work | **never burned** | off | `KeyProvenance::Emulated` |
-| Elecrow 5 (COM6, 16 MB) | release-equivalent sacrificial unit | HMAC_UP burned and read-protected | **Development mode, on** | `EfuseReadProtected` |
+| Elecrow 5 (COM6, 16 MB) | release-equivalent unit | `BLOCK_KEY5` HMAC_UP burned, read- and write-protected 2026-08-18 (`docs/PROVISIONING.md`) | **off - no XTS key is burned in 0.2.0** | `EfuseReadProtected` |
 
-This allocation is not arbitrary. ARCHITECTURE 2.3 requires the Argon2id benchmark to run
-with flash and PSRAM encryption enabled, because the P4 encrypts external PSRAM traffic
-with the same XTS machinery whenever flash encryption is on, and release units pay a
-latency cost the bare dev board does not. That benchmark needs a unit in the encrypted
-configuration, and the 16 MB Elecrow is the right sacrifice because the partition table is
-sized to fit 16 MB anyway (BOARDS.md flash section) so it exercises the binding constraint.
+The previous version of this table put board B in flash-encryption Development mode, and
+its whole justification was ARCHITECTURE 2.3's requirement to benchmark Argon2id with
+flash and PSRAM encryption enabled. Under Q63 (a) that configuration cannot exist on any
+unit, so the requirement went with it - ARCHITECTURE 2.3 records why the unencrypted
+benchmark is now the correct one rather than a stand-in for one nobody could take. Board B
+is consequently not a sacrificial unit at all: with the HMAC key as the only burn it is
+in exactly the eFuse configuration a release unit ships in, which is a better bench than
+the one this table used to describe.
+
+**What it costs, stated here because this is where a reader comes looking for the
+encryption answer.** The `wallets` partition's `encrypted` flag is inert on every unit, so
+there is no at-rest encryption of the records region anywhere in 0.2.0. What survives is
+esp-seal's own work and it is unchanged: records stay AEAD-sealed under the PIN ladder, so
+a flash dump yields ciphertext plus the deliberately plaintext superblock (3.5) and ledger
+(3.7). What is gone is the second layer that would have made a bench attacker with a
+programmer pay twice. SECURITY.md tier 1 already states this plainly - the sealed record is
+protected by the PIN ladder alone - and it must keep stating it: nothing in this document,
+and nothing on the Verify screen, may imply an encryption layer that no device has.
 
 ### 6.4 Development mode, and how it is kept out of release builds
 

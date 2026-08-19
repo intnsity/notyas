@@ -1,8 +1,12 @@
 # SECUREBOOT.md - Secure Boot v2 for notyas
 
-**Status: PLAN. Target release: 0.3.0.** 0.2.0 ships **without** Secure Boot v2, without
-flash encryption, and with **no eFuse burned on any device, at any point**. What 0.2.0
-carries is a small preparatory slice (section 2) chosen so that nothing in it costs
+**Status: PLAN. Target release: 0.3.0.** 0.2.0 ships **without** Secure Boot v2 and
+**without flash encryption**: no secure-boot digest, no anti-rollback fuse and no
+flash-encryption key is burned on any device, at any point. **The HMAC_UP provisioning of
+Q45 is unaffected, and it is the one burn 0.2.0 performs.** It is not a secure-boot fuse,
+the sealed-storage device binding is rooted in it, and the owner narrowed this sentence to
+say so on 2026-08-18 when answering OPEN-QUESTIONS Q63 (a). What 0.2.0 carries beyond that
+single burn is a small preparatory slice (section 2) chosen so that nothing in it costs
 anything to carry and nothing in it touches a fuse.
 
 **This document has never been executed.** The burn runbook in section 11 is a paper
@@ -249,8 +253,8 @@ both are the owner's, and both must be protected.
 
 | | **Release manifest key** | **Secure-boot signing key** |
 |---|---|---|
-| What it is | OpenPGP RSA-3072 `intnsity-esp`, the notyas release identity (created 2026-08-18, no expiry). Desktop BigDice keeps its own RSA-4096 `A1E9 53B2 5C6A 623B 77A1 D522 3AC4 BBCF E51A B37D` | RSA-3072, **new, does not exist yet** |
-| Fingerprint / identity | `7D66 F06B DDF9 AF62 82AA 8AB9 E64B 89C5 55CB 922B` | none yet; identified by the SHA-256 digest of its public key |
+| What it is | OpenPGP RSA-4096 `intnsity` (created 2026-08-15, no expiry), the single release identity for this maintainer - desktop BigDice signs with it too | RSA-3072, **new, does not exist yet** |
+| Fingerprint / identity | `A1E9 53B2 5C6A 623B 77A1 D522 3AC4 BBCF E51A B37D` | none yet; identified by the SHA-256 digest of its public key |
 | What it signs | `SHA256SUMS.txt`, and the annotated git tag | `bootloader.bin` and `app.bin`, as an appended signature block |
 | Who verifies it | **a person, on their computer, before flashing** | **the chip's boot ROM and bootloader, on every single boot** |
 | The question it answers | "did this file come from intnsity?" | "may this firmware run on this chip?" |
@@ -262,14 +266,20 @@ both are the owner's, and both must be protected.
 **They cannot be the same key and the GPG key cannot be converted into one.** Three
 independent reasons, any one sufficient:
 
-1. **The matching size is a coincidence, and it is a trap.** The notyas release key
-   `intnsity-esp` happens to be OpenPGP RSA-3072, the same modulus size Secure Boot v2
-   requires, so unlike the RSA-4096 BigDice key (whose 512-byte modulus simply does not fit
-   the signature block's fixed 384-byte field) there is no arithmetic obstacle to extracting
-   its RSA parameters and reusing them. Do not. The size matching removes the mechanical
-   barrier without removing either real objection below, which makes this the most likely
-   way the mistake actually gets made. A key that is capable of being misused this way must
-   be documented as forbidden rather than merely impractical.
+1. **The sizes do not even meet, and that is now deliberate.** `intnsity` is OpenPGP
+   RSA-4096. Secure Boot v2's signature block carries a fixed 384-byte field, so a
+   512-byte modulus does not fit: there is a hard arithmetic obstacle to extracting this
+   key's RSA parameters and reusing them as a secure-boot key, on top of the two real
+   objections below.
+
+   **This is why the RSA-3072 `intnsity-esp` key was retired on 2026-08-19 and its secret
+   half destroyed, and it must not be recreated.** That key was generated on 2026-08-18 in
+   the belief that a release identity should match Secure Boot v2's modulus size. The
+   belief was wrong twice over: a GPG key can never serve as a secure-boot key at all, for
+   reasons 2 and 3 below, and matching the size removed the only mechanical barrier
+   standing in the way of the mistake. It made a trap out of a coincidence. Nothing was
+   ever published under it. A future maintainer reaching for a project-specific RSA-3072
+   key should read this paragraph first and not do it.
 2. **The formats and the tooling do not meet.** `espsecure` consumes a PEM-encoded
    PKCS#8/PKCS#1 private key. An OpenPGP secret key is a different container with different
    packet framing, and if the key is on a hardware token (`OPEN-QUESTIONS` Q30, deferred)
@@ -329,7 +339,7 @@ re-typed, which is what makes the backup below practical.
 ### 5.2 What must never happen to it
 
 - It is never committed to any repository, including a private one.
-- It never goes on the NAS share (`<the share>\...`). The share is a working
+- It never goes on the working tree's network share. That share is a working
   filesystem accessible to build tooling and to agents; it is not a key store.
 - It is never pasted into a terminal, chat, issue or agent prompt that is being logged.
   Note that this project's development involves automated agents with shell access: any

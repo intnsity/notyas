@@ -1,6 +1,6 @@
 # notyas 0.2.0 - Competitive feature matrix, gap ranking, and anti-patterns
 
-Sources: the six supplied teardowns plus the notyas repo at `<the working tree>\notyas` (README.md, docs/plan-0.2.0/{INDEX,MILESTONES,PARITY,PIN-MODES,VERIFY,UX-SCREENS,OPEN-QUESTIONS}.md). Every notyas cell is traced to a milestone or a ratified decision, not inferred.
+Sources: the six supplied teardowns plus this repository (README.md, docs/plan-0.2.0/{INDEX,MILESTONES,PARITY,PIN-MODES,VERIFY,UX-SCREENS,OPEN-QUESTIONS}.md). Every notyas cell is traced to a milestone or a ratified decision, not inferred.
 
 ## Legend
 
@@ -57,7 +57,7 @@ Cells: `Y` present, `P` partial, `N` absent, `D` present in the field but declin
 | Wipe policy authenticated inside the AEAD | n/a | n/a | N | n/a | n/a | n/a | n/a | P | n/a | n/a | Y | **m3 (unique, correct)** |
 | Escalating delay between attempts | Y | n/a | P | ? | N | Y | N | N | ? | n/a | Y | m4a |
 | Anti-phishing words after PIN prefix | Y | N | N | Y | N | Y | N | Y | N | N | W | m4a (HMAC-eFuse derived) |
-| Scrambled / randomized keypad | Y | N | N | N | N | Y | Y | N | N | n/a | Y | m4a |
+| Scrambled / randomized keypad | Y | N | N | N | N | Y | Y | N | N | n/a | Y | **REJ 2026-08-19 - built at m4a, then declined (Q35 reversed); the pad is fixed phone order and notyas has no defence here** |
 | Duress PIN opening a decoy wallet | Y | N | N | **D** | N | N | N | N | P(passphrase) | N | Y | m13, off by default |
 | Decoy indistinguishable from empty (filler slots) | Y | n/a | N | n/a | n/a | n/a | n/a | n/a | N | n/a | Y | **m3 AlwaysFilled (best in field)** |
 | Wipe / erase PIN (destructive duress) | Y | N | N | **D** | Y | Y | N | N | N | N | W | m13 (wipe variant only) |

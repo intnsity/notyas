@@ -5,11 +5,13 @@ merged here from wave 1, wave 2, the red team and the wave-3 design documents. O
 2026-08-17 the project owner instructed that every question with a clear technical
 optimum be decided for them; fifty-one were settled in that pass. **On 2026-08-18 the
 owner answered the remaining ten**, and those answers re-scoped 0.2.0. All sixty-one
-original questions are now settled. **Two new questions are open**, both raised by the
-owner's own answers rather than carried over: Q62 (must disabling wipe require a longer
-PIN?) and Q63 (what flash-encryption mode do release units burn, now that Secure Boot is
-deferred?). They are in the OWNER DECISIONS section directly below, and nothing else in
-this file is required to answer them.
+original questions are now settled. **Two new questions were raised by those answers, and
+the owner closed both on 2026-08-18: Q62 (must disabling wipe require a longer PIN?)
+answered (b), any PIN may disable wipe; Q63 (does "no eFuse burned" include the HMAC key?)
+answered (a), secure-boot fuses only, so the Q45 HMAC_UP provisioning proceeds and is the
+one burn 0.2.0 performs.** Both answers and their reasoning are in the OWNER DECISIONS
+section directly below. **Every question in this set is now settled: nothing here is
+open, and no milestone waits on a decision.**
 
 **What the 2026-08-18 answers changed, in one place.** Six things left 0.2.0 entirely and
 are recorded in "Deferred to 0.3.0" below: encrypted backups (Q14), BSMS (Q15), the
@@ -34,9 +36,10 @@ RATIFIED DECISIONS section, ordered by milestone so that section doubles as an
 implementation reference and as the audit record for why the device behaves as it
 does.
 
-**Blocking set: empty for every milestone.** Neither open question gates m1, and neither
-gates the m3 format freeze - Q62 tunes a threshold inside a policy mechanism whose format
-Q5 now specifies in full, and Q63 is a release-runbook decision due at m13.
+**Blocking set: empty for every milestone, and now empty of open questions too.** Both
+remaining items closed on 2026-08-18: Q62 tuned a threshold inside a policy mechanism
+whose format Q5 already specifies in full, and Q63 confirmed that the Q45 HMAC_UP
+provisioning is the one burn 0.2.0 performs. No milestone waits on a decision.
 
 ---
 
@@ -60,9 +63,11 @@ inside their subject. Neither is superseded by anything below.**
   record of the deferral and its consequences for the security claims; SECUREBOOT.md owns
   the mechanism and the eventual ceremony.
 
-### Q62. Should disabling wipe-on-N require a PIN longer than the 4-digit floor? [raised 2026-08-18; ALREADY ANSWERED NO - see the note first]
+### Q62. Should disabling wipe-on-N require a PIN longer than the 4-digit floor? [raised 2026-08-18; ANSWERED (b), RECONFIRMED AND CLOSED 2026-08-18]
 
-**STATUS: answered, not open.** PIN-MODES.md records the owner's direct decision of
+**STATUS: CLOSED.** The re-presentation below was put to the owner with the arithmetic on
+2026-08-18 and **the owner reconfirmed (b) unchanged**, which is what this entry said would
+close it. PIN-MODES.md records the owner's direct decision of
 2026-08-17: *"disabling wipe does NOT require a longer PIN. The 4-digit floor applies in
 every state. The warning still states the concrete guess count for the PIN length in use,
 so the user makes the trade knowingly; the device does not withhold the setting from
@@ -128,10 +133,19 @@ builds the disable-floor as a parameter, so either answer costs the same.
 - **Deadline:** none. It is answered. If the owner does not revisit it, this entry moves
   to the ratified section as answered (b) at the next sweep.
 
-### Q63. Does "no eFuse burned in 0.2.0" include the HMAC key the sealed storage depends on? [NEW 2026-08-18, forced by the Q32 answer and sharpened by SECUREBOOT.md]
+### Q63. Does "no eFuse burned in 0.2.0" include the HMAC key the sealed storage depends on? [NEW 2026-08-18; ANSWERED (a) AND CLOSED 2026-08-18]
 
-**THIS IS THE ONE GENUINELY OPEN QUESTION IN THE SET, and it is not a preference - it is a
-contradiction between two documents that cannot both be implemented.**
+**ANSWERED (a) by the owner on 2026-08-18: "no eFuse burned" means no SECURE-BOOT-related
+eFuse - no secure-boot digest, no anti-rollback, no flash-encryption key. The HMAC_UP
+provisioning of Q45 proceeds as designed and is the one burn 0.2.0 performs.** The
+SECUREBOOT.md sentence was narrowed accordingly on the same day; see the recommendation
+bullet below for the exact wording that landed. Sealed storage, the PIN ladder, the wipe
+policy and multisig registration are all in 0.2.0, and m3, m4a and m4b keep their full
+scope.
+
+**The reasoning is retained below as the record of why, because this was a contradiction
+between two documents that could not both be implemented, and the next reader deserves to
+see how it was resolved rather than only what was decided.**
 
 - **What SECUREBOOT.md says.** It landed in parallel with this re-scope, it is
   authoritative for secure boot, and its opening states that 0.2.0 ships "without Secure
@@ -163,18 +177,19 @@ contradiction between two documents that cannot both be implemented.**
   option - a key the software can read is a key an attacker who dumps flash can read, so
   it would make tier 1's "each guess requires the physical device" false and must not be
   built.
-- **Recommendation: (a), and the wording in SECUREBOOT.md is narrowed to say so.** One
-  sentence there ("no eFuse burned on any device, at any point") needs to become "no
-  secure-boot, anti-rollback or flash-encryption eFuse is burned in 0.2.0; the HMAC_UP
-  provisioning of Q45 is unaffected and is the one burn 0.2.0 performs." I have not made
-  that edit: SECUREBOOT.md is another document's subject and the sentence may be
-  deliberate, in which case the answer is a scope decision far larger than a wording fix.
-- **What it blocks:** everything storage, if the answer is (b). Under (a) it blocks
-  nothing and only a sentence changes.
-- **Deadline:** before m4a orders its first burn, which under (a) is imminent - so this is
-  the one open item worth answering quickly, and it should be answered before m3 closes.
-- **Why it is yours:** it is a one-way burn on hardware you own, and under (b) it deletes
-  the feature the release was named for.
+- **Recommendation was (a), the owner answered (a), and the wording in SECUREBOOT.md has
+  been narrowed to say so (done 2026-08-18).** That document's opening now reads that no
+  secure-boot digest, no anti-rollback fuse and no flash-encryption key is burned on any
+  device at any point, and that the HMAC_UP provisioning of Q45 is unaffected and is the
+  one burn 0.2.0 performs. The edit was held until the owner answered because SECUREBOOT.md
+  is another document's subject and the sentence might have been deliberate, in which case
+  it would have been a scope decision far larger than a wording fix. It was not.
+- **What it blocked:** everything storage, had the answer been (b). Under the answer given
+  it blocked nothing, and one sentence changed.
+- **Deadline:** met. It was answered before m4a ordered its first burn, and before m3
+  closed.
+- **Why it was yours:** it is a one-way burn on hardware you own, and under (b) it would
+  have deleted the feature the release was named for.
 
 **The flash-encryption reasoning, retained because it is why (a) burns nothing else.**
 m13's runbook had four burns: HMAC key, XTS-AES flash encryption, Secure Boot v2,
@@ -1474,6 +1489,72 @@ of the two paths that cannot run on an unprovisioned device, so it needs the beh
 specified there.
 
 **Blast radius.** One derivation label in m4a; none elsewhere.
+
+#### REVERSED 2026-08-19: the pad is FIXED PHONE ORDER
+*The decision above is left exactly as it was ratified. It was overturned, not amended, and
+the reasoning it was ratified on is kept so the record shows what the reversal cost rather
+than only what it chose.*
+
+**What ships instead.** 1-2-3 / 4-5-6 / 7-8-9 across the first three rows, `0` in the
+bottom-centre slot, `OK` bottom-left and `Del` bottom-right: the layout of every telephone
+and cash machine, identical on both panels, on every attempt, and on every device. The pad
+is a constant in the UI (`PIN_PAD`, `crates/notyas-ui/src/screens/pin.rs`), not a value the
+embedder derives and installs.
+
+**Who reversed it and why.** The project owner, on 2026-08-19, after using the shuffled pad
+on hardware. Reading all ten keys on every unlock was not worth what it bought him. He was
+shown the trade explicitly before deciding - that fixed positions mean anyone who observes
+his fingers once has learned the PIN - and chose the familiar layout with that stated. The
+risk falls entirely on the person accepting it, so this plan records the decision rather
+than argues with it.
+
+**What was traded away, precisely.**
+
+- **Observation resistance between attempts. This was the whole property.** With a shuffled
+  pad, a watcher who saw one entry - over a shoulder, from a ceiling camera, in a window -
+  learned finger POSITIONS, and those positions carried different digits on the next
+  attempt. Positions are now digits, permanently: one clear observation of the hand is a
+  complete PIN, and every later attempt confirms it rather than muddying it. What is left
+  against a shoulder surfer is what never depended on the pad - the attempt counter, the
+  escalating backoff, and the wipe - and none of those stop someone who has the digits.
+- **The strongest version of the pattern, permanently out of reach.** Trezor's blind matrix
+  and Keystone's scrambled pad are the state of the art this product had matched; it now
+  scores an honest `N` on that row (COMPETITIVE.md) and UX-PATTERNS records it as a
+  deliberate divergence rather than an oversight.
+- **Nothing else.** The anti-phishing words at four digits, the attempt line, the backoff
+  and the masking discipline are untouched.
+
+**What was not traded away.** SECURITY.md invariant 3 (no RNG in the UI crate) is not
+weakened - the screen now needs no derived value at all, which is a strictly smaller
+surface. C10's other half, press feedback on the dot row rather than on the key, stays, on
+a rationale rewritten beside the code: on a fixed pad a lit key IS the digit and a lit
+80 px cell is legible where a fingertip is not, so non-local feedback earns its place for a
+stronger reason than the one it was introduced with.
+
+**Why the reversal is legitimate.** The property given up protects the device's owner from
+being watched by people near him, and no one else: it is not one of the invariants that
+protect a user from the device, from the project, or from a supply chain. A user is
+entitled to decline a defence aimed at his own environment when he judges the daily cost
+too high, and this one is declined knowingly and in writing. The plan's rule is that a
+claim is mechanically enforced or it is not made - so the claim is withdrawn everywhere it
+appeared, which is what the blast radius below is for. It is not weakened, hedged, or left
+standing in a document nobody re-read.
+
+**Knock-on to the ratified Q45, which is unchanged.** Q45's amendment 2 named two
+`HMAC_efuse`-derived values an unprovisioned device cannot produce, and the PIN pad was one
+of them. It is no longer derived, so the PIN screen renders on an unprovisioned device
+without a special case; only the anti-phishing words and the backup quiz's distractor set
+remain on that path. Q45's decision stands and its reasoning has one fewer example.
+
+**Blast radius of the reversal.** `crates/notyas-ui/src/screens/pin.rs` (the constant, and
+an `install_pad` that refuses so no embedder can put a shuffle back). Then a path that is
+now dead end to end and should be deleted: `UiRequest::PinPad`, `Ui::set_pin_pad`,
+`Vault::pin_pad_order`, the firmware arm that answers the request, its HKDF info string,
+and the simulator's installed pad. Documents: UX.md commandment 5 and screen 2,
+UX-PATTERNS 3.3, UX-REVISION A4 and A10 (done with this entry); UX-SCREENS C10, S-04 and
+its region table, COMPETITIVE.md's scrambled-keypad row, SIMPLE-MODE.md's `PinPad`
+mentions, MILESTONES.md's unprovisioned-path note and ESP-SEAL.md's pad-permutation line
+(outstanding).
 
 ### Q41. The HIL test-mode console [CORPUS.md corpus-3]
 **DECISION: accept the proposed package** - build-feature gated, off by default, "HIL

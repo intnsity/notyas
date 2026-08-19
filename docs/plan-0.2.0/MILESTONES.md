@@ -633,8 +633,9 @@ Hard serialization on hardware resources, stated so two agents do not collide:
   rather than burning anything, which needs `StoreState::Unprovisioned` and its refusal
   screen; `Ui::tick()` plus hold-to-confirm plus the
   horizontal-slop fix (a sideways swipe across a button must cancel the tap);
-  minimal functional screens 2 and 16 only (randomized-pad PIN entry with
-  anti-phishing words, lock screen); a bare-bones save/unlock path grafted onto the
+  minimal functional screens 2 and 16 only (PIN entry with anti-phishing words -
+  the pad shipped shuffled and was reversed to fixed phone order on 2026-08-19,
+  Q35 - and the lock screen); a bare-bones save/unlock path grafted onto the
   existing create flow; the WalletSession type with lock, timeout, and power-off
   wipe; the extended UiRequest protocol (UnsealWallet, PersistWallet, ...) keeping
   all I/O and sealing on the std side.
@@ -1775,6 +1776,14 @@ problem, which R20 as written did not name: the randomized PIN-pad permutation a
 backup quiz's distractor set. An unprovisioned device cannot render its own PIN screen,
 so the refusal has to be an explicit state (`StoreState::Unprovisioned`) with its own
 screen, not a generic hardware fault.
+
+**Amended again 2026-08-19 (Q35, reversed).** The PIN-pad permutation is no longer one of
+the two derivations: the pad is a fixed phone-order constant and nothing about it comes
+from the eFuse key, so an unprovisioned device CAN render its own PIN pad. Only the quiz
+distractors remain on that key beside the words. The explicit `Unprovisioned` state and
+its screen are unaffected and still required - the words alone are reason enough, and the
+state now has a second job, since S-06 is the surface that has to tell an unprovisioned
+device it cannot store anything.
 
 ---
 

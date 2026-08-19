@@ -48,15 +48,18 @@ place the two texts differed and why. **SECUREBOOT.md** owns Secure Boot v2, the
 key-ownership decision that was Q32, the burn order and the runbook; it targets 0.3.0 and
 confirms that 0.2.0 burns no secure-boot, anti-rollback or flash-encryption fuse.
 
-**Blocking set: one item, and it is sharp.** Q62 is already answered (PIN-MODES.md: no
-PIN-length requirement to disable wipe) and is re-presented once with the arithmetic
-before it closes. **Q63 is genuinely open and must be answered before m3 closes:**
-SECUREBOOT.md says 0.2.0 burns "no eFuse on any device, at any point", while the ratified
+**Blocking set: EMPTY. The last open item closed on 2026-08-18.** Q63 was the sharp one:
+SECUREBOOT.md said 0.2.0 burns "no eFuse on any device, at any point", while the ratified
 Q45 provisions an HMAC_UP key that the entire sealed-storage design binds to. Under the
-narrow reading - no SECURE-BOOT fuse - everything proceeds and one sentence needs
-narrowing. Under the literal reading, 0.2.0 stores nothing at all and m3, m4a and m4b lose
-most of their purpose. That is a scope question, not a wording one, so it was raised
-rather than resolved unilaterally.
+narrow reading everything proceeds and one sentence needs narrowing; under the literal
+reading 0.2.0 stores nothing at all and m3, m4a and m4b lose most of their purpose. That
+was a scope question, not a wording one, so it was raised rather than resolved
+unilaterally. **The owner answered the narrow reading (a): no secure-boot, anti-rollback
+or flash-encryption fuse is burned, and the Q45 HMAC_UP provisioning proceeds as the one
+burn 0.2.0 performs.** SECUREBOOT.md has been narrowed to say so. **Q62 was re-presented
+once with the arithmetic and the owner reconfirmed (b) unchanged: any PIN may disable
+wipe, with the disclosure requirements in that entry as acceptance criteria rather than
+suggestions.** Nothing in this set is now open.
 
 Everything else is a normative input that MILESTONES.md and OPEN-QUESTIONS.md read.
 
@@ -64,10 +67,10 @@ Everything else is a normative input that MILESTONES.md and OPEN-QUESTIONS.md re
 
 ## Reading order
 
-1. **OPEN-QUESTIONS.md** - the decision list. Its OWNER DECISIONS section holds the two
-   questions still open (Q62, the PIN length required to disable wipe; Q63, what flash
-   encryption 0.2.0 burns now that Secure Boot is deferred) and is the only part the
-   project owner needs to read; neither blocks anything before m4b. Its DEFERRED TO 0.3.0
+1. **OPEN-QUESTIONS.md** - the decision list. Its OWNER DECISIONS section holds the last
+   two questions to close (Q62, the PIN length required to disable wipe, answered (b);
+   Q63, what 0.2.0 burns now that Secure Boot is deferred, answered (a)), both settled by
+   the owner on 2026-08-18. Nothing in the file is open. Its DEFERRED TO 0.3.0
    section records what left the release and what each departure costs. Its RATIFIED
    DECISIONS section holds the rest, ordered by milestone, and doubles as an
    implementation reference and as the audit record for why the device behaves as it does.
@@ -120,7 +123,8 @@ Everything else is a normative input that MILESTONES.md and OPEN-QUESTIONS.md re
 13c. **SECUREBOOT.md** - **authoritative for Secure Boot v2**, the two-key distinction,
     key ownership (the former Q32), the flash-geometry constraint, anti-rollback, the burn
     order and the runbook. Targets 0.3.0. Read its opening before assuming anything about
-    what 0.2.0 burns, and read Q63 before ordering a burn.
+    what 0.2.0 burns: it was narrowed on 2026-08-18 by the Q63 (a) answer, and 0.2.0
+    performs exactly one burn, the Q45 HMAC_UP key.
 14. **PARITY.md** - the Coldcard Mk4/Q feature matrix. Reference, not a plan; read it
     when you need to know why a feature is or is not in a milestone.
 15. **CAMERA.md** - camera input paths, ranked. Feeds OPEN-QUESTIONS Q6.
@@ -146,7 +150,7 @@ per-board airgap statement), `docs/HARDWARE.md`, `docs/research/`.
 |---|---|---|---|
 | INDEX.md | 3 | this file | current |
 | PIN-MODES.md | 4 | **authoritative for PIN / wipe / stateless behaviour** | PRESENT (owner-directed 2026-08-17). Supersedes conflicting text in ARCHITECTURE 2.x, UX-SCREENS S-06/S-08/S-44 and OPEN-QUESTIONS Q4/Q5 on BEHAVIOUR. It answers Q62 (no PIN-length requirement to disable wipe). Q5 owns the format beneath it; Q5.1 records where the two differed |
-| SECUREBOOT.md | 4 | **authoritative for Secure Boot v2 and the former Q32** | PRESENT. Targets 0.3.0. Confirms 0.2.0 burns no secure-boot, anti-rollback or flash-encryption fuse. **One sentence in it ("no eFuse burned on any device, at any point") collides with the ratified Q45 HMAC provisioning and is raised as Q63** |
+| SECUREBOOT.md | 4 | **authoritative for Secure Boot v2 and the former Q32** | PRESENT. Targets 0.3.0. Confirms 0.2.0 burns no secure-boot, anti-rollback or flash-encryption fuse. **The sentence that collided with the ratified Q45 HMAC provisioning was narrowed on 2026-08-18 under the Q63 (a) answer: the HMAC_UP burn is unaffected and is the one burn 0.2.0 performs** |
 | MILESTONES.md | 1 + 2, reconciled | **authoritative roadmap** | RECONCILED 2026-08-17, supersedes the wave-1 draft |
 | OPEN-QUESTIONS.md | 1 + 2, reconciled | **authoritative decision list** | RECONCILED 2026-08-17, renumbered - see the map below |
 | ARCHITECTURE.md | 1, red-teamed | technical design | current, with the exceptions in "Errata" below |
@@ -173,7 +177,8 @@ integration pass: ESP-SEAL.md and CAMERA-HW.md, both of which landed after the
 reconciliation. Swept last: VERIFY.md, which landed after that. **The list now runs to
 Q63.** Q51 (outbound contributions under a receiving project's licence) is answered YES;
 Q52-Q61 are VERIFY.md's ten items, all ratified; **Q62 and Q63 were raised on 2026-08-18
-by the owner's own answers and are the only open items.** If a further design document
+by the owner's own answers and were both closed by the owner the same day - (b) and (a)
+respectively - so no item in the list is open.** If a further design document
 lands, continue the numbering from **Q64**, attribute the source document, keep its
 recommendation, and give each item a blast radius and an owning milestone; apply
 correctness fixes to the plan texts directly rather than raising them as questions.
@@ -481,22 +486,22 @@ OPEN-QUESTIONS.md carries the same map.
 | - | Q6 | Camera in 0.2.0 (wave 2) |
 | - | Q7 | Storage geometry freeze (reconciliation) |
 | - | Q8 | Licensing (wave 2) - **ANSWERED by the owner 2026-08-18: a per-crate split, monorepo. Supersedes the 2026-08-17 blanket GPL answer** |
-| - | Q62 | **NEW 2026-08-18.** Must disabling wipe-on-N require a PIN longer than the 4-digit floor? Raised by the Q4 + Q5 interaction |
-| - | Q63 | **NEW 2026-08-18.** What flash-encryption mode do release units burn, now that Secure Boot is deferred? Forced by the Q32 answer |
+| - | Q62 | **NEW 2026-08-18, CLOSED 2026-08-18 (b).** Must disabling wipe-on-N require a PIN longer than the 4-digit floor? Raised by the Q4 + Q5 interaction. Answer: no, any PIN may disable wipe, with mandatory disclosure |
+| - | Q63 | **NEW 2026-08-18, CLOSED 2026-08-18 (a).** What does 0.2.0 burn, now that Secure Boot is deferred? Forced by the Q32 answer. Answer: no secure-boot, anti-rollback or flash-encryption fuse; the Q45 HMAC_UP key is the one burn |
 | - | Q10, Q11 | Class-d reject list, class-c equivalent tier (wave 2) |
 | - | Q17 | SeedQR display-out (reconciliation) |
 | - | Q18, Q19 | BBQr output, login extras |
 | W1 | Q22 | Passphrase in the sealed record (WALLET-API.md) - **RESOLVED: never stored** |
 | W2 | Q23 | Change gap bounds (WALLET-API.md) |
 | W3 | Q24 | Expert overrides (WALLET-API.md) |
-| W4 | Q25 | PSBT size cap (WALLET-API.md) |
+| W4 | Q25 | PSBT size cap (WALLET-API.md). **2026-08-19: `StructuralLimits` gained a fifth field, `max_own_output_origins` = `multisig::MAX_COSIGNERS` = 15 - the origins naming this device allowed on one output, refused before check 3 derives anything. A refusal like the other four, not settable from any screen (Q24)** |
 | W5 | Q26 | `-final.txn` byte format (WALLET-API.md) |
 | - | Q27-Q32 | esptool vs espflash, vendoring components, Nix flake, signing-key hygiene, multi-party attestation, secure-boot key ownership (REPRODUCIBLE.md) |
 | OPEN-B1 | folded into Q14 | Encrypted backup, split into seedless and seed-bearing (BACKUP-FEATURES.md) |
 | OPEN-B2 | Q33 | Seed XOR part-generation default (BACKUP-FEATURES.md) |
 | OPEN-B3 | folded into Q17 as option (b) | SeedQR display behind a secret-QR screen class (BACKUP-FEATURES.md). **Label slip inside that document, found in the final sweep:** its section 6.1 calls this same item `OPEN-B5` and rows B22/B23 and sections 5 and 8 cite `OPEN-B5`, but section 9 defines only B1-B4 and defines this one as B3. There is no fifth open item - `OPEN-B5` is an alias for `OPEN-B3` and the substance is fully recorded in Q17. Fix the label the next time that document is edited. |
 | OPEN-B4 | Q34 | Publish the backup container format (BACKUP-FEATURES.md) |
-| - | Q35-Q38 | PIN pad shuffle domain, deliver escape hatch, wrong-PIN visibility, address truncation (UX-SCREENS.md) |
+| - | Q35-Q38 | PIN pad shuffle domain (**ratified 2026-08-17, REVERSED 2026-08-19: the pad is fixed phone order and nothing shuffles**), deliver escape hatch, wrong-PIN visibility, address truncation (UX-SCREENS.md) |
 | - | folded into Q24 | Expert overrides - the warning-versus-refusal line (UX-SCREENS.md) |
 | corpus-1..5 | Q39-Q43 | Corpus licensing, bitcoind in CI, HIL console, lookalike warning, HIL hardware (CORPUS.md) |
 | ESP-SEAL 2.4 | Q44 | esp-seal vs notyas-wallet crate boundary - **settled: notyas-wallet module, no crate; the WALLET-API `seal`/`store` overlap resolves in WALLET-API's favour** |

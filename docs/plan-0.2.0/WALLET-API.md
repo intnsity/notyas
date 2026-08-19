@@ -269,7 +269,8 @@ impl<'a> TypedName<'a> {
 pub struct Pin(/* Zeroizing<String> */);
 
 impl Pin {
-    /// OPEN-QUESTIONS Q5: minimum 6, no maximum below 64, full alphanumeric accepted.
+    /// OPEN-QUESTIONS Q4: minimum 4, no maximum below 64 characters, full alphanumeric
+    /// accepted.
     pub const MIN_CHARS: usize = 6;
     pub const MAX_CHARS: usize = 64;
     pub fn new(raw: &str) -> Result<Pin, PinRejected>;
@@ -907,6 +908,18 @@ pub struct Limits {
     pub max_inputs: u16,
     pub max_outputs: u16,
     pub max_path_depth: u8,
+    /// Origins naming THIS device allowed on ONE output, counted across
+    /// `bip32_derivation` and `tap_key_origins` together and refused BEFORE the first
+    /// derivation runs. Not a preference and not settable from any screen (Q24): a
+    /// legitimate output of ours is locked by one of our keys per cosigner slot we
+    /// fill, single-sig and BIP-86 key-path fill exactly one, and the largest P2WSH
+    /// wallet this device registers has `multisig::MAX_COSIGNERS` = 15 - so nothing
+    /// honest is above it. Without the bound a 1 MiB file admits roughly 17,000 such
+    /// entries at 170 us each against a 2-of-3 registration, which is minutes to an
+    /// hour of on-device derivation with nothing on screen. Foreign origins are
+    /// deliberately unbounded: a 15-cosigner output legitimately carries 14 and
+    /// reading one is a 4-byte compare. Added 2026-08-19.
+    pub max_own_output_origins: u8, // 15
     pub fee: FeeLimits,
     pub gap: GapBounds,
     pub sighash: SighashPolicy,
@@ -1133,7 +1146,7 @@ pub enum RefusalCode {
     MultisigNotRegistered, MultisigRegistrationMismatch, MultisigNotAMember,
     MultisigStatelessUnverifiable, MultisigScriptTypeUnsupported,
     // Gate 6
-    ChangeNotDerivable, OutputScriptUnparseable,
+    ChangeNotDerivable, OutputScriptUnparseable, TooManyOwnOutputOrigins,
     // Gate 7
     NegativeFee, FeeAboveHardCap, FeeArithmeticOverflow,
     // Gate 8
@@ -1312,7 +1325,7 @@ is a screen nobody reads).
 | 3 | `Prevouts` | 2 | `non_witness_utxo` present for every legacy and segwit-v0 input; its txid equals the outpoint's txid; its output amount equals the claimed amount. `witness_utxo` alone accepted for taproot only | NW over RB | BIP-143 fee attack (Trezor 2020) | `Refusal{MissingPreviousTransaction, PrevTxidMismatch, PrevAmountMismatch}` |
 | 4 | `InputOwnership` | 1 | for every input claiming our fingerprint: derive the key at the claimed path and rebuild the script; it must equal the input's actual script. Path sanity: purpose whitelist (44/48/49/84/86), depth bound, hardened-prefix shape | NW over RB | Coldcard change-path ransom 2019; forged origins | `Refusal{OriginDoesNotDeriveScript, PathOutsidePurposeWhitelist, PathTooDeep, PathHardenedShapeInvalid}` |
 | 5 | `MultisigBinding` | 4 | any input or output whose script is multisig must rebuild from a REGISTERED descriptor: membership, M, N, script type, derivation. PSBT-supplied cosigner xpubs are evidence to display, never a source of truth. In `SigningMode::Stateless` this gate refuses rather than downgrades | NW over MS | Coldcard xpub substitution 2021 (benma) | `Refusal{MultisigNotRegistered, MultisigRegistrationMismatch, MultisigNotAMember, MultisigStatelessUnverifiable}` |
-| 6 | `Outputs` | 3 | classify every output by exact descriptor derivation within `GapBounds`: External / Change(verified) / OwnNotChange. No script heuristics, no "looks like change". Non-address scripts get their own row rather than being skipped | MS derive + NW loop | Coldcard multisig change confusion 2019; change substitution; silent OP_RETURN | `Refusal{ChangeNotDerivable, OutputScriptUnparseable}`; `Warning{ChangePastGapBound, SelfSendNotChange, NonAddressOutput}` |
+| 6 | `Outputs` | 3 | classify every output by exact descriptor derivation within `GapBounds`: External / Change(verified) / OwnNotChange. No script heuristics, no "looks like change". Non-address scripts get their own row rather than being skipped. The count of origins naming THIS device on one output is bounded before the first derivation - see `max_own_output_origins` in 2.8 | MS derive + NW loop | Coldcard multisig change confusion 2019; change substitution; silent OP_RETURN; a hostile derivation map priced in minutes of on-device work | `Refusal{ChangeNotDerivable, OutputScriptUnparseable, TooManyOwnOutputOrigins}`; `Warning{ChangePastGapBound, SelfSendNotChange, NonAddressOutput}` |
 | 7 | `Fee` | 6 | fee = sum(validated prevout values) - sum(output values); refuse negative or overflowing; compute sat/vB from the projected vsize; compare against `FeeLimits` | RB arithmetic, NW thresholds | fee burn, dust-the-user attacks | `Refusal{NegativeFee, FeeAboveHardCap, FeeArithmeticOverflow}`; `Warning{FeeAbove*Threshold}` |
 | 8 | `Sighash` | 7 | every input we would sign uses SIGHASH_ALL (legacy/segwit-v0) or SIGHASH_DEFAULT (taproot); mixed types across our inputs refused | NW (rust-bitcoin would honor any type) | output swap after signing (SINGLE/NONE/ANYONECANPAY games) | `Refusal{SighashTypeNotWhitelisted, SighashTypeMixedAcrossInputs}` |
 | 9 | `Taproot` | 8 | key-path inputs: the claimed internal key tweaks to the actual output key; script-path leaves must come from a registered descriptor; any annex refused | RB tweak, NW/MS whitelist | key leak via unknown-leaf signing; annex smuggling | `Refusal{TaprootTweakMismatch, TaprootLeafNotRegistered, TaprootAnnexPresent}` |

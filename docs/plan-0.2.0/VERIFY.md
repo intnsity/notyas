@@ -72,7 +72,7 @@ a plausible default.
 ## 1. What 0.1.0 reports today, and how
 
 `firmware/src/verify.rs` builds a `notyas_ui::VerifyInfo` at boot and
-`crates/notyas-ui/src/screens.rs::verify_content` renders it as nine `kv` rows in a single
+`crates/notyas-ui/src/screens/verify.rs::content` renders it as nine `kv` rows in a single
 scrolling column. The nine:
 
 | Row | Source | Read how |

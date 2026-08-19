@@ -237,9 +237,37 @@ Later (0.3.0+):
 - Flashlight/illumination LED, autofocus-module evaluation, scanning-UX polish
   beyond the basic viewfinder (defer to this directory's UX.md where present).
 
-Decision requested from the user: adopt path 1 (CSI camera in 0.2.0) or path 2
-(SD-only 0.2.0, camera in 0.3.0). Path 3 (USB-UVC) is recommended for rejection
-in either case.
+**DECIDED 2026-08-19 by the project owner: PATH 2. SD-only in 0.2.0; the camera moves to
+0.3.0.** Path 3 (USB-UVC) stays rejected, as recommended in either case.
+
+What that means concretely, so nobody re-opens it:
+
+- The m11 HOST half still ships in 0.2.0 - the SeedQR and CompactSeedQR decoders, the
+  ingress validator and its fuzzers are pure Rust and were built without a module present.
+  They ship UNPROVEN AGAINST REAL OPTICS, and BOARDS.md and the release artifact must both
+  carry `camera: built, not hardware-verified`, which MILESTONES section 9 clause 1
+  explicitly permits.
+- Every gate marked [HW-CAMERA] stays outstanding and is not waived. PARITY.md's camera
+  rows stay class c for one more release.
+- The security story is unchanged by this. Coldcard's microSD PSBT flow is the cited
+  precedent that an SD-only airgap is legitimate on its own, and SD is the only ingress
+  path 0.2.0 has to harden rather than two.
+
+Circumstances, recorded because they are the reason and not an anecdote. On 2026-08-19 an
+OV2640 module was fitted to the Elecrow's FPC3 and inserted end-for-end reversed. That maps
+a supply rail onto a ground pin; the module reached burning temperature and the board's
+CH340K stopped enumerating until the module was removed. Board B recovered completely -
+same MAC, eFuse byte-identical, sealed store mounting with epoch and next_seq unchanged and
+no tamper flag - but the episode is why section 1.3's warning exists and why it is worth
+re-reading before the 0.3.0 bring-up:
+
+- An OV2640 is a DVP sensor. Both camera connectors in this project are MIPI-CSI. Identical
+  pin count and pitch does not mean compatible signalling, and no passive adapter bridges
+  parallel CMOS to differential D-PHY - that needs an active bridge chip.
+- The 0.3.0 module is an **OV5647 Pi-camera-class board, 15-pin 1.0 mm, into the Waveshare
+  4B's J1 only**. Verify the sensor marking reads OV5647 (not OV5640, not IMX219 - the P4
+  has no driver for either) and that the module carries its own oscillator, because J1
+  supplies no clock.
 
 Repo files consulted: docs/research/hardware.md, docs/research/elecrow-board.md.
 

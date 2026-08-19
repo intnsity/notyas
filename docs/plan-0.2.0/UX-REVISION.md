@@ -39,10 +39,12 @@ Also correct the separation requirement while it is being written: R-SEPARATION 
 ### A4. Keypad control keys: relabel and freeze their slots
 **Changes:** S-04 pad, `PinBackspace`, `PinAlpha`.
 
-Label the key `Backspace`, per S-04's own region table - "Back" collides with the bar's `< Back` and the copy vocabulary (UX-SCREENS 3.1) assigns "Back" to exactly one concept. Then close the ambiguity the wireframe leaves: the 3x4 grid has 12 slots and only 10 digits. **Freeze slot 10 (bottom-left) to `PinAlpha` and slot 12 (bottom-right) to `PinBackspace`; shuffle the 10 digits over slots 1-9 and 11.** A control key that moves per attempt makes the user hunt, and hunting on a PIN pad is exactly what shoulder-surfing wants.
+Label the key `Backspace`, per S-04's own region table - "Back" collides with the bar's `< Back` and the copy vocabulary (UX-SCREENS 3.1) assigns "Back" to exactly one concept. Then close the ambiguity the wireframe leaves: the 3x4 grid has 12 slots and only 10 digits. **Freeze slot 12 (bottom-right) to `PinBackspace`, put the commit key in slot 10 (bottom-left) - the slot reserved for `PinAlpha`, which 0.2.0 declares and never emits - and print the digits in fixed phone order over slots 1-9 and 11: 1-2-3 / 4-5-6 / 7-8-9 with the 0 in slot 11.**
 
-**Derivation:** Trezor/Keystone randomized pads shuffle digits only; C10's "reshuffle per attempt, not per keystroke" is the same principle applied to which glyphs move.
-**Scope:** inside 0.2.0 (a clarification C10 must carry before implementation).
+**Amended 2026-08-19.** As first written this item shuffled the ten digits over those slots and froze the two controls so that a key which moved per attempt could not make the user hunt. The project owner reversed the shuffle after using it on hardware (OPEN-QUESTIONS Q35, reversed), so nothing on the pad moves any more and the freeze needs the other half of its justification, which is the half that survives: one of those two keys spends an attempt when it is hit, so it must not sit where a finger aiming for a digit lands. The 0 keeps the bottom-centre slot for the same reason it always had - that is where every keypad ever built puts it.
+
+**Derivation:** the telephone and cash-machine keypad, which is what the reversal bought and what the shipped grid must therefore match exactly. The Trezor/Keystone precedent this item originally derived from - shuffle the digits, never the controls - was followed until 2026-08-19; what is left of it here is that the control keys stay out of the digit block.
+**Scope:** inside 0.2.0 (a clarification C10 carried before implementation; its shuffle half is superseded by Q35's reversal).
 
 ### A5. Every number on a PIN screen is read from the store - and the wipe-off state gets real copy
 **Changes:** S-04 attempt line, S-06 policy line, S-44 wrong-PIN policy row.
@@ -115,10 +117,10 @@ Three decisions to make now rather than after:
 ### A10. `PinAlpha` must not silently discard C10's protection
 **Changes:** S-04 / S-06, C9, C10.
 
-Tapping `abc` swaps the randomized pad for the standard C9 keyboard, which is not shuffled and which lights the pressed key. Every protection C10 is built on evaporates and nothing on screen says so. Two changes:
+Tapping `abc` swaps the digit pad for the standard C9 keyboard, which lights the pressed key. The one protection C10 still has evaporates and nothing on screen says so. One change, and one withdrawal:
 
-- When C9 is serving a PIN field, **C10's rule carries over**: press feedback is drawn on the dot row, never on the key. This is a per-field mode on the keyboard, not a new component.
-- One line under the keyboard: `"Letter keys are not shuffled."`
+- When C9 is serving a PIN field, **C10's rule carries over**: press feedback is drawn on the dot row, never on the key. This is a per-field mode on the keyboard, not a new component. After Q35's reversal this is the whole of what C10 protects, so it is not optional and the keyboard is the only place it could have been dropped by accident.
+- **Withdrawn 2026-08-19:** the line `"Letter keys are not shuffled."` As first written it warned that the keyboard lost a protection the digit pad had. The digit pad no longer has it (Q35, reversed), so the sentence would state a difference that does not exist and imply a defence on the pad the product has stopped making. A line that is not true does not ship - C3's own rule.
 
 **Derivation:** novel. Coldcard Q has a physical keyboard; no surveyed device offers an on-screen alphanumeric PIN, so no one has had to state this boundary. It is also the C10 principle stated correctly - feedback is deliberately non-local, which is transferable to any keyboard.
 **Scope:** inside 0.2.0 (both are already-specified components).

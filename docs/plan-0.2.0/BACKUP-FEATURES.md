@@ -325,8 +325,8 @@ protecting their seed on a memory card.
 | Entropy source | user-chosen, nudged toward passphrases | **device-guided dice**, 12 BIP-39 words, 128 bits |
 | Stretching | Argon2id **plus HMAC-eFuse binding** | Argon2id only |
 | Attack model | must execute on this physical device until a fault-injection lab extracts the eFuse key (SECURITY tier 2) | fully offline and parallel from the moment the card is taken |
-| Rate limiting | wipe-on-N (Q3, default 10) | none, ever, by construction |
-| Floor | 6 digits (Q5) | 128 bits, not user-lowerable |
+| Rate limiting | wipe-on-N (Q5, default 15) | none, ever, by construction |
+| Floor | 4 characters (Q4) | 128 bits, not user-lowerable |
 | Ever stored | no | no |
 | Ever in a backup | **no** | no |
 | Recovery if lost | wipe and restore from mnemonic | the file is gone; the mnemonic is still the recovery path |

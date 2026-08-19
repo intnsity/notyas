@@ -144,7 +144,10 @@ Two rules, and the difference is who chose the secret.
   Honest note, stated here because it is a real tradeoff: a shoulder surfer learns
   the PIN's *length* from the dot count. Every hardware wallet on the market accepts
   this, because hiding your own progress from yourself causes far more entry errors
-  than the length leak costs; the randomized pad is what protects the digits.
+  than the length leak costs. What the pad used to add - a shuffle, so that the
+  positions an observer watched meant nothing on the next attempt - was reversed on
+  2026-08-19 (Q35), so nothing on this screen protects the digits from someone who can
+  see the hand. That is the trade the owner took, and it is recorded in Q35 in full.
 - **Typed-name confirmations are never masked.** The whole point is that the user
   reads back the name of the thing being destroyed.
 - **No QR is ever generated from a masked or derived-secret value.** 0.1.0's QR scope
@@ -326,6 +329,13 @@ is not tappable; it fills over 1500 ms while held.
 - **DECISION:** hold duration is a constant, not a setting. A user-shortenable hold
   is a user-shortenable safety interlock.
 
+**Implementation gap, noted 2026-08-19.** `crates/notyas-ui/src/danger.rs` implements
+three of these four grades - `DangerGrade::{Confirm, Hold, Typed}`, mapped by their own
+constructors to C4b, C4c and C4d. C4a has no variant, so every reversible confirmation in
+the tree is built at C4b and wears the red card. Recorded as K23 in `docs/KNOWN-ISSUES.md`,
+which also states why closing it is a decision rather than a patch. No fourth variant has
+been invented here.
+
 **C4d. Typed-name - destructive and unrecoverable-on-device.** Delete wallet, factory
 wipe, PIN change confirmation of the old-ciphertext erase.
 
@@ -465,27 +475,39 @@ One caption plus one long value, plus optional QR button. Evolves 0.1.0's `qr_bl
 - **Word counter** in the well header: "word 7 of 12" (`MONO_SMALL`, `INK_SECONDARY`).
 - Keys keep the audited 40 px row floor; Done/Backspace/Shift keep >= `TOUCH_MIN`.
 
-### C10. Keypad (randomized)
+### C10. Keypad (fixed phone order)
 
-The PIN pad. Ten digit keys plus backspace plus submit.
+The PIN pad, used by S-04 and by S-06/S-07. Ten digit keys plus backspace plus a
+commit key.
 
-- **Layout is reshuffled on every entry attempt**, not on every keystroke: a pad that
-  moves under the finger causes mistaps, and per-attempt shuffling is what defeats
-  smudge and shoulder-surfing (Trezor/Keystone pattern, commandment 5).
+- **Layout is fixed and identical everywhere**: 1-2-3 / 4-5-6 / 7-8-9 with 0 centred
+  on the last row, the arrangement every telephone and cash machine has taught. It is
+  a constant in the UI crate, not a value the embedder supplies, so a device draws it
+  correctly with nothing installed and the two PIN screens cannot disagree about where
+  a digit is.
+- **The two cells flanking the 0 are controls, never digits** - commit on the left,
+  backspace on the right - and they never move. A key that spends an attempt, or that
+  formats the device, must not sit where a finger aims for a digit.
 - **Touch-down highlight must not reveal position**: the pressed state is drawn on
   the *dot row*, not on the key. The key itself does not change appearance on press.
   This is the one place in the product where a control gives no local press feedback,
-  and it is deliberate; the dot row appearing one bullet longer is the feedback.
+  and it is deliberate. It survives the reversal below on a different argument than
+  the one it was written with: on a fixed pad a lit 80 px cell IS the digit, legible
+  across a room, in a window reflection and in a camera frame where the hand covers
+  the glyph but not the border.
 - Keys >= `KEYPAD_KEY_MIN` (80 px) each.
-- Digits are `MONO` (a randomized pad with proportional digits is harder to scan).
-- Shuffle source: **deterministic, not the distrusted P4 TRNG** (invariant 3). The
-  permutation is derived per attempt from `HMAC_efuse(domain || attempt_counter ||
-  seal_seq)` truncated to a Fisher-Yates index stream. This is a display permutation,
-  not key material; it must be unpredictable to a shoulder-surfer, not to a
-  cryptanalyst, and deriving it keeps invariant 3 mechanically checkable.
-  `OPEN:` if the reconciliation pass prefers a dedicated shuffle domain key, that is
-  a one-line HKDF-info change - recommendation is to keep it under the existing
-  device-bound ladder with its own info string.
+- Digits are `MONO`.
+
+**REVERSED 2026-08-19 (OPEN-QUESTIONS Q35).** As specified and as shipped at m4a, this
+control reshuffled the ten digits on every entry attempt - never per keystroke, because a
+pad that moves under the finger causes mistaps - from `HMAC_efuse(domain ||
+attempt_counter || seal_seq)` truncated to a Fisher-Yates index stream, which kept
+invariant 3 (no RNG anywhere) mechanically checkable. The project owner used it on
+hardware and reversed it, accepting in writing that a fixed pad means one clear look at
+the hand yields the PIN. Q35 records the trade, what was given up and why the decision was
+his to make. The whole derivation was then deleted - the request, the setter, the vault
+method and its HKDF info string - because a derivation nothing uses is a claim the source
+no longer supports.
 
 ### C11. QrPlayer (animated)
 
@@ -831,7 +853,7 @@ under the pad, `SEPARATION_MIN` clear of the last key row.
 
 | RegionId | Label | Min size | Enabled when |
 |---|---|---|---|
-| `PinKey(u8)` (x10) | shuffled digit | 80x80 | always |
+| `PinKey(u8)` (x10) | digit, fixed phone order | 80x80 | always |
 | `PinBackspace` | "Backspace" | 80x80 | length > 0 |
 | `PinAlpha` | "abc" | 80x80 | always (switches to C9 keyboard for alphanumeric PINs) |
 | `PinShowWords` | "Show device words" | 260x`TOUCH_MIN` | length >= 4, words not yet shown |
@@ -848,9 +870,11 @@ under the pad, `SEPARATION_MIN` clear of the last key row.
 - Attempt line: "9 of 10 tries left". At <= 3: `WARNING` ink and the fuller sentence
   "3 tries left. At 0 the device erases its stored wallets; your dice rolls or seed
   words are the only way back."
-- Wrong PIN: the dot row clears, a `DANGER` line appears under it - "Wrong PIN."
-  and the pad reshuffles.
-- Submit disabled reason: "A PIN is at least 6 characters."
+- Wrong PIN: the dot row clears and a `DANGER` line appears under it - "Wrong PIN."
+  The pad does not change; it never does (C10, reversed 2026-08-19).
+- Submit disabled reason: "A PIN is at least N characters.", where N is the live
+  floor the store formats at - never a literal (Q4 ratified 4; Q37 requires every
+  number on a PIN screen to be a format over runtime policy).
 
 **Masked / shown.** One bullet per typed character, unmasked count implied (see 0.6).
 There is no reveal toggle on the PIN field - a PIN is short, retypeable, and shoulder
@@ -946,7 +970,7 @@ Next -> S-07.
 |  A digits-only PIN protects against theft, not against a funded       |
 |  lab. Letters and symbols make offline guessing far harder.           |
 |                                                                       |
-|              ( randomized keypad, as S-04, + [ abc ] )                |
+|                  ( keypad, as S-04, + [ abc ] )                       |
 |                                                                       |
 |  After 10 wrong PINs the device erases its stored wallets.            |
 |                                                                       |
@@ -956,6 +980,33 @@ Next -> S-07.
 
 **Reflow (800x480).** Explanation and meter left, pad right; the policy line moves
 under the explanation column.
+
+**Built 2026-08-19. Three deviations from the wireframe above, each deliberate.**
+
+1. **No strength meter and no `digits only` caption.** The bar the wireframe draws has
+   exactly one band on the pad that ships: this build has ten digit keys and no
+   alphanumeric page (`PinAlpha` is declared and never emitted), so every PIN a user can
+   type scores the same and a meter would move for no reason a user could act on. The
+   honesty the caption was for is carried by the sentence that stayed - "A digits-only PIN
+   protects against theft, not against a funded lab." The meter comes back with the
+   keyboard page, not before.
+2. **No `PinPolicyInfo` region.** There is no sub-screen behind it, and a drawn button
+   nothing hit-tests is a button that lies. The wipe policy is stated as a sentence
+   formatted from the store's live `wipe_after` (Q37) rather than from the literal 10 the
+   wireframe carries.
+3. **The pad is fixed phone order, not S-04's shuffle.** S-04's shuffle was itself
+   reversed on 2026-08-19 (C10, Q35). "As S-04" therefore still holds and is what makes
+   it hold: a create screen that shuffled while the unlock screen did not would teach one
+   layout and then ask for the PIN on another.
+
+The floor is read from the store (`LockInfo::min_pin_len`, 4 by the ratified PIN-MODES
+answer), not from the 6 this section's edge states still name - see the note there.
+
+**Not built, and an owner decision rather than an omission:** the anti-phishing words are
+never shown at creation, so a user has no chance to learn them at the moment the PIN is
+set. The wireframe has no words panel, so the screen follows the spec - but this is the
+natural place to memorise them, and the first place they appear today is S-04, where the
+user is being asked to check them against a memory they were never given.
 
 **Regions.** As S-04's pad, plus:
 
@@ -974,7 +1025,8 @@ never a bit count, because a bit count for a human-chosen PIN would be a lie.
 why the confirm step exists instead).
 
 **Edge states.**
-- Below 6 characters: Next disabled, reason "A PIN is at least 6 characters."
+- Below the store's floor: Next disabled, reason "A PIN is at least N characters.",
+  where N is the live floor the store formats at, never a literal (Q4, Q37).
 - All-same-digit or trivially sequential PIN (`111111`, `123456`): allowed, with a
   `WARNING` line "This PIN is one of the first an attacker tries." **DECISION:**
   warn, do not block. A blocklist teaches attackers the blocklist and infuriates
@@ -1609,9 +1661,15 @@ slots are used. Delete a wallet first." and Use-once remains available.
 
 **Regions.** `NameField`, keyboard regions, `ConfirmSave` (>= 280x`btn`).
 
-**Copy.** The C12 WriteNotice text is verbatim above. Save button label "Save wallet".
-If no PIN exists yet, tapping Save routes through S-06/S-07 first and the button
-label reads "Set a PIN and save".
+**Copy.** The C12 WriteNotice text is verbatim above. Save button label "Save wallet",
+always. **Corrected 2026-08-19 as built:** the second label never ships, because this
+screen is not where a device without a PIN meets the PIN step. S-06's own Enter/Exit line
+puts that step on S-19 ("From S-19 ... when no PIN exists"), and PIN-MODES puts the moment
+at the choice to save rather than at the naming of what is saved - so by the time S-20 is
+reached the device always has a PIN and there is no second case for the label to cover.
+The fork's Save card carries the warning instead: on a device with no PIN it reads "Sets a
+PIN first. The PIN is the key.", which is where a user still has the choice in front of
+them.
 
 **Masked / shown.** Name unmasked (typed, and it is a label, not a secret).
 
@@ -2033,7 +2091,7 @@ S-27.
 
 ```
 +----------------------------------------------------------------------+
-| < Back   Review                                       [ 1 / 9 ]       |
+| < Back   Review                                       [ 1 / 10 ]      |
 +----------------------------------------------------------------------+
 |  +-----------------------------------------------------------------+  |
 |  |  Leaving this wallet        0.12 345 678 BTC                    |  |
@@ -2051,6 +2109,16 @@ S-27.
 |                                             [       Next >       ]    |
 +----------------------------------------------------------------------+
 ```
+
+**Page count. Corrected 2026-08-19 against the implementation.** The traversal is
+`1 + n_in + n_out + 2` - the overview, one page per input, one page per output, then the
+fee page and the warnings page. `TxReview::pages` is the single definition of it and
+computes `3 + inputs.len() + outputs.len()`; the bar's `[ i / n ]`, the visited set that
+gates the hold and the Next target all read that one function, so they cannot disagree by
+one. The worked example carried through S-30..S-35 is 3 inputs and 4 outputs, which is 10
+pages and not 9, and the fee page is 9 rather than 8. Every counter in those six screens
+was renumbered on that basis, along with the disabled-hold reason on S-35. The per-page
+indices were already right; only the denominator and the fee's own index were wrong.
 
 **Reflow (800x480).** Summary card left, the four-row fact table right; action row
 across the bottom.
@@ -2082,7 +2150,7 @@ it by definition and the label says which wallet.
 
 ```
 +----------------------------------------------------------------------+
-| < Back   Input 2 of 3                                 [ 3 / 9 ]       |
+| < Back   Input 2 of 3                                 [ 3 / 10 ]      |
 +----------------------------------------------------------------------+
 |  Amount            0.05 000 000 BTC                                   |
 |  From              m/84'/0'/0'/0/4        yours (a1b2c3d4)            |
@@ -2121,7 +2189,7 @@ prevouts. Non-taproot with `witness_utxo` only: never reaches this screen (R-02)
 
 ```
 +----------------------------------------------------------------------+
-| < Back   Output 1 of 4                                [ 5 / 9 ]       |
+| < Back   Output 1 of 4                                [ 5 / 10 ]      |
 +----------------------------------------------------------------------+
 |  +-----------------------------------------------------------------+  |
 |  |  EXTERNAL - leaving your wallet                                 |  |
@@ -2178,10 +2246,26 @@ at four groups per line.
 **Masked / shown.** Nothing masked. Ever.
 
 **Edge states.**
-- `CHANGE - CLAIMED, NOT VERIFIED` is a refusal condition, full stop (R-03). It never
-  renders as a signable page. **Corrected 2026-08-17 by the ratified Q24: this entry
-  previously described an expert-override mode with a "Hold to sign anyway" action, and
-  no override may disable a refusal.** There is no such mode.
+- `CHANGE - CLAIMED, NOT VERIFIED` renders as a page, and that page can never be signed.
+  **Corrected 2026-08-19 against the implementation.** This entry read "is a refusal
+  condition, full stop (R-03). It never renders as a signable page", and the shipped
+  engine contradicts the first clause. `notyas-core`'s `inspect` does not fail on an
+  unproven change claim: it returns `OutputRole::ClaimedButUnproven` inside a clean
+  `Inspection`, `OutputRole::is_change` answers false for it, and the output is therefore
+  counted as money LEAVING in every total the screen computes - `firmware/src/hil.rs`
+  logs it as `CLAIMED_BUT_UNPROVEN` on a successful inspection. Dropping its page would
+  remove an output from a traversal whose entire purpose is that no output goes unseen,
+  which is a worse failure than the one the old wording was guarding against.
+- The security intent is unchanged, and the mechanism carrying it moved rather than
+  vanished. R-03 is raised where the CONSENT is, not where the parsing is: the hold does
+  not exist while any output carries this role (`ReviewState::blocker`, re-asked at
+  `activate` so a caller that bypasses `regions` cannot get past it), the last page states
+  "This transaction cannot be signed here.", and there is no override anywhere on the path
+  (ratified Q24 - the 2026-08-17 correction that deleted the "Hold to sign anyway" action
+  stands, and there is still no such mode). The badge is `DANGER` on `DANGER_TINT` and
+  outranks the script's own shape in the badge precedence, and the word CHANGE never
+  appears on it without CLAIMED, NOT VERIFIED beside it. The page says the claim was made
+  and not believed, which is strictly more than a bare refusal screen said.
 - Stateless multisig (Q12): change cannot be verified without a registration, so the
   claim is refused. **There is no override badge and no override mode**, for the same
   reason: SECURITY invariant 7 is written without exceptions, and a setting that
@@ -2199,7 +2283,7 @@ at four groups per line.
 
 ```
 +----------------------------------------------------------------------+
-| < Back   Output 3 of 4                                [ 7 / 9 ]       |
+| < Back   Output 3 of 4                                [ 7 / 10 ]      |
 +----------------------------------------------------------------------+
 |  +-----------------------------------------------------------------+  |
 |  |  DATA - not spendable                                           |  |
@@ -2222,10 +2306,28 @@ characters or spoof the UI.
 
 **Edge states.** Unknown script type: badge `UNKNOWN SCRIPT`, the script rendered as
 disassembly if `rust-bitcoin` can, hex if not, plus "This device cannot tell who can
-spend this output." A transaction containing one is refused (R-09 family). **There is no
-expert override; corrected 2026-08-17 by the ratified Q24.** (Cross-reference erratum
-noted while correcting: R-09 is "This file is malformed", not the unknown-script
-refusal; point this at the right row when the refusal manifest is next revised.)
+spend this output." A page and a warning, never a refusal.
+
+**Corrected 2026-08-19 against the implementation.** This paragraph said "A transaction
+containing one is refused (R-09 family)", and both halves were wrong. No `CheckFailure`
+refuses an unclassifiable output: `ScriptKind::Other` is a legal payment in `notyas-core`,
+and the ten checks constrain the scripts this device SIGNS - an input of ours that is not
+P2WPKH, P2SH-P2WPKH, P2TR key-path or a registered P2WSH is `ClaimedInputNotSingleSig` -
+while saying nothing about where a transaction may pay. R-09 is "This file is malformed",
+which an unrecognised output script is not.
+
+The correction is the right design and not only the accurate one. Refusing every script
+this device does not recognise would hard-code an expiry date into the product: the next
+output type Bitcoin adopts would make every wallet that used it unsignable here, on a
+device whose claim is that it can be verified rather than trusted, and the user would have
+no way to tell a new standard from an attack. So the output gets its own page like any
+other, the badge is `DANGER` on `DANGER_TINT` and outranks the role - "who can spend this"
+is unanswered, and no role means anything without it - the amount counts as money leaving
+in every total, and S-35 carries the warning "Output 3 pays a script this device cannot
+classify. / Nobody here can tell you who will be able to spend it." The user decides, with
+the fact in front of them, whether that is acceptable. **There is no expert override; the
+2026-08-17 Q24 correction stands, and there is now nothing to override, because there is
+no refusal.**
 
 ---
 
@@ -2237,11 +2339,11 @@ refusal; point this at the right row when the refusal manifest is next revised.)
 
 ```
 +----------------------------------------------------------------------+
-| < Back   Fee                                          [ 8 / 9 ]       |
+| < Back   Fee                                          [ 9 / 10 ]      |
 +----------------------------------------------------------------------+
 |  Fee               0.00 004 210 BTC                                   |
 |                    4210 sats                                          |
-|                    18.6 sat/vB   (226 vB)                             |
+|                    18.6 sat/vB   (226 vB, estimated)                  |
 |                    3.4% of the amount leaving                         |
 |                                                                       |
 |  Fee is computed by this device from the inputs it checked, not       |
@@ -2261,9 +2363,23 @@ wallet software." Negative fee is R-06, never a page.
 Locktime set: "Locktime  block 812,000 - this transaction is not valid before that
 block." or the timestamp form. Non-final sequences without RBF: "Replaceable  no".
 
-**Edge states.** vsize is computed post-signing-estimate; the screen says "(226 vB,
-estimated)" when the estimate is not exact (multisig with unknown final witness
-sizes), because an exact-looking number that shifts after signing erodes trust.
+**Edge states. Corrected 2026-08-19 against the implementation.** The wireframe printed a
+bare "(226 vB)" and this paragraph reserved the word "estimated" for multisig with unknown
+final witness sizes. Both understated it: a vsize quoted BEFORE signing is an estimate for
+every ECDSA input, multisig or not. `notyas-core` grinds low-R (`sign_ecdsa_low_r`,
+ratified Q3), which BOUNDS an ECDSA signature at `MAX_ECDSA_SIGNATURE_LEN` = 71 bytes
+rather than fixing it there - R and S are DER-minimal, so a leading zero byte in either
+(roughly one signature in 64) encodes a byte shorter and the broadcast transaction lands
+smaller than the number on this page. The only input whose witness size is known before it
+is signed is taproot key-path under SIGHASH_DEFAULT, where BIP-341 fixes the Schnorr
+signature at 64 bytes with no encoding left to vary.
+
+So the row reads "(226 vB, estimated)" whenever any input this device will sign is ECDSA,
+and drops the qualifier only when every one of them is taproot key-path.
+`TxReview::vsize_exact` is exactly that predicate; its doc comment names only the multisig
+case today and is listed as an outside-fence correction. The reason is the one the old
+paragraph gave and it is worth keeping: an exact-looking number that shifts after signing
+erodes trust in every other number on the screen.
 
 ---
 
@@ -2276,15 +2392,15 @@ hold.
 
 ```
 +----------------------------------------------------------------------+
-| < Back   Warnings                                     [ 9 / 9 ]       |
+| < Back   Warnings                                     [ 10 / 10 ]     |
 +----------------------------------------------------------------------+
 |  +-----------------------------------------------------------------+  |
 |  |  1. Fee is 12.4% of the amount leaving.                         |  |
 |  |     0.00 004 210 BTC on 0.00 034 000 BTC sent.                  |  |
 |  +-----------------------------------------------------------------+  |
 |  +-----------------------------------------------------------------+  |
-|  |  2. Output 2 pays an address this wallet has already paid.      |  |
-|  |     Reuse links your payments together.                         |  |
+|  |  2. Outputs 2 and 4 pay the same address.                       |  |
+|  |     This transaction pays it twice; check that is intended.     |  |
 |  +-----------------------------------------------------------------+  |
 |                                                                       |
 |  These are not errors. Read them, then sign or go back.               |
@@ -2295,10 +2411,33 @@ hold.
 
 **Regions.** `ReviewPrev`, `HoldConfirm` (C4c), `Back`. The hold region appears only
 here and only when the visited-set is complete; otherwise a `Disabled` button reads
-"Review all 9 pages first - 2 not yet seen."
+"Review all 10 pages first - 2 not yet seen."
 
 **Copy.** Warnings are numbered, each two lines: what, and why it matters. No
 warning may be a bare noun phrase.
+
+**Corrected 2026-08-19 against the implementation.** The second example read "Output 2
+pays an address this wallet has already paid. / Reuse links your payments together." That
+is not a warning this device can raise. Reuse against a wallet's PAST is a statement about
+transaction history, and an airgapped signer has none - it holds a seed, wallet slots and
+multisig registrations, and it sees exactly one PSBT at a time, with no chain, no index and
+no network. A warning the firmware cannot evaluate either never fires or is fabricated, and
+both are worse than its absence: a page of warnings a user learns to distrust is the page
+the whole review builds towards.
+
+Scoped to what one `Inspection` decides, the reuse-shaped warnings are two:
+
+- **Two outputs in THIS transaction paying the same script.** "Outputs 2 and 4 pay the
+  same address. / This transaction pays it twice; check that is intended." Decided by
+  comparing `OutputFacts::script_pubkey` within the file, which is all the device holds.
+- **A self-send.** An output whose role is `OwnNotChange` - ours, on the RECEIVE keychain,
+  and so not netted out of the amount leaving: "Output 3 pays an address of this wallet. /
+  It is not change, so the amount leaving counts it as money sent."
+
+The rule that generalises, and the one to apply to any warning added later: every warning
+on this page is a predicate over a single `Inspection`. The fee thresholds, the dust limit,
+the locktime, the unproven-amount caveat and the unknown-field count all qualify. Anything
+needing history, a price, a clock or a network does not, and does not belong here.
 
 **Edge states.** No warnings: the page still exists (so the page count is stable and
 the hold is always in the same place) and reads "No warnings." plus the same hold.
@@ -2345,7 +2484,6 @@ band. Done -> S-21.
 |  +-----------------------------------------------------------------+  |
 |  |  This writes to the card:                                       |  |
 |  |    psbt-2026-08-17-signed.psbt   (2.6 kB)                       |  |
-|  |    psbt-2026-08-17-final.txn     (0.4 kB)                       |  |
 |  |  Nothing secret is written.                                     |  |
 |  +-----------------------------------------------------------------+  |
 |                                                                       |
@@ -2370,11 +2508,33 @@ power-cycled anyway (which is the same outcome, minus the informed consent).
 
 **Copy.** Partial signature (multisig, not yet complete): the status card reads
 "Signed 1 of 2 required signatures - this transaction still needs another cosigner."
-and the `-final.txn` line is absent.
+
+**What 0.2.0 writes. Corrected 2026-08-19 against the implementation.** Q26 specified a
+second file beside the signed PSBT, `psbt-2026-08-17-final.txn`, carrying the extracted
+network transaction. 0.2.0 does not write it, and the wireframe above has been cut to what
+it does write. `notyas-core` has no finalizer and no `extract_tx`: `psbt::sign` adds
+`partial_sigs` and `tap_key_sig` and nothing else, and `firmware/src/signing.rs`'s `Signed`
+hands back exactly one artifact, `psbt::encode(signed.psbt())`. So a delivery writes ONE
+file, the signed PSBT, which is what every coordinator this device targets accepts and
+finalizes for itself.
+
+The `.txn` file is **awaiting a finalizer**, not dropped, and what it waits on is named so
+nobody re-derives the absence: witness assembly per script type plus an extractor in
+`notyas-core`, then a second `Artifact` and the write plan behind it. `FileKind::Txn`
+already exists in the picker's vocabulary and stays. Until a finalizer ships, no screen may
+print a `.txn` name.
+
+One copy item follows from this and is left **OPEN** rather than rewritten here: the status
+card's "This transaction is complete and ready to broadcast." is true of the SIGNATURES and
+not of the file, since a signed PSBT still has to be finalized by the coordinator. Reword
+it with the finalizer decision, not before it.
 
 **Edge states.**
-- Card missing at write time: R-24 inline (band, not a screen) "No card detected."
-  with `[ Check again ]`; the QR exit stays available.
+- Card missing at write time: R-23 inline (band, not a screen) "No card detected."
+  with `[ Check again ]`; the QR exit stays available. **Corrected 2026-08-19: this cited
+  R-24, which is "No PSBT files on this card" - the read-time code for a card carrying no
+  transaction. The sentence quoted here was already R-23's, so the code was the only thing
+  wrong.**
 - Write failed part way: R-25 "Card write failed. The file may be incomplete - delete
   it before reusing the name." plus Retry and the QR exit.
 - Existing file with the target name: C4a overwrite confirm.
@@ -3008,6 +3168,10 @@ decision; the outcome of each is stated first.
 - **PIN pad shuffle domain -> Q35, accepted as specified.** One added requirement from
   Q45: this derivation runs on the eFuse key, so it cannot run on an unprovisioned
   device and that path needs specified behaviour.
+  **REVERSED 2026-08-19.** The pad is fixed phone order and nothing is derived for it,
+  so the Q45 requirement above no longer applies to this item. The recommendation kept
+  below is the record of a decision that was made, held for two days, and then
+  overturned by the project owner - see Q35 and C10 for what was traded.
 - **Deliver escape hatch -> Q36, accepted.**
 - **Wrong-PIN policy visibility -> Q37, ratified in the form that holds under every Q2
   outcome:** the threshold is always shown; the slot count's visibility is Q2's to

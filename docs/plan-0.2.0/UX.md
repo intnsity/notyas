@@ -24,8 +24,12 @@ hold-progress. ASCII only on-screen where mono verification data is shown.
 4. The device authenticates itself to the user before the user authenticates to it:
    anti-phishing words at half-PIN (https://coldcard.com/anti-phishing-words);
    Verify screen always one tap away.
-5. Randomize the PIN pad every attempt; never echo digits; touch-down highlight must
-   not reveal position (Trezor/Keystone pattern).
+5. Fixed phone-order PIN pad - 1-2-3 / 4-5-6 / 7-8-9 over a 0, the same on every
+   attempt; never echo digits; the touch-down highlight is drawn on the dot row, never
+   on the key. The per-attempt shuffle this commandment used to require (Trezor/Keystone
+   pattern) was built, used on hardware, and reversed by the project owner on 2026-08-19
+   (Q35), knowing that fixed positions let one look at the hand yield the PIN. The
+   non-local highlight stays, and matters more for it.
 6. Statelessness is a feature with a border: "use once, keep nothing" stays a
    first-class path, and every write to flash or SD is announced on-screen before
    it happens.
@@ -109,8 +113,9 @@ Signing flow (the flagship):
 
 1. (E) **Boot / Self-test** - 0.1.0 screen + new lines: storage state (blank / N
    wallets), signing known-answer check result, seal/unseal self-check result.
-2. (N) **PIN entry** - randomized 10-key pad (reshuffled every attempt), 6+ digits
-   or switch to full keyboard for passphrase-PIN; masked dots (fixed-length mask
+2. (N) **PIN entry** - fixed phone-order 10-key pad (1-2-3 / 4-5-6 / 7-8-9 over a 0,
+   not shuffled - Q35, reversed 2026-08-19), 6+ digits or switch to full keyboard for
+   passphrase-PIN; masked dots (fixed-length mask
    discipline from 0.1.0); anti-phishing words after the PIN prefix with "words
    wrong? STOP - this may not be your device"; remaining-attempts line; escalating
    delay rendered as a countdown, not a frozen screen.
@@ -206,8 +211,9 @@ geometries (and the portrait scaffolds keep their UNVERIFIED boot warning).
   screens) extend to every new screen; the existing "two mnemonics render
   byte-identical masked frames" test style is applied to PIN entry and session
   screens.
-- New interaction primitives are exactly three: randomized keypad, hold-to-confirm
-  (tick-driven), animated QR (tick-driven). Everything else composes 0.1.0 widgets.
+- New interaction primitives are exactly three: the PIN keypad (fixed phone order
+  since Q35's reversal), hold-to-confirm (tick-driven), animated QR (tick-driven).
+  Everything else composes 0.1.0 widgets.
 - Refusal screens are first-class deliverables with their own corpus-driven tests:
   every policy-engine rejection reason has a screen with the exact rendered text
   asserted in CI.

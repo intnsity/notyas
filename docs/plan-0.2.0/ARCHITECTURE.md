@@ -124,7 +124,7 @@ alternatives, and why:
 ### 2.2 The key ladder
 
 All primitives vetted; construction ours. PIN means "PIN or passphrase" throughout -
-the entry surface accepts full alphanumeric (OPEN-QUESTIONS Q4, ratified: minimum 6
+the entry surface accepts full alphanumeric (OPEN-QUESTIONS Q4, ratified: minimum 4
 characters, no maximum below 64).
 
 ```
@@ -188,18 +188,40 @@ No published Argon2-on-ESP32 numbers exist; PSRAM random-access latency will dom
 (https://www.pschatzmann.ch/home/2022/05/30/esp32-and-psram/). Milestone m1 benchmarks
 on the rev v1.3 board: starting point m=64 MiB in PSRAM, t=3, p=1, target 0.5-2 s per
 unlock; fallback m=16 MiB in internal SRAM at higher t if PSRAM is pathological.
-Benchmark caveat (red-team): on the P4, enabling flash encryption ALSO encrypts all
-external-PSRAM traffic with the same XTS machinery, non-optionally
+Benchmark caveat (red-team), **RETIRED 2026-08-18 by the ratified Q63 (a)**. It is
+kept rather than deleted because it drove the dev-board allocation in ESP-SEAL 6.3 and
+a reader who finds that table changed deserves to see what changed under it. It said:
+on the P4, enabling flash encryption ALSO encrypts all external-PSRAM traffic with the
+same XTS machinery, non-optionally
 (https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32p4/security/flash-encryption.html),
-so release units pay an extra latency cost the bare dev board does not. The m1
-benchmark must therefore measure with flash+PSRAM encryption enabled (a sacrificial
-dev unit or the eFuse-emulation path), or the pinned parameters will overshoot the
-unlock-time target on release hardware. Side benefit, stated honestly: on release
-units the Argon2 working memory is encrypted at rest in PSRAM; on dev boards it is
-plaintext PSRAM (in-package die, still probe-resistant in practice, no claim made).
-Parameters are then pinned in SPEC + known-answer vectors, and the boot self-test runs
-a reduced-cost pinned vector (full-cost KDF does not fit the 1 s self-test budget -
-documented in the self-test source).
+so release units would pay a latency cost the bare dev board does not, and the m1
+benchmark therefore had to run with flash and PSRAM encryption ENABLED or the pinned
+parameters would overshoot the unlock target on release hardware. **Q63 (a) burns no
+flash-encryption key on any device, release units included.** There is no encrypted
+configuration to measure, no dev-versus-release latency gap, and the unencrypted m1
+numbers ARE the shipping numbers: the requirement is obsolete and the benchmark that
+was performed is the correct one.
+
+**This resolves in the project's favour, and it is worth saying which way.** It
+retires a measurement that could not be taken: MEASUREMENTS.md section 10 records that
+neither bench board could enter the encrypted configuration without an irreversible
+burn on hardware the project depends on, so "measure with encryption on" was an open
+item with no way to close it. It also declines a brick risk that was being accepted
+purely to serve that benchmark (ESP-SEAL 6.2): flash encryption in Development mode
+permits only a bounded number of plaintext re-flashes, governed by an eFuse counter
+whose P4 value was never read (measurement M7, never performed), and Release mode
+permanently disables the UART download path - which, for a signer with no OTA by
+design, is the end of the update route. Neither risk is taken now, and the boards stay
+reflashable, which is also what lets a verifier flash what they built.
+
+The cost is real and belongs here rather than only in SECURITY.md: the Argon2 working
+memory is plaintext in PSRAM on every unit, dev and release alike (in-package die,
+still probe-resistant in practice, no claim made) - the old "side benefit" sentence
+described a release configuration that will not exist - and the wallets partition has
+no at-rest encryption at all (ESP-SEAL 6.3; SECURITY.md tier 1 states it plainly and
+must keep doing so). Parameters are then pinned in SPEC + known-answer vectors, and
+the boot self-test runs a reduced-cost pinned vector (full-cost KDF does not fit the
+1 s self-test budget - documented in the self-test source).
 
 ### 2.4 Randomness policy: fully deterministic (decision)
 
