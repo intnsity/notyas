@@ -17,4 +17,4 @@
 # job-object concern, not a parallelism one - capping jobs would trade build
 # throughput for a bound it does not actually enforce.
 [build]
-target-dir = "C:/nyt-host"
+target-dir = "C:/nb/host"

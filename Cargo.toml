@@ -30,8 +30,14 @@ members = [
     "crates/esp-idf-hmac",
     "crates/notyas-wallet",
     "firmware",
+    # Host cover for the pure half of firmware/src/wallet (see its Cargo.toml). It links
+    # no esp-idf and is not part of any image; it exists so that the sealed record format
+    # is tested by `cargo test` at all, which - the firmware not being buildable on a host -
+    # it never was.
+    "firmware/hostcheck",
     "tools/uisim",
     "tools/fonts/atlasgen",
+    "tools/psbtgen",
 ]
 # A bare `cargo build` / `cargo test` from the root builds only the host-safe
 # crates. The firmware needs the ESP toolchain + nightly; build it through
@@ -48,8 +54,18 @@ default-members = [
     "crates/notyas-fonts",
     "crates/esp-idf-hmac",
     "crates/notyas-wallet",
+    "firmware/hostcheck",
     "tools/uisim",
     "tools/fonts/atlasgen",
+    # The release-bar harness (MILESTONES.md section 9 clause 2). A DEFAULT member on
+    # purpose: it is the tool that decides whether a signed PSBT would be accepted, so a
+    # bare `cargo test` and CI's `cargo clippy --all-targets` have to cover it. It depends
+    # on notyas-core's `testkit` feature, which cargo therefore unifies into any build that
+    # includes this member - a host build, and only ever a host build. The firmware is not
+    # a default member and psbtgen is not in its graph, so the feature has no path into the
+    # device image, and tools/build-graph-check.sh asserts the default graph the firmware
+    # links.
+    "tools/psbtgen",
 ]
 
 # Lifted from firmware/Cargo.toml: a workspace root is the only place cargo

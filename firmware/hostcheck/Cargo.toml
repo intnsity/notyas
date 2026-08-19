@@ -1,0 +1,34 @@
+# Host cover for the firmware's pure wallet code.
+#
+# The firmware crate itself cannot be tested on a host at any price: it depends on
+# esp-idf-svc unconditionally, so `cargo test -p notyas-firmware` needs ESP-IDF, the
+# nightly pin and -Zbuild-std, and CI therefore never compiles firmware/src at all
+# (.github/workflows/ci.yml says so out loud). What that leaves untested is the sealed
+# record format - the bytes that decide whether a wallet the user saved can ever be read
+# back - and it went untested long enough for the touch UI's save path to write raw
+# mnemonic bytes into a slot instead of a record.
+#
+# So this package compiles the pure half of that code as it stands, by path, and tests it:
+# no esp-idf, no Store, no flash. The technique is tools/ci/check-hil-fence.sh's, and so is
+# the rule that comes with it - THE FILE UNDER TEST IS THE REAL ONE, byte for byte, never a
+# copy. A copy would drift, and a test over a drifted copy is worse than no test.
+#
+# Not a device package: nothing links this, and it is not in tools/build-graph-check.sh's
+# IMAGE_PACKAGES for that reason.
+
+[package]
+name = "notyas-firmware-hostcheck"
+version = "0.2.0"
+authors = ["intnsity <at@intnsity.com>"]
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.85"
+publish = false
+
+[dependencies]
+# The same two crates firmware/src/wallet/record.rs imports, at the firmware's own pins.
+# `qr` is off because the record format does not draw anything; nothing else differs.
+notyas-core = { path = "../../crates/notyas-core", default-features = false }
+zeroize = { version = "1.9.0", default-features = false, features = ["alloc"] }
+# The vocabulary `flow/model.rs` renders into. Same crate, same pins, no feature of its own.
+notyas-ui = { path = "../../crates/notyas-ui" }

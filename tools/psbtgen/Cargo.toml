@@ -1,0 +1,35 @@
+# The release-bar harness for MILESTONES.md section 9 clause 2.
+#
+# Clause 2 asks for one thing that no test in this tree could previously produce: a PSBT a
+# real device can be handed, and an answer to "would a coordinator accept what came back".
+# This crate is both halves. `generate` writes the files an operator copies to a microSD
+# card (and the same bytes as hex, for the serial route); `verify` takes the signed file
+# back and re-derives every amount, recomputes every sighash and checks every signature
+# against the public key the file declares, then finalizes, extracts and prices the
+# transaction. `sign` is the host stand-in for the device, and `selftest` is the proof that
+# the verifier can tell a good signature from a bad one before it is pointed at hardware.
+#
+# Host-only, by construction as well as by intent: it is not a workspace default member's
+# dependency, nothing in firmware/ names it, and it never runs on the device.
+[package]
+name = "psbtgen"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Builds the notyas device-test PSBT set from published BIP-39 vectors and verifies a signed PSBT the way a coordinator would"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+# The only dependency, and that is a correctness argument rather than minimalism. Every
+# type this tool needs - the derivation, the multisig registration, the PSBT engine, and
+# `bitcoin` itself through the core's `pub use bitcoin` re-export - arrives on the core's
+# own exact pin. A second `bitcoin` line here could resolve to a different secp256k1 or a
+# different consensus encoding than the device signed under, and a verifier that disagrees
+# with the signer about what a transaction serializes to is worse than no verifier.
+#
+# `default-features = false` drops `qr`, which needs std and has nothing to do with this.
+# `testkit` is what makes `notyas_core::psbt::fixture` reachable: `selftest` runs the
+# verifier against the very corpus the engine's own tests are pinned to, so a divergence
+# is attributable to this tool rather than to a second, unpinned copy of the fixtures.
+notyas-core = { path = "../../crates/notyas-core", default-features = false, features = ["testkit"] }
