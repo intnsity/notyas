@@ -193,6 +193,42 @@ pub(crate) fn device_keys<M: DeviceMac>(
 ///
 /// The scratch buffer is zeroized on every path out of here, including the error paths:
 /// it is the largest secret-bearing region in the system.
+///
+/// # Residual: the Blake2b pre-hash state cannot be wiped, and it is not just H0
+///
+/// `argon2` forms H0 by feeding the parameters, the PIN and `kdf_salt` into a Blake2b-512
+/// hasher inside its private `initial_hash`. Enabling argon2's `zeroize` feature (see this
+/// crate's `Cargo.toml`) wipes the H0 OUTPUT and the block memory. It cannot wipe the
+/// HASHER, and no feature selection anywhere in the graph can: the hasher belongs to
+/// `blake2` 0.10.6, which declares no `zeroize` feature and no `Drop`, and it sits on
+/// `digest` 0.10.7 and `block-buffer` 0.10.4, which declare neither one either. The newer
+/// generation this crate otherwise rides does wipe - `sha2` 0.11 sits on `block-buffer`
+/// 0.12, which is `ZeroizeOnDrop` - but `argon2` 0.5.3 is pinned to the older one, which is
+/// why both generations appear in `Cargo.lock`. `initial_hash` is private, so there is no
+/// call this crate can make that reaches the state to wipe it itself.
+///
+/// What that leaves on the stack after every unlock is worse than H0. Blake2b buffers
+/// LAZILY - its final block has to be compressed with the finalization flag, so nothing is
+/// compressed until more than one 128-byte block has arrived - and the message here is 40
+/// bytes of parameter fields, then the PIN, then the 32-byte `kdf_salt`: `72 + pin_len`.
+/// For any PIN of 56 bytes or fewer, which is every PIN this product expects, no
+/// compression happens at all and the entire message, INCLUDING THE PIN IN CLEARTEXT, is
+/// still sitting in that buffer when `finalize` consumes the hasher by value and drops it.
+/// The chaining state beside it is H0-equivalent on its own: whoever recovers it finishes
+/// the hash and has the correct Argon2id input without ever knowing the PIN. That is not a
+/// cheaper grind, it is the end of the grind - the memory-hard wall is not weakened but
+/// skipped, one [`bind`] call on the held board is all that is left, and the wipe-after-N
+/// counter never engages because no guess is ever offered to the device.
+///
+/// The exposure is one of PERSISTENCE rather than of a new secret. [`crate::Pin`] and
+/// [`Bound`] are wiped when they drop, so a RAM snapshot catches them only during an
+/// unlock; this residue outlives the unlock until something else happens to reuse the
+/// frame. Closing it needs `blake2` to gain zeroize-on-drop upstream, or an Argon2id whose
+/// pre-hash this crate owns. Scrubbing the stack from here was considered and rejected: it
+/// would have to overwrite a frame depth this crate cannot know, on a task stack it does
+/// not size, and 0.2.0 ships without Secure Boot v2 and without flash encryption, so the
+/// attacker who can read that RAM has cheaper routes to it. Stated as an accepted residual,
+/// not as a claim of safety.
 pub(crate) fn prestretch(
     pin: &[u8],
     kdf_salt: &[u8; 32],
@@ -227,8 +263,17 @@ pub(crate) fn bind<M: DeviceMac>(
 pub(crate) const DERIVE_MAX_LABEL: usize = 64;
 pub(crate) const DERIVE_MAX_DATA: usize = 256;
 
-/// Embedder-facing device-bound derivation: anti-phishing words, the PIN-pad permutation,
-/// lock-screen words.
+/// Longest output [`device_derive`] can produce: RFC 5869 section 2.3 bounds HKDF at
+/// `L <= 255*HashLen`, and HashLen is 32 for SHA-256.
+///
+/// A bound on the OUTPUT is a security control here and not a range check. `expand`
+/// refuses an oversized request without touching the caller's buffer, so an accepted
+/// derivation that quietly failed would hand back whatever the caller initialised -
+/// typically zeros - under an `Ok`. The named consumer is the anti-phishing words, which
+/// would become a constant that looks derived.
+pub(crate) const DERIVE_MAX_OUT: usize = 255 * 32;
+
+/// Embedder-facing device-bound derivation: anti-phishing words, lock-screen words.
 ///
 /// Tag `0x7f` and length-prefixed inputs, so it can never collide with an internal
 /// message, whose payloads are fixed-length and whose tags are `0x01..0x0f`. That
@@ -240,13 +285,19 @@ pub(crate) const DERIVE_MAX_DATA: usize = 256;
 /// everything past a 96-byte staging buffer, which would have let `(label, data)` pairs
 /// that differ only past the cut produce the same words - the exact collision the length
 /// prefix exists to prevent, reintroduced by the buffer behind it.
+///
+/// An oversized OUTPUT is refused for the mirror-image reason. `expand` cannot serve past
+/// [`DERIVE_MAX_OUT`] and returns its error without writing a byte, so accepting the call
+/// would report a successful derivation over the caller's own buffer, which is zeros for
+/// every caller that initialises one. `false` here, not an ignored error.
 pub(crate) fn device_derive<M: DeviceMac>(
     mac: &mut M,
     label: &[u8],
     data: &[u8],
     out: &mut [u8],
 ) -> Result<bool, M::Error> {
-    if label.len() > DERIVE_MAX_LABEL || data.len() > DERIVE_MAX_DATA {
+    if label.len() > DERIVE_MAX_LABEL || data.len() > DERIVE_MAX_DATA || out.len() > DERIVE_MAX_OUT
+    {
         return Ok(false);
     }
     // Lengths are bounded above by the constants just checked, so both casts are exact.
@@ -269,7 +320,14 @@ pub(crate) fn device_derive<M: DeviceMac>(
     // HKDF over the MAC so the caller can ask for any output size without the framing
     // changing, and so an output length is never itself a domain separator by accident.
     let h = Hkdf::<Sha256>::new(None, root.as_slice());
-    let _ = h.expand(b"esp-seal/device-derive/v1", out);
+    // The length check above already excludes the only failure `expand` has, so this
+    // branch is unreachable. It is still a branch rather than `let _ =`, because the one
+    // thing this function must never do is report a derivation it did not perform, and
+    // that guarantee should not rest on DERIVE_MAX_OUT agreeing forever with a bound
+    // held inside another crate.
+    if h.expand(b"esp-seal/device-derive/v1", out).is_err() {
+        return Ok(false);
+    }
     Ok(true)
 }
 
@@ -311,21 +369,33 @@ impl RecordInfo {
 }
 
 /// A record key and its nonce. Never `Clone`; zeroized on drop.
+///
+/// The two accessors hand out COPIES, and the copies carry the guard with them. A bare
+/// `[u8; 32]` return would leave a live ChaCha20-Poly1305 record key on the caller's stack
+/// after every record operation, outliving the `Okm` whose drop guard is supposed to be
+/// the whole story (ESP-SEAL.md 5.5 lists `okm` as drop-guarded for its lifetime, and a
+/// copy is part of that lifetime). Blast radius is one record rather than the ladder,
+/// which is why this is a hole in the discipline rather than a break of it - but the
+/// discipline is that a memory dump taken after an unlock is worthless.
+///
+/// `Zeroizing<[u8; N]>` derefs to `[u8; N]`, so `&okm.key()` still coerces to the
+/// `&[u8; 32]` the AEAD wants and the call sites are unchanged; the temporary is wiped
+/// when the enclosing expression ends.
 pub(crate) struct Okm(Zeroizing<[u8; 44]>);
 
 impl Okm {
-    pub fn key(&self) -> [u8; 32] {
-        let mut k = [0u8; 32];
+    pub fn key(&self) -> Zeroizing<[u8; 32]> {
+        let mut k = Zeroizing::new([0u8; 32]);
         if let Some(src) = self.0.get(..32) {
-            k.copy_from_slice(src);
+            k.as_mut_slice().copy_from_slice(src);
         }
         k
     }
 
-    pub fn nonce(&self) -> [u8; 12] {
-        let mut n = [0u8; 12];
+    pub fn nonce(&self) -> Zeroizing<[u8; 12]> {
+        let mut n = Zeroizing::new([0u8; 12]);
         if let Some(src) = self.0.get(32..44) {
-            n.copy_from_slice(src);
+            n.as_mut_slice().copy_from_slice(src);
         }
         n
     }
@@ -383,4 +453,128 @@ pub(crate) fn aead_open(
 /// Constant-time byte comparison, for every secret and every MAC.
 pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     a.ct_eq(b).into()
+}
+
+// ---------------------------------------------------------------------------
+// Tests of the ladder's own arithmetic
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    // Test code, not sealing code. An assertion that trips should stop loudly with the
+    // message it was given, which is the opposite of the rule the engine itself lives
+    // under; same exemption sim.rs and fuzz.rs take, for the same reason.
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects
+    )]
+
+    use super::*;
+    use crate::sim::SoftMac;
+    use alloc::vec;
+
+    /// RFC 5869 Appendix A.1, Test Case 1: "Basic test case with SHA-256".
+    ///
+    /// The vector is here rather than only in tests/vectors.rs because everything above
+    /// it in this module - every record key, the guard key, the header key, the filler
+    /// root - is this one function. A KAT on the primitive says the disagreement is in
+    /// the primitive; a KAT on the whole image only says the image moved.
+    #[test]
+    fn hkdf_matches_rfc_5869_test_case_1() {
+        // RFC 5869 A.1: IKM = 0x0b x 22, salt = 0x000102...0c, info = 0xf0f1...f9, L = 42.
+        let ikm = [0x0bu8; 22];
+        let salt: [u8; 13] = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+        ];
+        let info: [u8; 10] = [0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9];
+        // RFC 5869 A.1, OKM (42 octets).
+        let expect: [u8; 42] = [
+            0x3c, 0xb2, 0x5f, 0x25, 0xfa, 0xac, 0xd5, 0x7a, 0x90, 0x43, 0x4f, 0x64, 0xd0, 0x36,
+            0x2f, 0x2a, 0x2d, 0x2d, 0x0a, 0x90, 0xcf, 0x1a, 0x5a, 0x4c, 0x5d, 0xb0, 0x2d, 0x56,
+            0xec, 0xc4, 0xc5, 0xbf, 0x34, 0x00, 0x72, 0x08, 0xd5, 0xb8, 0x87, 0x18, 0x58, 0x65,
+        ];
+        assert_eq!(hkdf::<42>(&ikm, &salt, &info).as_slice(), &expect);
+    }
+
+    /// RFC 5869 Appendix A.3, Test Case 3: "Test with SHA-256 and zero-length salt/info".
+    ///
+    /// Included because a zero-length salt is the one input shape where HKDF-Extract's
+    /// HMAC key is degenerate, and `hkdf::<N>` always passes `Some(salt)`.
+    #[test]
+    fn hkdf_matches_rfc_5869_test_case_3() {
+        // RFC 5869 A.3: IKM = 0x0b x 22, salt = (0 octets), info = (0 octets), L = 42.
+        let ikm = [0x0bu8; 22];
+        // RFC 5869 A.3, OKM (42 octets).
+        let expect: [u8; 42] = [
+            0x8d, 0xa4, 0xe7, 0x75, 0xa5, 0x63, 0xc1, 0x8f, 0x71, 0x5f, 0x80, 0x2a, 0x06, 0x3c,
+            0x5a, 0x31, 0xb8, 0xa1, 0x1f, 0x5c, 0x5e, 0xe1, 0x87, 0x9e, 0xc3, 0x45, 0x4e, 0x5f,
+            0x3c, 0x73, 0x8d, 0x2d, 0x9d, 0x20, 0x13, 0x95, 0xfa, 0xa4, 0xb6, 0x1a, 0x96, 0xc8,
+        ];
+        assert_eq!(hkdf::<42>(&ikm, &[], &[]).as_slice(), &expect);
+    }
+
+    /// FINDING A. RFC 5869 section 2.3 bounds the output at `L <= 255*HashLen`, and the
+    /// `expand` under this function returns the error WITHOUT touching the caller's
+    /// buffer. Reporting success over that untouched buffer would turn the anti-phishing
+    /// words - the named consumer, and security-visible - into a constant of whatever the
+    /// caller happened to initialise.
+    #[test]
+    fn device_derive_refuses_an_output_longer_than_hkdf_can_produce() {
+        let mut mac = SoftMac::new();
+        let mut out = vec![0xa5u8; DERIVE_MAX_OUT + 1];
+        let accepted = device_derive(&mut mac, b"antiphishing", b"12", &mut out).expect("mac");
+        assert!(
+            !accepted,
+            "an output past 255*HashLen must be refused, not reported as derived"
+        );
+        assert!(
+            out.iter().all(|b| *b == 0xa5),
+            "a refused derivation must leave the caller's buffer alone rather than \
+             half-filling it"
+        );
+    }
+
+    /// The bound is exact, not conservative: the largest output RFC 5869 permits is still
+    /// served, so the refusal above cannot be satisfied by simply lowering the ceiling.
+    #[test]
+    fn device_derive_serves_the_largest_output_rfc_5869_permits() {
+        let mut mac = SoftMac::new();
+        let mut out = vec![0u8; DERIVE_MAX_OUT];
+        assert!(device_derive(&mut mac, b"antiphishing", b"12", &mut out).expect("mac"));
+        assert!(
+            out.iter().any(|b| *b != 0),
+            "an accepted derivation must actually fill the buffer"
+        );
+    }
+
+    /// FINDING B. The record key handed to the AEAD is a COPY of what `Okm`'s drop guard
+    /// covers, so the copy needs a guard of its own or an un-wiped ChaCha20-Poly1305 key
+    /// outlives every record operation on the stack (ESP-SEAL.md 5.5 puts `okm` under a
+    /// drop guard for its whole lifetime, and a copy is part of that lifetime).
+    ///
+    /// The annotation is the assertion. `Zeroizing` wipes on drop and a bare `[u8; 32]`
+    /// does not, so widening the return type back to a raw array fails to compile here
+    /// rather than failing silently on the stack.
+    #[test]
+    fn a_record_key_handed_out_is_still_covered_by_a_drop_guard() {
+        let info = RecordInfo {
+            slot_class: 1,
+            slot_index: 2,
+            slot_side: 0,
+            provenance: 0,
+            wipe_epoch: 7,
+            pin_gen: 3,
+            seal_seq: 11,
+            domain_prefix: [0x5a; 8],
+        };
+        let okm = record_okm(&[0x11; 32], &[0x22; 32], &info);
+        let expect = hkdf::<44>(&[0x11; 32], &[0x22; 32], &info.encode());
+
+        let key: Zeroizing<[u8; 32]> = okm.key();
+        let nonce: Zeroizing<[u8; 12]> = okm.nonce();
+        assert_eq!(key.as_slice(), &expect[..32]);
+        assert_eq!(nonce.as_slice(), &expect[32..44]);
+    }
 }

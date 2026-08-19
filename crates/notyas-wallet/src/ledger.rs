@@ -840,10 +840,39 @@ pub(crate) fn tick_boot<F: Flash, M: DeviceMac>(
     Ok(state.boot_count())
 }
 
+/// Record the boot index the owner marked as seen (VERIFY.md 6.3).
+///
+/// The mark lives in the auxiliary head, and a head is only ever written into a freshly
+/// erased sector, so setting it IS a rotation - the same single-head-write commit point
+/// the boot log already relies on, carrying the count across in `boot_base` exactly as an
+/// exhausted-array rotation does. A cut before that write leaves the old side
+/// authoritative with the old mark; a cut after leaves the new side, which carries the
+/// higher `rotation_ctr` and wins the scan. No intermediate state moves the count.
+pub(crate) fn set_acknowledged<F: Flash, M: DeviceMac>(
+    flash: &mut F,
+    keys: &DeviceKeys,
+    state: &mut AuxState,
+    at: u64,
+) -> Result<(), StorageError<F::Error, M::Error>> {
+    rotate_aux_to::<F, M>(flash, keys, state, at)
+}
+
 fn rotate_aux<F: Flash, M: DeviceMac>(
     flash: &mut F,
     keys: &DeviceKeys,
     state: &mut AuxState,
+) -> Result<(), StorageError<F::Error, M::Error>> {
+    let keep = state.head.acknowledged_at;
+    rotate_aux_to::<F, M>(flash, keys, state, keep)
+}
+
+/// Flip the auxiliary pair to its other side, installing `acknowledged_at` in the new
+/// head. The only writer of an auxiliary head after `create_aux`.
+fn rotate_aux_to<F: Flash, M: DeviceMac>(
+    flash: &mut F,
+    keys: &DeviceKeys,
+    state: &mut AuxState,
+    acknowledged_at: u64,
 ) -> Result<(), StorageError<F::Error, M::Error>> {
     let target_side = state.side.other();
     let target = AUX_SECTORS
@@ -861,7 +890,7 @@ fn rotate_aux<F: Flash, M: DeviceMac>(
         side: target_side as u8,
         rotation_ctr: state.head.rotation_ctr.saturating_add(1),
         boot_base: state.boot_count(),
-        acknowledged_at: state.head.acknowledged_at,
+        acknowledged_at,
     };
     let bytes = head.encode(&keys.guard_key);
     write_head::<F, M>(flash, target, &bytes)?;

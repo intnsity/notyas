@@ -23,6 +23,17 @@
 //! the settable policy. Where this implementation had to make a call those documents did
 //! not settle, the call is marked with a `DEVIATION` comment at the site.
 //!
+//! # The one thing here that is not sealed storage
+//!
+//! [`transport`] encodes bytes into animated QR frames (UR2 and BBQr) and holds the
+//! [`Playback`] state screen 11's controls move. It shares nothing
+//! with the sealing engine and would sit more naturally in `notyas-core`, but MILESTONES.md
+//! section 6 (R6) keeps UR and transport encoding inside a GPL crate so that the
+//! permissively licensed ones stay clear of it, and this is the GPL crate that already
+//! links into the firmware. The module is self-contained and has no dependency on anything
+//! else here; see `transport`'s own documentation for why the encoding is written rather
+//! than imported.
+//!
 //! # What it is not
 //!
 //! It is not a secure element. It has no key store hardened against fault injection, no
@@ -80,8 +91,15 @@ mod pin;
 #[cfg(feature = "testkit")]
 mod probe;
 mod records;
+// The card layer (0.2.0-m5): the bounded, validated half of the microSD subsystem, over a
+// `sd::Volume` the firmware implements against ESP-IDF's FATFS. Shares nothing with the
+// sealing engine; see the module's own docs for why it lives in this crate anyway.
+// Deliberately NOT a doc comment: an outer one here makes rustdoc resolve the module's
+// intra-doc links in THIS file's scope, and every one of them then breaks.
+pub mod sd;
 mod session;
 mod slot;
+pub mod transport;
 mod vault;
 
 #[cfg(feature = "testkit")]
@@ -101,6 +119,10 @@ pub use hal::{DeviceMac, Flash, Geometry, KeyProvenance, Region, Scratch, Scratc
 pub use pin::{Pin, PinError};
 pub use session::{Liveness, Session, DEFAULT_AUTO_LOCK_MS};
 pub use slot::{Identity, Side, SlotClass, SlotId, SlotMap, SlotState};
+pub use transport::{
+    Animation, Payload, Playback, Speed, Transport, TransportError, DEFAULT_MAX_FRAGMENT,
+    DENSITY_STEPS, MAX_PARTS, SPEED_STEPS,
+};
 pub use vault::{Destroyed, StoreState, Vault};
 
 /// On-flash format revision. Bound into every AEAD's associated data, so a store written

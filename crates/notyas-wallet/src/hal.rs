@@ -18,6 +18,8 @@
 //! platform-trait contracts for exactly this class of reason, so the ESP-SEAL shape is
 //! what is implemented.
 
+use zeroize::Zeroize;
+
 use crate::config::KdfParams;
 
 /// Which of the two raw partitions an access targets.
@@ -189,10 +191,54 @@ impl<'a> Scratch<'a> {
     /// including error paths: this is the largest secret-bearing region in the system
     /// and leaving Argon2 state in PSRAM after an unlock hands a cold-boot attacker the
     /// intermediate values the ladder exists to protect (ESP-SEAL.md 5.5).
+    ///
+    /// `Zeroize`, not `*block = ScratchBlock::default()`. 5.5 specifies volatile writes
+    /// plus a fence, and this is the mechanism that supplies both; a plain assignment is
+    /// an ordinary store the optimiser is entitled to remove. Today it would not: the
+    /// buffer is borrowed through a `&mut` that outlives the call, so no dead-store
+    /// analysis can prove the writes unobservable, and the previous form was sound for
+    /// that reason rather than by construction. It stopped being an argument worth
+    /// resting on the moment it depended on the caller's lifetimes: inlining `Scratch`
+    /// into a frame that drops the buffer straight afterwards - a stack-allocated working
+    /// set on a small board, or any future `Scratch` that owns its blocks - makes the
+    /// stores provably dead and the wipe disappears with no diagnostic anywhere.
+    ///
+    /// `argon2/zeroize` is what supplies `impl Zeroize for Block`, and Cargo.toml turns
+    /// that feature on for a separate reason of its own. If it were ever dropped this
+    /// line fails to compile, which is the correct failure: a silently absent wipe is
+    /// exactly what the feature flag is there to prevent.
     pub(crate) fn wipe(&mut self) {
         for block in self.blocks.iter_mut() {
-            *block = ScratchBlock::default();
+            block.zeroize();
         }
-        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Test code, not sealing code; same exemption sim.rs takes and for the same reason.
+    #![allow(clippy::expect_used, clippy::indexing_slicing)]
+
+    use super::*;
+
+    /// FINDING C. The working set is the largest secret-bearing region in the system, and
+    /// ESP-SEAL.md 5.5 is unconditional about it: zeroized on EVERY return path. This
+    /// pins the observable half of that - that the bytes are gone afterwards. The other
+    /// half, that the stores survive the optimiser, is a property of `Zeroize`'s volatile
+    /// write and cannot be observed from inside the program that performed it.
+    #[test]
+    fn wipe_leaves_no_byte_of_the_working_set_set() {
+        let mut blocks = alloc::vec![ScratchBlock::default(); 8];
+        for b in blocks.iter_mut() {
+            b.as_mut().fill(0xdead_beef_dead_beef);
+        }
+        let mut scratch = Scratch::new(&mut blocks);
+        scratch.wipe();
+        assert!(
+            blocks
+                .iter()
+                .all(|b| b.as_ref().iter().all(|word| *word == 0)),
+            "a wiped working set must hold no residue of the Argon2id state"
+        );
     }
 }

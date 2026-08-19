@@ -23,11 +23,21 @@ testkit = []
 # than hygiene: chacha20poly1305 enables `getrandom` by default and argon2 enables
 # `rand`, either of which would put an RNG in the device image and break SECURITY.md
 # invariant 3. tools/build-graph-check.sh asserts the result.
-argon2 = { version = "0.5.3", default-features = false }
+# argon2's `zeroize` feature is ON deliberately, and it is not hygiene either. Without it
+# every wipe inside the crate is #[cfg]'d out, and H0 - the Blake2b-512 pre-hash of the
+# PIN and the KDF salt - is left on the stack after every unlock, twice, because
+# fill_blocks takes it by value. H0 is computed BEFORE the eFuse binding is applied, so
+# an attacker who recovers it from a held board can grind PIN guesses offline at one
+# Blake2b per guess: that defeats the memory-hard wall and the device binding at the same
+# time, and the wipe-after-N counter never engages because no attempt reaches the device.
+# The feature pulls nothing new into the graph - zeroize is already a direct dependency
+# below, and argon2 declares its own zeroize dep as optional with no default - so this
+# does not put an RNG in the image.
+argon2 = { version = "0.5.3", default-features = false, features = ["zeroize"] }
 chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["zeroize"] }
 hkdf = { version = "0.13.0", default-features = false }
-hmac = { version = "0.13.0", default-features = false }
-sha2 = { version = "0.11.0", default-features = false }
+hmac = { version = "0.13.0", default-features = false, features = ["zeroize"] }
+sha2 = { version = "0.11.0", default-features = false, features = ["zeroize"] }
 subtle = { version = "2.6.1", default-features = false }
 zeroize = { version = "1.9.0", default-features = false, features = ["alloc", "derive"] }
 
@@ -39,4 +49,11 @@ zeroize = { version = "1.9.0", default-features = false, features = ["alloc", "d
 notyas-wallet = { path = ".", features = ["testkit"] }
 # The known-answer vectors digest whole flash images, so the test harness needs a hash.
 # Not a dependency of the crate itself.
-sha2 = { version = "0.11.0", default-features = false }
+sha2 = { version = "0.11.0", default-features = false, features = ["zeroize"] }
+# MILESTONES.md 0.2.0-m8 asks the transport to carry what the PSBT engine produces, and a
+# test that says so has to be able to call both. A DEV dependency only, in one direction
+# only: `transport` compiles and ships without it, nothing outside `#[cfg(test)]` names it,
+# and `tools/build-graph-check.sh` reads `--edges normal`, so the device image is untouched.
+# `default-features = false` drops the core's `qr` feature, whose `qrcode` needs std.
+notyas-core = { path = "../notyas-core", default-features = false }
+

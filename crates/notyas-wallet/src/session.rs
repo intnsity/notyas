@@ -118,6 +118,16 @@ impl Session {
         self.auto_lock_ms
     }
 
+    /// Milliseconds of idle left before [`Session::tick`] would report `Expired`.
+    ///
+    /// Here rather than in the product because the timeout and the elapsed time are both
+    /// this type's state: a caller recomputing it from `auto_lock_ms` and a `Liveness` is
+    /// a second copy of one subtraction, and the two drift the moment `set_auto_lock_ms`
+    /// is called from a settings screen.
+    pub fn remaining_ms(&self) -> u32 {
+        self.auto_lock_ms.saturating_sub(self.idle_ms)
+    }
+
     pub fn set_auto_lock_ms(&mut self, ms: u32) {
         self.auto_lock_ms = ms;
     }

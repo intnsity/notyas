@@ -688,6 +688,61 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
     /// [`StorageError::Capacity`]. Truncating instead would let two inputs that differ
     /// only past the cut derive the same value, which is precisely what the length prefix
     /// is there to stop.
+    ///
+    /// An `out` longer than 8160 bytes (RFC 5869's `255*HashLen` for SHA-256) is refused
+    /// the same way. This one is a promise about `out` rather than about the inputs: on
+    /// `Ok`, every byte of `out` has been derived. The alternative is worse than a short
+    /// read, because HKDF declines an oversized request without writing anything at all,
+    /// so the caller would keep whatever it initialised and believe it derived it.
+    ///
+    /// # The pre-PIN oracle on the eFuse key: examined, and accepted for 0.2.0
+    ///
+    /// This is the only path in the system that drives the read-protected eFuse key with
+    /// input the attacker picks. It needs no PIN - only [`Vault::mount`], since the device
+    /// keys are PIN-independent - and it does not touch the attempt counter. Through
+    /// [`Vault::anti_phishing_words`] the product calls it on every keypress of the PIN
+    /// prefix, so someone holding a locked board gets one HMAC per tap over a message they
+    /// chose, and gets unlimited repeats of one identical message by retyping the same
+    /// prefix, which is exactly the input pattern a differential power or EM measurement
+    /// wants. The wipe-after-N counter, which bounds trace collection everywhere else, does
+    /// not reach here.
+    ///
+    /// How much of the message they actually choose is worth being exact about, because it
+    /// is less than "any 256 bytes" and still enough. The label and the domain tag are
+    /// fixed, so the attacker-chosen bytes are the prefix tail; through the product's own
+    /// screen they are digits the pad can produce, up to the PIN length. That tail is what
+    /// lands in the SECOND SHA-256 compression block of the inner HMAC - the one right
+    /// after the `K ^ ipad` block - and a varying block over an unknown chaining value is
+    /// precisely the target a differential attack picks. A digit alphabet costs the
+    /// attacker traces, not the attack.
+    ///
+    /// It is deliberately not made to reach here. Charging these calls to the attempt
+    /// counter would let anyone holding the device WIPE a wallet they cannot open by
+    /// tapping the pad - strictly worse than the leak it would bound, and it would destroy
+    /// the property the words exist to have, that showing them is not a guess.
+    /// Rate-limiting needs a clock this device does not have: there is no RTC the firmware
+    /// can trust across a cut, so a limiter is reset by pulling power, and all that is left
+    /// is the UX cost.
+    ///
+    /// What settles it for 0.2.0 is that closing this path lowers no attacker's capability.
+    /// Secure Boot v2 is not burned (`docs/SECURITY.md`, absent item 1; Q32), so the same
+    /// attacker flashes their own image and calls the HMAC peripheral directly - the eFuse
+    /// key is burned `HMAC_UP`, which is read-protected but usable by ANY code on the
+    /// board. That yields arbitrary messages at bus speed rather than digits at one per
+    /// tap. Removing the anti-phishing derivation would cost the owner the one thing it
+    /// does buy, detecting a swapped board, and buy nothing back.
+    ///
+    /// This inverts the moment Secure Boot v2 lands. With only signed firmware running,
+    /// this becomes the ONLY unbounded chosen-input path into the eFuse key, and the fix
+    /// then is a keying change rather than a limiter: derive an embedder root once per
+    /// mount from a FIXED input - `hmac_efuse(0x03, domain_tag)`, beside the other device
+    /// keys - and key this HKDF from that root, leaving the eFuse key with only
+    /// fixed-input calls plus `0x02 || prestretch`, which the attempt counter already
+    /// bounds. Everything derived here is a display value that is never persisted, so that
+    /// change costs no format revision and no field device becomes unreadable. It does
+    /// amend the ratified ESP-SEAL.md 4.1 rule that every embedder-facing derivation is
+    /// `hmac_efuse(0x7F, ...)`, which is why it is recorded here rather than made
+    /// unilaterally.
     pub fn device_derive(
         &mut self,
         label: &[u8],
@@ -707,7 +762,16 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
     }
 
     /// Program one boot-log cell and return the new count (Q53).
+    ///
+    /// Refuses on any state but [`StoreState::Formatted`], and the refusal is the point
+    /// rather than a guard against misuse: SECURITY invariant 2a says a device with no
+    /// stored wallet writes nothing to flash, ever, and ratified Q61(ii) declines to buy
+    /// a convenience row by weakening it. Enforced here, in the type that owns the flash,
+    /// so the property cannot be lost by a caller that forgets to check first (R24).
     pub fn record_boot(&mut self) -> Result<u64, SErr<F, M>> {
+        if !matches!(self.state, StoreState::Formatted { .. }) {
+            return Err(StorageError::WrongState);
+        }
         let keys = self.keys.as_ref().ok_or(StorageError::WrongState)?;
         match self.aux.as_mut() {
             Some(aux) => ledger::tick_boot::<F, M>(&mut self.flash, keys, aux),
@@ -718,6 +782,93 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
                 Ok(n)
             }
         }
+    }
+
+    /// Mark the current boot index as seen (VERIFY.md 6.3). Returns the index written.
+    ///
+    /// The row the owner reads afterwards is `boots_since_acknowledged`, which is a
+    /// number they can evaluate without having written the old count down. Same R24 gate
+    /// as [`Vault::record_boot`], and additionally refuses when the auxiliary sector does
+    /// not exist yet: there is no boot to acknowledge on a store that has never counted
+    /// one, and creating the sector to record that fact would be a write with nothing
+    /// behind it.
+    pub fn acknowledge_boots(&mut self) -> Result<u64, SErr<F, M>> {
+        if !matches!(self.state, StoreState::Formatted { .. }) {
+            return Err(StorageError::WrongState);
+        }
+        let keys = self.keys.as_ref().ok_or(StorageError::WrongState)?;
+        let aux = self.aux.as_mut().ok_or(StorageError::WrongState)?;
+        let at = aux.boot_count();
+        ledger::set_acknowledged::<F, M>(&mut self.flash, keys, aux, at)?;
+        Ok(at)
+    }
+
+    /// The boot index the owner last marked as seen, or `None` while nothing has been
+    /// counted - the row then reads `not acknowledged`, never `0`, for the same reason
+    /// the count itself reads `not counted`.
+    pub fn acknowledged_at(&self) -> Option<u64> {
+        self.aux.as_ref().map(|a| a.head.acknowledged_at)
+    }
+
+    /// Boots since the mark. Saturating rather than wrapping: a head that survived a
+    /// rotation but lost its cells would otherwise render an enormous number, and `0` is
+    /// the honest reading of "the mark is at or past the count".
+    pub fn boots_since_acknowledged(&self) -> Option<u64> {
+        let aux = self.aux.as_ref()?;
+        Some(aux.boot_count().saturating_sub(aux.head.acknowledged_at))
+    }
+
+    /// [`Vault::device_derive`] with the configured domain tag folded into the label.
+    ///
+    /// `device_derive` is deliberately raw: it frames whatever the embedder hands it and
+    /// nothing else, which is what makes it a general seam. Every value the PRODUCT shows
+    /// a user goes through here instead, because the domain tag is what separates two
+    /// products sharing one silicon key, and a lock word that is identical across two
+    /// firmwares on one board is a lock word that does not identify the firmware.
+    fn derive_product_value(
+        &mut self,
+        label: &[u8],
+        data: &[u8],
+        out: &mut [u8],
+    ) -> Result<(), SErr<F, M>> {
+        let tag = self.cfg.domain_tag;
+        let mut framed = alloc::vec::Vec::with_capacity(label.len().saturating_add(tag.len()));
+        framed.extend_from_slice(label);
+        framed.extend_from_slice(&tag);
+        self.device_derive(&framed, data, out)
+    }
+
+    /// The two anti-phishing word indexes for a typed PIN prefix (ARCHITECTURE.md 3).
+    ///
+    /// Device-bound, so a look-alike that never held this board cannot reproduce them,
+    /// and free of the attempt counter: showing words is not a guess. The caller is
+    /// expected to pass the prefix the user has typed so far, whatever it is - refusing
+    /// to answer for a prefix that is not a real one would turn the words into an oracle
+    /// for prefix correctness, which is the failure this feature exists to avoid.
+    ///
+    /// Answering for any prefix, before any PIN, without a counter, is also what makes
+    /// this the system's one chosen-input oracle on the eFuse key. That is a deliberate
+    /// acceptance for 0.2.0 and not an oversight; the analysis and the condition that
+    /// reverses it are on [`Vault::device_derive`].
+    ///
+    /// DEVIATION from WALLET-API.md 2.1, which returns `[&'static str; 2]`. The BIP39
+    /// wordlist lives in `notyas-core`, which this crate deliberately does not depend on
+    /// (nothing else here needs it, and the sealing layer's dependency list is an audit
+    /// surface). Indexes into the standard 2048-word English list are the same value in a
+    /// form this crate can produce; the embedder does the lookup, which is display.
+    pub fn anti_phishing_words(&mut self, prefix: &[u8]) -> Result<[u16; 2], SErr<F, M>> {
+        let mut out = [0u8; 4];
+        self.derive_product_value(b"notyas/antiphishing/v1", prefix, &mut out)?;
+        // 11 bits per word, the BIP39 index width, taken from disjoint halves so the two
+        // words are independent draws rather than overlapping windows of one value.
+        let word = |a: usize, b: usize| -> u16 {
+            let hi = out.get(a).copied().unwrap_or(0);
+            let lo = out.get(b).copied().unwrap_or(0);
+            // Mask rather than reduce: a BIP39 index is exactly 11 bits, so the low 11
+            // of a 16-bit draw are the index with no modulo bias to argue about.
+            (u16::from(hi) << 8 | u16::from(lo)) & 0x07FF
+        };
+        Ok([word(0, 1), word(2, 3)])
     }
 
     // -----------------------------------------------------------------------
@@ -964,12 +1115,65 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
         }
 
         // ---- U5: four HKDFs and four AEAD opens. Microseconds. ----
+        // INVARIANT: this loop is constant-trip. It does NOT stop at the identity that
+        // opened, and the omitted `break` is the whole point of the duress feature rather
+        // than an oversight: a coercer watching the device is the attacker here, and a
+        // loop that stops early makes the unlock measurably cheaper for identity 0 than
+        // for identity 1. The difference is around three ChaCha20-Poly1305 operations
+        // over 4 KiB against a 1.83 s Argon2id spend, which no stopwatch outside the case
+        // resolves - but "hard to measure" is not the property the feature sells, and the
+        // cost of not relying on that is one AEAD open per unused identity. ESP-SEAL.md
+        // 7.4 already claims unlock timing does not vary with what the store holds; this
+        // is what makes that claim true of the identity as well as the slot count.
+        //
+        // THE LEAK THIS LOOP DOES NOT HAVE, and the thing that keeps it that way.
+        // `open_canary` returns early, without touching flash, for an identity whose slot
+        // has no table entry, and an unlock that skips a slot is measurably cheaper than
+        // one that opens it - which would leak the NUMBER of enrolled identities, never
+        // which one opened. Under `Occupancy::AlwaysFilled`, the mode notyas ships for
+        // every user (Q2), no such slot exists: F6 `fill_unoccupied` writes device-derived
+        // filler into every canary slot that has no identity behind it, so all four are
+        // read and rejected by the same code over the same number of bytes. The early
+        // return is reachable only under `Occupancy::Sparse`.
+        //
+        // CORRECTION, because this comment used to say otherwise. It excused the leak on
+        // the grounds that the identity count "is already visible to anyone holding a
+        // flash dump - a canary slot either has a record in it or does not". That is FALSE
+        // in the mode this product ships. Filler is a genuine AEAD record sealed under
+        // `filler_root`, so a canary slot holding filler and one holding an identity are
+        // the same 80-byte header over the same 4016-byte body to a dump, and separating
+        // them needs a key the dump does not contain. The count is not readable from flash,
+        // and the filler in the canary slots is therefore not decoration: dropping canary
+        // slots from `fill_unoccupied`, or shipping `Occupancy::Sparse`, would CREATE the
+        // flash-dump leak and this timing leak together rather than merely expose ones that
+        // already exist. That is the AlwaysFilled indistinguishability claim, and it is
+        // load-bearing for the duress feature (SECURITY.md invariant 5).
+        //
+        // MEASURED, because "the same code over the same number of bytes" is an argument
+        // and not a number. Over seven host runs of 20000 reps, one rejection cost 7.8 to
+        // 11.7 us depending on what else the machine was doing, and real minus filler came
+        // out at -2.7, +9.6, +3.0, +2.5, +4.9, +3.4 and -0.3 ns: 0.12% at worst, usually
+        // under 0.05%, and no larger than the spread among the three filler slots
+        // themselves. The sign is not even stable, which is what no signal looks like -
+        // and nothing at that scale survives an unlock whose Argon2id spend is 1.83 s.
+        // The harness is
+        // `side_channel::filler_and_real_canaries_reject_a_wrong_pin_alike` at the foot of
+        // this file; `canary_slots_are_all_occupied_under_always_filled` is the
+        // deterministic gate on the structural half. The numbers are host numbers over
+        // `SimFlash`, where a read is a memcpy, but the quantity they check does not move
+        // on silicon: both slots read the same slot capacity, hash the same body and open
+        // the same ciphertext length, so the real flash read is an equal cost added to both
+        // arms rather than a difference between them.
         let mut found: Option<(Identity, Canary, SlotMap)> = None;
         for i in 0..cfg.layout.identities {
             match self.open_canary(Identity(i), &bound) {
+                // First wins, so a hypothetical second opening canary cannot change which
+                // identity a PIN maps to. Two cannot open under one PIN in any case: each
+                // carries its own index inside the AEAD and `open_canary` checks it.
                 Ok(Some((canary, visible))) => {
-                    found = Some((Identity(i), canary, visible));
-                    break;
+                    if found.is_none() {
+                        found = Some((Identity(i), canary, visible));
+                    }
                 }
                 Ok(None) => {}
                 Err(e) => return Err(unlock_hw::<F, M>(e, true)),
@@ -2056,3 +2260,144 @@ fn fixed_label(label: &[u8]) -> [u8; 16] {
 const _: () = assert!(SEQ_RESERVE == 256);
 const _: () = assert!(core::mem::size_of::<Option<LedgerHead>>() > 0);
 const _: () = assert!(core::mem::size_of::<Option<RecordHeader>>() > 0);
+
+#[cfg(test)]
+mod side_channel {
+    //! The measured half of the `AlwaysFilled` indistinguishability claim.
+    //!
+    //! The U5 loop above argues that a canary slot holding filler and one holding a real
+    //! identity cost the same to reject a wrong PIN, because under `AlwaysFilled` both hold
+    //! a genuine record and both go through the same read, the same body digest and the same
+    //! AEAD open over the same slot capacity. An argument is not a measurement, and a timing
+    //! difference here would undo the property regardless of what the bytes on flash look
+    //! like, so this module measures it. It lives in `src/` rather than in `tests/` because
+    //! it has to call `open_canary` directly: routing through `unlock` would bury the answer
+    //! under an Argon2id evaluation and two flash writes.
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects
+    )]
+
+    use super::*;
+    use crate::fuzz::{geometry_for, v1_config};
+    use crate::sim::{SimFlash, SoftMac, VecScratch};
+    // `println` is not in the prelude of a `no_std` crate, and the numbers are the whole
+    // point of the measurement, so it is imported rather than replaced by an assertion.
+    use std::println;
+    use std::time::Instant;
+
+    /// The shipped slot map at test KDF cost, formatted with one identity. Identity 0 is
+    /// real; identities 1..3 are canary slots F6 filled with device-derived filler.
+    fn formatted() -> (Vault<SimFlash, SoftMac>, Config) {
+        let cfg = v1_config();
+        let flash = SimFlash::new(geometry_for(&cfg.layout));
+        let mut v = Vault::mount(flash, SoftMac::new(), &cfg).expect("a blank store mounts");
+        let mut s = VecScratch::for_params(&cfg.kdf);
+        let session = v
+            .format(
+                &Pin::from_normalized_utf8("135790").expect("pin"),
+                b"primary",
+                s.scratch(),
+            )
+            .expect("format");
+        drop(session);
+        (v, cfg)
+    }
+
+    /// The structural half, and the only part of this module that is a gate.
+    ///
+    /// Every canary slot must hold a record after a one-identity format, while exactly one
+    /// of them is a real identity. That is what removes the early return from `open_canary`,
+    /// and it is what makes the identity count unreadable from a flash dump. It is asserted
+    /// rather than measured because it is deterministic, and because losing it is how the
+    /// timing property would be lost in practice - by a change to `fill_unoccupied`, not by
+    /// a change to the loop.
+    #[test]
+    fn canary_slots_are_all_occupied_under_always_filled() {
+        let (mut v, cfg) = formatted();
+        assert_eq!(cfg.occupancy, Occupancy::AlwaysFilled, "the shipped mode");
+        let mut real = 0u8;
+        for i in 0..cfg.layout.identities {
+            let slot = SlotId::new(SlotClass::Canary, i, &cfg.layout).expect("canary slot");
+            assert!(
+                v.table.get(slot, &cfg).is_some(),
+                "canary {i} holds no record, so open_canary would skip it and the unlock \
+                 would time the identity count"
+            );
+            if v.slot_state_unkeyed(slot).expect("slot state") {
+                real += 1;
+            }
+        }
+        assert_eq!(real, 1, "one identity was enrolled; the other three are filler");
+    }
+
+    /// Do a filler canary and a real canary take the same time to reject a wrong PIN?
+    ///
+    /// `#[ignore]` so that a plain `cargo test` stays free of wall-clock judgement. It is
+    /// not hidden, though: `--ignored` is the m3 exit gate that also runs the power-loss
+    /// corpora, so this does run in CI, and the deterministic property underneath it is
+    /// gated unconditionally by the test above. Run it on its own for the numbers:
+    ///
+    /// ```text
+    /// cargo test -p notyas-wallet --lib --release -- --ignored --nocapture side_channel
+    /// ```
+    ///
+    /// The 10% bound is deliberately about 80 times the jitter actually observed, and that
+    /// ratio is the design of the check rather than slack in it. A structural regression -
+    /// an early return, a second read, an open over a different length - moves this by tens
+    /// of percent, so 10% still catches every failure mode worth catching, while leaving no
+    /// room for a busy runner to fail the build over scheduling noise. Nothing between
+    /// those two scales is a difference an attacker holding the device could resolve
+    /// against the 1.83 s Argon2id spend on the same unlock.
+    #[test]
+    #[ignore = "measurement: keeps wall-clock judgement out of a plain cargo test"]
+    fn filler_and_real_canaries_reject_a_wrong_pin_alike() {
+        let (mut v, cfg) = formatted();
+        let mut s = VecScratch::for_params(&cfg.kdf);
+        let wrong = Pin::from_normalized_utf8("999999").expect("pin");
+        // One stretch for the whole run. Re-deriving per call would add an Argon2id
+        // evaluation to every sample and drown the microseconds being compared.
+        let bound = v.stretch(&wrong, s.scratch()).expect("stretch");
+
+        let n = cfg.layout.identities as usize;
+        // Warm-up: the first touch of each slot pays for allocation and cache misses that
+        // have nothing to do with the comparison.
+        for _ in 0..256 {
+            for i in 0..cfg.layout.identities {
+                assert!(v.open_canary(Identity(i), &bound).expect("open").is_none());
+            }
+        }
+
+        const REPS: u32 = 20_000;
+        let mut total = vec![0u128; n];
+        // Interleaved rather than one arm after the other, so a frequency change or a
+        // scheduler decision lands on every arm equally instead of on whichever ran first.
+        for _ in 0..REPS {
+            for i in 0..cfg.layout.identities {
+                let at = Instant::now();
+                let opened = v.open_canary(Identity(i), &bound).expect("open");
+                total[i as usize] += at.elapsed().as_nanos();
+                assert!(opened.is_none(), "a wrong PIN must open no identity");
+            }
+        }
+
+        let mean = |i: usize| total[i] as f64 / f64::from(REPS);
+        let real = mean(0);
+        let filler = (1..n).map(mean).sum::<f64>() / (n - 1) as f64;
+        for i in 0..n {
+            let kind = if i == 0 { "real   " } else { "filler " };
+            println!("canary {i} {kind} mean {:>9.1} ns over {REPS} reps", mean(i));
+        }
+        let delta = real - filler;
+        let pct = delta / filler * 100.0;
+        println!("real - filler = {delta:+.1} ns ({pct:+.2}%)");
+
+        assert!(
+            pct.abs() < 10.0,
+            "rejecting a real canary and a filler canary differ by {pct:.2}%, which is a \
+             structural difference and not jitter: the identity count is leaking in time"
+        );
+    }
+}

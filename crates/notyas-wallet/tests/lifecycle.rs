@@ -8,11 +8,11 @@
 //! usage documentation and a refactor cannot quietly change observable behaviour.
 
 use notyas_wallet::fuzz::{fuzz_config, geometry_for, v1_config};
-use notyas_wallet::sim::{SimFlash, SoftMac, VecScratch};
+use notyas_wallet::sim::{SimError, SimFlash, SimImage, SoftMac, VecScratch};
 use notyas_wallet::{
-    Config, Identity, KeyProvenance, MountError, Occupancy, Pin, Policy, PolicyRefusal,
-    PolicyRequest, Session, SlotClass, SlotId, SlotState, StorageError, StoreState, TamperKind,
-    UnlockError, Vault, WIPE_AFTER_MAX,
+    Config, Flash, Geometry, Identity, KeyProvenance, MountError, Occupancy, Pin, Policy,
+    PolicyRefusal, PolicyRequest, Region, Session, SlotClass, SlotId, SlotState, StorageError,
+    StoreState, TamperKind, UnlockError, Vault, WIPE_AFTER_MAX,
 };
 
 type V = Vault<SimFlash, SoftMac>;
@@ -937,6 +937,68 @@ fn the_boot_log_counts_and_survives_a_power_cycle() {
     assert_eq!(v.boot_count(), 2);
 }
 
+/// R24 / ratified Q61(ii): the counter does not exist before the ledger is formatted, so
+/// the refusal is enforced by the vault and not by caller discipline. Asserted on the
+/// flash counters, because "returns an error" and "wrote nothing" are different claims.
+#[test]
+fn the_boot_log_writes_nothing_on_a_store_that_has_never_been_formatted() {
+    let cfg = fuzz_config();
+    let mut v = blank(&cfg);
+    assert_eq!(v.state(), StoreState::Blank);
+    assert!(matches!(v.record_boot(), Err(StorageError::WrongState)));
+    assert!(matches!(v.acknowledge_boots(), Err(StorageError::WrongState)));
+    assert_eq!(v.boot_count(), 0, "nothing counted");
+    assert_eq!(v.acknowledged_at(), None, "the row reads `not acknowledged`, never 0");
+    let (flash, _) = v.into_parts();
+    assert_eq!(flash.erase_count(), 0, "a blank device stays byte-for-byte stateless");
+    assert_eq!(flash.program_count(), 0);
+}
+
+/// VERIFY.md 6.3: the mark records the boot index the owner saw, and the count it is
+/// measured against must survive the rotation that writing the mark performs.
+#[test]
+fn the_acknowledgement_mark_survives_the_rotation_that_writes_it() {
+    let cfg = fuzz_config();
+    let (mut v, _s) = formatted(&cfg);
+    for _ in 0..3 {
+        v.record_boot().expect("record_boot");
+    }
+    assert_eq!(v.boots_since_acknowledged(), Some(3), "nothing acknowledged yet");
+    assert_eq!(v.acknowledge_boots().expect("acknowledge"), 3);
+    assert_eq!(v.boots_since_acknowledged(), Some(0));
+    v.record_boot().expect("record_boot");
+    assert_eq!(v.boots_since_acknowledged(), Some(1));
+    // The mark and the count both live in the auxiliary head the acknowledgement
+    // rotated; a rotation that lost either would look exactly like a tamper event.
+    let v = remount(v, &cfg);
+    assert_eq!(v.boot_count(), 4);
+    assert_eq!(v.acknowledged_at(), Some(3));
+    assert_eq!(v.boots_since_acknowledged(), Some(1));
+}
+
+/// ARCHITECTURE.md 3: the words authenticate the DEVICE to the user, so they must be a
+/// pure function of (device key, prefix) and must answer for any prefix at all - refusing
+/// an unreal one would make the words an oracle for prefix correctness.
+#[test]
+fn anti_phishing_words_are_device_bound_and_prefix_bound() {
+    let cfg = fuzz_config();
+    let (mut v, _s) = formatted(&cfg);
+    let a = v.anti_phishing_words(b"13").expect("words");
+    assert_eq!(a, v.anti_phishing_words(b"13").expect("words"), "deterministic");
+    assert_ne!(a, v.anti_phishing_words(b"14").expect("words"), "prefix bound");
+    assert_ne!(a, v.anti_phishing_words(b"1").expect("words"), "length bound");
+    assert!(a.iter().all(|&i| i < 2048), "BIP39 index range");
+    // A prefix nobody could have typed still gets an answer.
+    v.anti_phishing_words(b"zzzz").expect("no prefix is refused");
+
+    let (mut other, _s) = formatted(&v1_config());
+    assert_ne!(
+        a,
+        other.anti_phishing_words(b"13").expect("words"),
+        "a different domain must not reproduce this device's words"
+    );
+}
+
 #[test]
 fn the_policy_encoding_orders_strictness_the_way_the_fuzzer_assumes() {
     let strict = Policy {
@@ -1115,4 +1177,135 @@ fn an_oversized_derivation_input_is_refused_rather_than_truncated() {
     longer.push(b'z');
     v.device_derive(b"label", &longer, &mut b).expect("derive");
     assert_ne!(a, b);
+}
+
+// ---------------------------------------------------------------------------
+// Unlock timing across identities
+// ---------------------------------------------------------------------------
+
+/// A `Flash` that counts what the engine asks of it.
+///
+/// Wall-clock time cannot be asserted on in a test suite that has to be deterministic, so
+/// the test below asserts on the work instead: every record read the unlock performs is
+/// one pass over the same code, and a difference in the count is exactly the difference a
+/// stopwatch outside the device would see.
+struct CountingFlash {
+    inner: SimFlash,
+    reads: u32,
+    read_bytes: u64,
+}
+
+impl CountingFlash {
+    fn new(inner: SimFlash) -> CountingFlash {
+        CountingFlash {
+            inner,
+            reads: 0,
+            read_bytes: 0,
+        }
+    }
+
+    /// Forget the mount's own traffic, so only the unlock is measured.
+    fn reset(&mut self) {
+        self.reads = 0;
+        self.read_bytes = 0;
+    }
+}
+
+impl Flash for CountingFlash {
+    type Error = SimError;
+
+    fn geometry(&self) -> Geometry {
+        self.inner.geometry()
+    }
+    fn read(&mut self, region: Region, offset: u32, buf: &mut [u8]) -> Result<(), SimError> {
+        self.reads += 1;
+        self.read_bytes += buf.len() as u64;
+        self.inner.read(region, offset, buf)
+    }
+    fn write(&mut self, region: Region, offset: u32, data: &[u8]) -> Result<(), SimError> {
+        self.inner.write(region, offset, data)
+    }
+    fn erase_sector(&mut self, region: Region, sector: u32) -> Result<(), SimError> {
+        self.inner.erase_sector(region, sector)
+    }
+    fn is_erased(&mut self, region: Region, offset: u32, len: u32) -> Result<bool, SimError> {
+        self.inner.is_erased(region, offset, len)
+    }
+}
+
+/// Mount the given image, unlock it once, and report what the unlock cost.
+fn unlock_cost(cfg: &Config, image: &SimImage, p: &Pin, expect: Identity) -> (u32, u64) {
+    let mut flash = SimFlash::new(geometry_for(&cfg.layout));
+    flash.restore(image);
+    let mut v = Vault::mount(CountingFlash::new(flash), SoftMac::new(), cfg).expect("mount");
+    v.backend_mut().reset();
+    let mut s = scratch(cfg);
+    let session = v.unlock(p, s.scratch()).expect("unlock");
+    assert_eq!(session.identity(), expect);
+    drop(session);
+    let backend = v.backend_mut();
+    (backend.reads, backend.read_bytes)
+}
+
+#[test]
+fn unlocking_a_duress_identity_costs_the_same_work_as_the_primary() {
+    // The duress feature's entire value is that a coercer watching the device cannot tell
+    // which identity was opened. A canary loop that stops at the identity that opened
+    // makes the unlock cheaper for identity 0 than for identity 1, and the difference is
+    // observable from outside the case. ESP-SEAL.md 7.4 already claims unlock timing is
+    // independent of what the store holds; this is that claim, asserted.
+    let cfg = fuzz_config();
+    let (mut v, session) = formatted(&cfg);
+    let mut s = scratch(&cfg);
+    v.add_identity(
+        &session,
+        Identity(1),
+        &pin("909090"),
+        notyas_wallet::SlotMap::ALL,
+        s.scratch(),
+    )
+    .expect("add_identity");
+    drop(session);
+    let (flash, _) = v.into_parts();
+    // Both measurements run against byte-identical flash, so the only thing that differs
+    // between them is which PIN was typed.
+    let image = flash.snapshot();
+
+    let primary = unlock_cost(&cfg, &image, &pin("135790"), Identity(0));
+    let duress = unlock_cost(&cfg, &image, &pin("909090"), Identity(1));
+    assert_eq!(
+        primary, duress,
+        "the unlock must not spend less work on one identity than another: (reads, bytes) \
+         for the primary PIN and the duress PIN have to match"
+    );
+}
+
+#[test]
+fn an_oversized_derivation_output_is_refused_rather_than_left_untouched() {
+    // The mirror image of the input bound above, and a nastier failure. HKDF cannot
+    // produce more than RFC 5869's 255*HashLen, and it declines an oversized request
+    // WITHOUT writing anything, so an accepted call would hand the embedder back its own
+    // buffer. The anti-phishing words and the PIN-pad permutation both go through here,
+    // and both would have become constants that looked device-derived.
+    let cfg = fuzz_config();
+    let mut v = blank(&cfg);
+
+    let mut out = vec![0xa5u8; 255 * 32 + 1];
+    assert!(
+        matches!(
+            v.device_derive(b"antiphishing", b"12", &mut out),
+            Err(StorageError::Capacity)
+        ),
+        "an output past 255*HashLen must be refused"
+    );
+    assert!(
+        out.iter().all(|b| *b == 0xa5),
+        "a refused derivation must not disturb the caller's buffer"
+    );
+
+    // The bound is exact, so the refusal above cannot be met by lowering the ceiling.
+    let mut full = vec![0u8; 255 * 32];
+    v.device_derive(b"antiphishing", b"12", &mut full)
+        .expect("the largest output RFC 5869 permits is still served");
+    assert!(full.iter().any(|b| *b != 0));
 }
