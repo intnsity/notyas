@@ -126,6 +126,39 @@ sees a board), the UI (draws on the returned DrawTarget), microSD (0.2.x will ad
 `sd_init()` when PSBT lands - note the Elecrow slot is 1-bit-only SDMMC, the Waveshare
 4-bit; the surface fn hides that), audio and camera (never used).
 
+## Physical access to the microSD slot is a per-board release constraint
+
+Recorded 2026-08-19, because it decides whether a given unit can be USED, not merely
+whether it works.
+
+0.2.0 ships SD-only: the camera moved to 0.3.0 (CAMERA.md, decided by the project owner),
+so **the microSD slot is the only way a PSBT enters the device**. A slot the owner cannot
+reach is therefore not an inconvenience, it is a unit that cannot sign.
+
+- **Waveshare 4B:** the OEM white chassis exposes **two USB-C ports and nothing else**. The
+  microSD slot sits behind the backing plate and is unreachable as shipped. Using this
+  board for signing requires removing that plate and fitting a replacement that opens the
+  slot. `3dp/ESP32-P4-WIFI6-Touch-LCD-4B-2D.zip` holds the vendor 2D drawing set, which is
+  the input for that plate. **The printed desk stand in this repo does not solve it
+  either**: `3dp/Makerworld-Screen-Stand-4inch+P4+Desk+Stand.3mf` has been printed and
+  also leaves the slot unreachable, so the repo currently ships an enclosure asset that is
+  incompatible with the only ingress path 0.2.0 has. A custom back plate is required, and
+  until one exists this board cannot receive a PSBT in any enclosure we ship or reference.
+- **Elecrow CrowPanel 5inch:** accessibility not yet recorded here. Establish it and write
+  the answer down rather than leaving it to be rediscovered.
+
+**This constraint runs opposite to the security ranking, and that is the point of writing
+it down.** On the airgap the Waveshare is the better board: its C6 EN line has no pullup,
+so the radio is held down from power-on. The Elecrow's C6 EN carries a 10K pullup (R77), so
+its radio co-processor boots and its stock esp-hosted firmware starts Wi-Fi STA and the BT
+controller at every power-up, for the whole window until app_main drives GPIO20 low. The
+Waveshare is also the 4-bit SD host, and the only board with a Pi-compatible CSI connector
+for 0.3.0's camera.
+
+So the board that is right on every other axis is the one whose only 0.2.0 ingress path is
+behind a plate. An enclosure change is what reconciles them, and it should be treated as
+part of making this board usable rather than as an accessory.
+
 ## What varies vs what is invariant
 
 Invariant across boards (the point of the design):
@@ -217,7 +250,7 @@ pitfall 8).
 **Stale-artifact hazard:** the IDF build dir bakes in the merged sdkconfig; switching
 boards inside one CARGO_TARGET_DIR risks flashing a stale bootloader for the wrong
 flash size (flash.ps1's existing warning, squared). Therefore the target dir is
-per-board: `C:\nyt-ws` and `C:\nyt-e5` (short, per the path-length constraint in
+per-board: `C:\nb\ws` and `C:\nb\e5` (short, per the path-length constraint in
 build.ps1). Switching boards never requires a clean.
 
 ## The airgap invariant, per board (normative)
@@ -229,6 +262,25 @@ in its fact sheet, and a documented software-only lockdown fallback (all radio-f
 GPIOs latched to inert states + build-graph exclusion), clearly labeled as the weaker
 guarantee on the Verify screen.
 
+**Board choice is part of this invariant, because the boards differ before our code
+runs.** Every Waveshare board module below carries a C6-MINI module whose EN has NO
+pullup, so its radio is held down from power-on and no window exists. Every Elecrow board
+module below pulls C6 EN up, so its C6 boots the factory esp-hosted slave firmware at
+every power-up and runs a full WiFi and BT stack until app_main drives the kill line low
+(see board-elecrow-5 for what that firmware actually does during the window - it is not
+idle). **Of the boards this firmware supports, a Waveshare one is therefore the
+airgap-preferred hardware.** The firmware states which case the running board is in at
+every boot: info "C6 held down from power-on" on Waveshare, a warn-level power-on window
+notice on Elecrow.
+
+**The rule is the C6 part, not the vendor, and it is worth stating that way so nobody
+generalizes it wrongly.** A C6-MINI module carries no EN pullup; a bare ESP32-C6FH8 die
+does. Two Waveshare P4 boards use the bare chip and therefore DO boot their radio at every
+power-on - the Touch-LCD-3.5 (R25) and the WIFI6-DEV-KIT (R78), both in the kill-pin table
+in docs/research/waveshare-family.md. Neither has a board module here, and this is part of
+why. "Waveshare" is not the guarantee; "C6-MINI module, EN unpulled, schematic-verified in
+this file" is.
+
 ### board-waveshare-4b
 
 - Kill: **GPIO54 -> C6 CHIP_PU (EN)**, driven low first thing in app_main, never
@@ -238,9 +290,11 @@ guarantee on the Verify screen.
   shows CHIP_PU carrying only a 1 uF cap (C10) to GND - NO pullup; the nearby 10K
   (R11) is on C6 IO2, not EN, and the ESP32-C6 has no internal EN pullup. The radio is
   therefore held down from power-on and could only ever run if the P4 drove GPIO54
-  high, which this firmware never does. Strictly better than the Elecrow board's
-  verified power-on window. Source: docs/research/waveshare-family.md (the no-pullup
-  EN circuit is common to every Waveshare P4 board carrying a C6 module).
+  high, which this firmware never does. Strictly better than the Elecrow boards' verified
+  power-on window, during which a full WiFi and BT stack runs on the C6 (board-elecrow-5),
+  and the reason a Waveshare unit is the airgap-preferred choice. Source:
+  docs/research/waveshare-family.md (the no-pullup EN circuit is common to every
+  Waveshare P4 board carrying a C6 module).
   RADIO_KILL_DOC states it; the boot log says "held down from power-on".
 
 ### board-elecrow-5
@@ -249,14 +303,25 @@ guarantee on the Verify screen.
   app_main, never released. Verified against schematic AND factory sdkconfig
   (`CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=20`). SDIO host never configured on
   GPIO49-54. Same three-layer story as the Waveshare board.
-- **Known power-on window (verified):** C6 EN has a 10K pullup (R77) to an always-on
-  3V3 rail - the C6 boots its esp-hosted slave firmware at every power-up and runs
-  until app_main drives GPIO20 low (order: hundreds of ms, incl. bootloader). The
-  slave firmware idles waiting for an SDIO host and joins no network on its own, and
-  the P4 side has no driver to talk to it - but the window exists and is documented,
-  not hidden. Mitigation candidates for release units on this board: none in firmware
-  (ROM+bootloader run before us); hardware option is removing R77/R95 or the C6
-  module outright (document as the recommended prep for a production Elecrow unit).
+- **Known power-on window (verified) - and the C6 is NOT idle during it:** C6 EN has a
+  10K pullup (R77) to an always-on 3V3 rail, so the C6 boots its factory esp-hosted
+  `network_adapter` slave firmware at every power-up and runs until app_main drives
+  GPIO20 low (order: hundreds of ms, incl. ROM and bootloader). That firmware's init
+  path is unconditional, not a wait for an SDIO host: `esp_hosted_coprocessor.c` calls
+  `connect_sta()` inside a `#if 1`, which runs `esp_hosted_wifi_init`,
+  `esp_wifi_set_mode(WIFI_MODE_STA)` and `esp_wifi_start()`, and `slave_bt.c` calls
+  `esp_bt_controller_init` and `esp_bt_controller_enable` under `CONFIG_BT_ENABLED`.
+  **So a WiFi MAC and a BT controller are live inside the case for the whole window at
+  every power-on, and a C6 whose NVS holds credentials will attempt to associate.**
+  Nothing of the user's can leave: the P4 side has no driver for the SDIO link, and no
+  secret exists on the P4 that early in the boot. The exposure is RF presence and MAC
+  identifiability, not user data - documented, not hidden. Mitigation candidates for
+  release units on this board: **none in firmware** (ROM + bootloader run before us, so
+  no build option or boot ordering closes it); the hardware options are removing R77 so
+  EN is no longer pulled high - the P4 still holds the line low through R95 - or
+  removing the C6 module outright. R77 removal is the recommended prep for a production
+  Elecrow unit. **Do not remove R95 alone:** that cuts the kill line while leaving the
+  pullup, turning a hundreds-of-ms window into the whole session.
 - **Wireless module socket (physical requirement):** the board has a socket (J9/J11)
   for LoRa/nRF24/Zigbee modules. Airgap on this board additionally requires the
   socket to be EMPTY. Firmware never initializes the socket SPI/UART pins (GPIO26,
@@ -277,7 +342,8 @@ guarantee on the Verify screen.
   released. Verified against each board's own V1.0 Eagle schematic (net `C6_EN`:
   `U7.GPIO32 -> IC1.EN`, 10K pullup R77) AND each board's factory sdkconfig
   (`CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=32`). Same power-on window as the
-  5inch (pullup to an always-on rail); same warning logged at boot. SDIO host
+  5inch, with the same live WiFi and BT stack running during it (pullup to an
+  always-on rail); same warning logged at boot; same R77-removal mitigation. SDIO host
   never configured on GPIO14/15/18/19 (1-bit slot on these boards).
 - **UNTESTED**: source-verified only - no such hardware has ever run this
   firmware. The modules carry the banner, the boot log says `UNTESTED BOARD
@@ -334,8 +400,8 @@ exists; until then defaults to `waveshare-4b`):
 param([ValidateSet("waveshare-4b", "elecrow-5")] [string]$Board = "waveshare-4b")
 
 $boardMap = @{
-    "waveshare-4b" = @{ Feature = "board-waveshare-4b"; TargetDir = "C:\nyt-ws" }
-    "elecrow-5"    = @{ Feature = "board-elecrow-5";    TargetDir = "C:\nyt-e5" }
+    "waveshare-4b" = @{ Feature = "board-waveshare-4b"; TargetDir = "C:\nb\ws" }
+    "elecrow-5"    = @{ Feature = "board-elecrow-5";    TargetDir = "C:\nb\e5" }
 }
 $b = $boardMap[$Board]
 $env:CARGO_TARGET_DIR = if ($env:NOTYAS_TARGET_DIR) { $env:NOTYAS_TARGET_DIR } else { $b.TargetDir }
@@ -351,8 +417,8 @@ newest-bootloader-under-esp-idf-sys search is unchanged and now runs inside the
 per-board target dir, which removes the wrong-board-bootloader hazard by construction.
 
 Implemented as designed, extended to the full roster in build.ps1 (scaffold
-target dirs C:\nyt-e7 / C:\nyt-e9 / C:\nyt-e101 / C:\nyt-w5 / C:\nyt-w7b /
-C:\nyt-w7x / C:\nyt-w8x / C:\nyt-w101x; scaffolds get a build.ps1 UNTESTED
+target dirs C:\nb\e7 / C:\nb\e9 / C:\nb\e101 / C:\nb\w5 / C:\nb\w7b /
+C:\nb\w7x / C:\nb\w8x / C:\nb\w101; scaffolds get a build.ps1 UNTESTED
 warning - plus a PORTRAIT warning where it applies). flash.ps1 knows the Elecrow
 scaffolds (no default flash port - `-Port` must be passed explicitly) but not
 yet the Waveshare ones: extending it is deliberately deferred until a physical
