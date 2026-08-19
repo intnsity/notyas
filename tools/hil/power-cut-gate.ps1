@@ -91,24 +91,90 @@ param(
     # mistake with.
     [int]    $WipeMargin  = 3,
     [string] $OutDir      = 'C:\nb\hil',
-    [switch] $DryRun
+    [switch] $DryRun,
+    # Preflight, and the operator's first step of the evening. Runs the capability probe
+    # and nothing else: no cut, no command that changes the device, no run-shaped
+    # directory left behind. It is the same code the gate runs, so READY here means the
+    # gate will not discover a dead console twenty minutes and four pulls later.
+    [switch] $Probe
 )
 
 $ErrorActionPreference = 'Stop'
+
+# -------------------------------------------------------------------------------------
+# Refusing out loud
+# -------------------------------------------------------------------------------------
+#
+# On 2026-08-19 this harness was started against a board carrying a product image. The
+# probe sent `help`, read back nothing but heartbeats, printed two lines, and returned
+# zero. It looked like a run. It was not one, and the only reason anyone noticed was that
+# somebody happened to open the evidence directory afterwards. An hour of bench time went
+# with it.
+#
+# So: every path out of this script now goes through Stop-Run or the completion block at
+# the bottom. Both state a verdict in a form a tired operator cannot scroll past, both set
+# an exit code, and the aborted ones move the evidence directory out of the powercut-*
+# namespace so it can never be read, or summarised, as a run. A gate that returns quietly
+# having done nothing is worse than one that crashes: a crash gets investigated.
+$EXIT_OK               = 0   # ready, or a run that recorded cuts
+$EXIT_HARNESS          = 1   # bad arguments, or an unhandled harness error
+$EXIT_PORT_ABSENT      = 2   # the port never enumerated
+$EXIT_SILENT           = 3   # the port opened and nothing at all came back
+$EXIT_NO_CONSOLE       = 4   # the board talks, but carries no HIL console
+$EXIT_MISSING_COMMANDS = 5   # the console is there and lacks what this mode drives
+$EXIT_STOPPED_EARLY    = 6   # a rail or a blocking finding ended the run
+$EXIT_NO_EVIDENCE      = 7   # the run ended having recorded no usable cut
+
+# Nothing leaves this script quietly. An unhandled error already exits non-zero, but it
+# does so behind a wall of .NET noise that reads like a bug in PowerShell rather than a
+# gate that did not run. This states the verdict first, in the harness's own words.
+trap {
+    Write-Output ''
+    Write-Output ('=' * 72)
+    Write-Output 'THE GATE DID NOT COMPLETE - unhandled harness error.'
+    Write-Output ''
+    Write-Output "  $($_.Exception.Message)"
+    Write-Output "  at line $($_.InvocationInfo.ScriptLineNumber): $(($_.InvocationInfo.Line).Trim())"
+    Write-Output ''
+    Write-Output 'Nothing below this point ran. Do not read any evidence directory from this'
+    Write-Output 'invocation as a result.'
+    Write-Output ('=' * 72)
+    Write-Output ''
+    Write-Output 'VERDICT: NOT RUN (harness_error), exit 1'
+    exit 1
+}
+
+# Which image belongs on which port. A refusal has to print the command the operator
+# actually types, on THIS bench, for THIS board: "rebuild with the feature" costs them a
+# trip to the runbook to find out which board flag and which feature list.
+$BOARD_BY_PORT = @{
+    'COM6' = @{ Board = 'elecrow-5';    Features = 'hil-console' }
+    'COM3' = @{ Board = 'waveshare-4b'; Features = 'hil-console,unsafe-emulated-key' }
+}
+
+function Get-BoardForPort {
+    param([string] $Name)
+    if ($BOARD_BY_PORT.ContainsKey($Name)) { return $BOARD_BY_PORT[$Name] }
+    # An unknown port is not a reason to print nothing useful. Board B is what this file
+    # defaults to, and the refusal says it is guessing rather than pretending to know.
+    return @{ Board = 'elecrow-5'; Features = 'hil-console'; Guessed = $true }
+}
 
 # Artifacts never land on the share. The tree is canonical there; evidence is local.
 if ($OutDir -match '^(\\\\|//)') { throw "OutDir must be a local path, not a UNC path: $OutDir" }
 
 $stamp      = Get-Date -Format 'yyyyMMdd-HHmmss'
 $runDir     = Join-Path $OutDir "powercut-$Mode-$stamp"
-# A dry run creates nothing. summarize-cuts.ps1 defaults to the NEWEST powercut-* directory
-# under the evidence root, so an empty directory left behind by a dry run becomes the
-# default target of the next summary and answers a real question with "no cuts.csv".
+# A dry run creates nothing. A probe creates a log FILE and never a run-shaped directory.
+# summarize-cuts.ps1 defaults to the NEWEST powercut-* directory under the evidence root,
+# so anything directory-shaped left behind by an invocation that cut nothing becomes the
+# default target of the next summary and answers a real question with the wrong data.
 if (-not $DryRun) {
     if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
-    New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    if (-not $Probe) { New-Item -ItemType Directory -Path $runDir -Force | Out-Null }
 }
 $transcript = Join-Path $runDir 'console.log'
+if ($Probe) { $transcript = Join-Path $OutDir "probe-$Mode-$stamp.log" }
 $recordCsv  = Join-Path $runDir 'cuts.csv'
 $recordJson = Join-Path $runDir 'cuts.json'
 
@@ -272,7 +338,13 @@ function Get-Attempts {
 # A mode that needs a command the firmware does not have must say so and stop; running it
 # anyway produces a transcript of the console rejecting every line, which reads like a
 # device finding and is not one.
-function Get-HelpCommands {
+#
+# The RAW LINES come back too, and they are not a debugging nicety: a board that answered
+# with nothing at all and a board that answered with fifty heartbeats and no console are
+# two different faults with two different fixes, and a function that returned only the
+# command list would collapse them into the same empty array. That collapse is what cost
+# an evening on 2026-08-19.
+function Get-HelpTable {
     param([System.IO.Ports.SerialPort] $Sp)
     $lines = @()
     Send-Cmd $Sp 'help'
@@ -281,7 +353,10 @@ function Get-HelpCommands {
     foreach ($l in $lines) {
         if ($l -match 'HIL\|help\|\s*([a-z][a-z0-9_]*)') { $cmds += $matches[1] }
     }
-    return @($cmds | Sort-Object -Unique)
+    return @{
+        Commands = @($cmds | Sort-Object -Unique)
+        Lines    = @($lines)
+    }
 }
 
 # One unlock attempt, reported as a fact rather than a verdict: the console answers
@@ -550,6 +625,239 @@ function Test-WipeMargin {
     return (([int]$f + $Margin) -lt [int]$w)
 }
 
+# -------------------------------------------------------------------------------------
+# The capability probe, and the four ways a board can fail to be drivable
+# -------------------------------------------------------------------------------------
+#
+# They are four rather than one because they need four different actions from the person
+# standing at the bench, and a single "cannot talk to the board" would send them checking
+# the cable when the answer is a rebuild:
+#
+#   port_absent      - nothing enumerates. Cable out, board unpowered, or wrong COM name.
+#   silent           - the port opens and NOTHING arrives, not even a boot banner or a log
+#                      line. Wrong baud, EN held low, or the ROM bootloader after a failed
+#                      flash.
+#   no_console       - the board talks - banner, heartbeats - and `help` produced no HIL
+#                      line at all. The image was built without the hil-console feature.
+#                      THIS IS THE ONE THAT COST AN EVENING, and it is the one a naive
+#                      probe cannot tell apart from the next.
+#   missing_commands - the console answered and does not carry what this mode drives. A
+#                      firmware gap, not a bench problem.
+#
+# It reads and does not write: boot output and the help table, nothing that changes the
+# device. Refusing here costs the operator one power-on. Discovering it at cut 1 costs
+# them a pull, a reseat, and a transcript that has to be thrown away.
+function Get-ConsoleReadiness {
+    param([string] $Name, [int] $Rate, [string[]] $Needs)
+
+    $r = @{ Verdict = 'ok'; Have = @(); Missing = @(); Lines = 0; Hil = 0; Tail = @(); Error = '' }
+
+    if (-not (Test-PortPresent $Name)) {
+        Write-Log "waiting up to 60 s for $Name - connect the board"
+        if (-not (Wait-PortBack $Name 60000)) { $r.Verdict = 'port_absent'; return $r }
+    }
+    $sp = $null
+    try {
+        $sp = Open-Board $Name $Rate
+    } catch {
+        # The port enumerated and would not open. From the operator's side that is the
+        # same action as an absent port - look at the cable and at what else has it open -
+        # so it is reported as the same class, with the reason attached.
+        $r.Verdict = 'port_absent'
+        $r.Error   = $_.Exception.Message
+        return $r
+    }
+    try {
+        $boot = @()
+        $null = Read-Until -Sp $sp -TimeoutMs 12000 -StopOn 'HIL\|(status|boot)' -Lines ([ref]$boot)
+        $help = Get-HelpTable $sp
+        $all  = @($boot) + @($help.Lines)
+        $r.Lines = $all.Count
+        $r.Hil   = @($all | Where-Object { $_ -match 'HIL\|' }).Count
+        $r.Tail  = @($all | Select-Object -Last 3)
+        $r.Have  = @($help.Commands)
+    } finally {
+        try { if ($sp.IsOpen) { $sp.Close() } } catch { }
+        try { $sp.Dispose() } catch { }
+    }
+
+    if ($r.Lines -eq 0)      { $r.Verdict = 'silent';     return $r }
+    if ($r.Have.Count -eq 0) { $r.Verdict = 'no_console'; return $r }
+    $r.Missing = @($Needs | Where-Object { $r.Have -notcontains $_ })
+    if ($r.Missing.Count -gt 0) { $r.Verdict = 'missing_commands' }
+    return $r
+}
+
+# A banner rather than a line. The failure this exists to prevent is a message that scrolls
+# past, and eighteen lines of boot log will scroll past anything.
+function Write-Loud {
+    param([string[]] $Lines)
+    $bar = '=' * 72
+    foreach ($l in (@('', $bar) + $Lines + @($bar, ''))) {
+        Write-Output $l
+        try { Add-Content -Path $transcript -Value $l -Encoding utf8 } catch { }
+    }
+}
+
+# A run that did nothing must not leave a directory that looks like a run.
+#
+# The transcript is worth keeping: it is the proof of what the board actually said, and it
+# is what turns "the gate did not run" into "the gate did not run BECAUSE the console
+# answered only heartbeats". So the directory is renamed out of the powercut-* namespace
+# rather than deleted, and stamped with a file whose name is the whole story. Deleting it
+# would destroy the one artifact that identifies the fault; leaving it named powercut-*
+# would put a directory with a console.log and no cuts.csv in front of the next reader,
+# which is exactly how this failure went unnoticed for an hour. summarize-cuts.ps1 reads
+# aborted-* too, and refuses to summarise one as a run.
+function Move-EvidenceAside {
+    param([string] $Dir, [string] $Code, [string[]] $Why)
+    if ($DryRun -or $Probe) { return $null }
+    if (-not (Test-Path $Dir)) { return $null }
+    $note = @("NOT A RUN - $Code", '') + $Why + @(
+        '',
+        'Nothing was cut. No command that changes the device was sent. There is no cuts.csv',
+        'in this directory and there must never be one: this is the record of a gate that',
+        'refused to start, kept so the console transcript can be read, and it is not',
+        'evidence for any exit criterion.'
+    )
+    try { $note | Set-Content -Path (Join-Path $Dir 'NOT-A-RUN.txt') -Encoding utf8 } catch { }
+    $leaf = 'aborted-' + (Split-Path -Leaf $Dir)
+    try {
+        Rename-Item -Path $Dir -NewName $leaf -ErrorAction Stop
+        return (Join-Path (Split-Path -Parent $Dir) $leaf)
+    } catch {
+        # The rename is the belt; NOT-A-RUN.txt is the braces. Say which one held.
+        Write-Output "WARNING: could not rename $Dir out of the powercut-* namespace ($($_.Exception.Message))."
+        Write-Output '         It carries NOT-A-RUN.txt instead. Do not read it as a run.'
+        return $Dir
+    }
+}
+
+function Stop-Run {
+    param([string] $Code, [int] $ExitCode, [string[]] $Lines)
+    Write-Loud $Lines
+    $moved = Move-EvidenceAside -Dir $runDir -Code $Code -Why $Lines
+    if ($moved) {
+        Write-Output 'The evidence directory was not left looking like a run. It is now:'
+        Write-Output "  $moved"
+        Write-Output ''
+    }
+    Write-Output "VERDICT: NOT RUN ($Code), exit $ExitCode"
+    exit $ExitCode
+}
+
+# The refusal itself: what was missing, the most likely cause, and the exact command that
+# fixes it. All three, every time. A refusal that names the symptom and leaves the operator
+# to work out the cure is how the next hour gets lost.
+function Stop-OnReadiness {
+    param($R)
+    $b     = Get-BoardForPort $Port
+    $build = ".\tools\build.ps1 -Board $($b.Board) --features $($b.Features)"
+    $flash = ".\tools\flash.ps1 -Board $($b.Board) -Port $Port"
+    $guess = @()
+    if ($b.ContainsKey('Guessed')) {
+        $guess = @('', "($Port is not one of the two known bench ports, so the board flag above is",
+                       ' this file''s default rather than a fact. Check it before you flash.)')
+    }
+
+    switch ($R.Verdict) {
+        'port_absent' {
+            $present = @([System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object)
+            $list = 'none at all'
+            if ($present.Count -gt 0) { $list = ($present -join ', ') }
+            $why = @()
+            if ($R.Error) { $why = @("The open failed with: $($R.Error)", '') }
+            Stop-Run -Code 'port_absent' -ExitCode $EXIT_PORT_ABSENT -Lines (@(
+                "CANNOT DRIVE THE BOARD: $Port is not usable.",
+                '',
+                "What was missing  : the serial port $Port, after waiting 60 s for it.",
+                "Ports present now : $list") + $why + @(
+                'Most likely cause : the USB cable is out, the board has no power, or this is',
+                '                    the wrong port name for it. If the name is in the list',
+                '                    above, something else already has it open - a serial',
+                '                    monitor, or another gate still running.',
+                '',
+                'Fix: connect the board, close anything holding the port, then re-run:',
+                "     .\tools\hil\power-cut-gate.ps1 -Port <name from the list> -Mode $Mode -Probe"
+            ))
+        }
+        'silent' {
+            Stop-Run -Code 'silent' -ExitCode $EXIT_SILENT -Lines (@(
+                "CANNOT DRIVE THE BOARD: $Port opened and the board said nothing at all.",
+                '',
+                '  What was missing  : every line. No boot banner, no IDF log, no console',
+                "                      output - zero bytes in 18 s at $Baud baud.",
+                '  Most likely cause : the baud rate is wrong (the firmware logs at 115200),',
+                '                      the board is held in reset, or it is sitting in the ROM',
+                '                      bootloader after a flash that did not finish.',
+                '',
+                'Fix, in this order:',
+                '  1. press reset on the board and re-run the probe;',
+                "  2. confirm -Baud is 115200 (this run used $Baud);",
+                '  3. if it is stuck in the bootloader, reflash it:',
+                "       $build",
+                "       $flash") + $guess
+            )
+        }
+        'no_console' {
+            $tail = @()
+            foreach ($l in $R.Tail) { $tail += "                      $l" }
+            $cause = @(
+                '  Most likely cause : the flashed image was built WITHOUT the hil-console',
+                '                      feature. A product image has no console at all, so',
+                '                      every command this gate sends is swallowed and every',
+                '                      answer it waits for never arrives.')
+            if ($R.Hil -gt 0) {
+                # HIL lines came back but the help table did not parse. Different fault,
+                # different fix: the image is right and the console is wrong.
+                $cause = @(
+                    "  Most likely cause : the image DOES carry a console - $($R.Hil) HIL lines came",
+                    '                      back - but its help table did not parse. That is a',
+                    '                      console defect in firmware/src/hil.rs, not a missing',
+                    '                      feature, and this harness will not cut against a',
+                    '                      command surface it could not read.')
+            }
+            Stop-Run -Code 'no_console' -ExitCode $EXIT_NO_CONSOLE -Lines (@(
+                "CANNOT DRIVE THE BOARD: $Port answers, and there is no HIL console on it.",
+                '',
+                '  What was missing  : the help table. The command help produced no HIL|help|',
+                "                      line. The board is alive - $($R.Lines) lines arrived - and",
+                '                      none of them came from a console. The last of them:') + $tail + @(
+                '') + $cause + @(
+                '',
+                'Fix - rebuild with the feature and reflash, then probe again:',
+                "    $build",
+                "    $flash",
+                "    .\tools\hil\power-cut-gate.ps1 -Port $Port -Mode $Mode -Probe") + $guess
+            )
+        }
+        'missing_commands' {
+            $contract = @()
+            if ($spec.Contract.Count -gt 0) {
+                $contract = @('', 'The console contract this mode drives, which the firmware must provide:', '')
+                foreach ($l in $spec.Contract) {
+                    if ($l -eq '') { $contract += '' } else { $contract += "  $l" }
+                }
+            }
+            Stop-Run -Code 'missing_commands' -ExitCode $EXIT_MISSING_COMMANDS -Lines (@(
+                "CANNOT DRIVE THE BOARD: the console is there and does not carry what -Mode $Mode drives.",
+                '',
+                "  Missing commands  : $($R.Missing -join ', ')",
+                "  This mode needs   : $($spec.Needs -join ', ')",
+                "  The device has    : $($R.Have -join ' ')",
+                '',
+                '  Most likely cause : a firmware gap rather than a bench problem. If this',
+                '                      board was flashed from an older tree, reflash it:',
+                "                        $build",
+                "                        $flash",
+                '                      If the commands are absent from firmware/src/hil.rs',
+                '                      altogether, the gate is blocked on firmware and no',
+                '                      amount of bench time closes it.') + $contract
+            )
+        }
+    }
+}
+
 if ($DryRun) {
     Write-Output 'DRY RUN - nothing is sent to the board.'
     Write-Output "  port         : $Port at $Baud"
@@ -621,11 +929,18 @@ if ($DryRun) {
             if ($l -eq '') { Write-Output '' } else { Write-Output "  $l" }
         }
     }
-    return
+    Write-Output ''
+    Write-Output 'VERDICT: DRY RUN, nothing was sent, exit 0'
+    exit $EXIT_OK
 }
 
 Write-Log "run $stamp mode=$Mode cuts=$Cuts port=$Port window=$DelayMinMs..$DelayMaxMs ms"
-Write-Log "evidence: $runDir"
+if ($Probe) {
+    Write-Log 'PROBE ONLY - reads the board, cuts nothing, sends nothing that changes it'
+    Write-Log "probe log: $transcript"
+} else {
+    Write-Log "evidence: $runDir"
+}
 
 $records = @()
 $rand    = New-Object System.Random
@@ -635,55 +950,37 @@ $rand    = New-Object System.Random
 # wasted attempts would walk a provisioned board toward its wipe threshold.
 $currentPin = $Pin
 $stopRun    = $false
+# Why the run ended, when it did not end by finishing. Kept because the completion block
+# below has to tell an operator which of the three happened - the run finished, a rail
+# stopped it, or it recorded nothing - and "run complete" printed after a run that stopped
+# at cut 2 is the same lie in a smaller size.
+$stopReason = ''
 
 # --- Capability probe, before anything is cut. ---
-# Refusing here costs the operator one power-on. Discovering it at cut 1 costs them a pull,
-# a reseat, and a transcript that has to be thrown away.
-if (-not (Test-PortPresent $Port)) {
-    Write-Log "waiting for $Port - connect the board"
-    if (-not (Wait-PortBack $Port 300000)) { throw "port $Port never appeared" }
-}
-$have   = @()
-$absent = @()
-$probe  = Open-Board $Port $Baud
-try {
-    $boot0 = @()
-    $null = Read-Until -Sp $probe -TimeoutMs 12000 -StopOn 'HIL\|(status|boot)' -Lines ([ref]$boot0)
-    $have = Get-HelpCommands $probe
-    Write-Log "device exposes $($have.Count) console commands"
-    $absent = @($spec.Needs | Where-Object { $have -notcontains $_ })
-} finally {
-    try { if ($probe.IsOpen) { $probe.Close() } } catch { }
-    try { $probe.Dispose() } catch { }
-}
+# There is no "continue anyway" arm below, and there used to be. It said an unreadable help
+# table was a console defect rather than a missing command and let the run proceed, which
+# is true and is also not a reason to spend an operator's evening cutting power to a board
+# that cannot answer. Every arm of this refuses, loudly, with an exit code.
+$ready = Get-ConsoleReadiness -Name $Port -Rate $Baud -Needs $spec.Needs
+if ($ready.Verdict -ne 'ok') { Stop-OnReadiness $ready }
 
-if ($have.Count -eq 0) {
-    Write-Log 'WARN: help returned nothing parseable, so the capability probe is inconclusive.'
-    Write-Log 'Continuing: an unreadable help table is a console defect, not a missing command.'
-} elseif ($absent.Count -gt 0) {
-    $blocked = Join-Path $runDir 'BLOCKED.txt'
-    $msg = @()
-    $msg += "mode '$Mode' cannot run on this firmware"
-    $msg += ''
-    $msg += "Missing console commands: $($absent -join ', ')"
-    $msg += ''
-    $msg += 'The device answered help with: ' + ($have -join ' ')
-    $msg += ''
-    if ($spec.Contract.Count -gt 0) {
-        $msg += 'The contract this mode drives, which the firmware must provide:'
-        $msg += ''
-        foreach ($l in $spec.Contract) {
-            if ($l -eq '') { $msg += '' } else { $msg += "  $l" }
-        }
-        $msg += ''
-    }
-    $msg += 'Nothing was cut and nothing was written to the device. No evidence was produced,'
-    $msg += 'and none should be claimed: this is a firmware gap, not a test result.'
-    $msg | Set-Content -Path $blocked -Encoding utf8
-    $msg | ForEach-Object { Write-Log $_ }
+Write-Log "device exposes $($ready.Have.Count) console commands; all $($spec.Needs.Count) this mode needs are present"
+
+if ($Probe) {
+    Write-Loud @(
+        "READY: $Port can be driven for -Mode $Mode.",
+        '',
+        "  Console commands present : $($ready.Have.Count)",
+        "  This mode needs          : $($spec.Needs -join ', ')",
+        '  All present.',
+        '',
+        'Nothing that changes the device was sent: this probe reads the boot output and the',
+        'help table and stops. No evidence directory was created, because no run happened.'
+    )
+    Write-Output "Probe log: $transcript"
     Write-Output ''
-    Write-Output "Recorded as a gap, not a run: $blocked"
-    return
+    Write-Output 'VERDICT: READY, exit 0'
+    exit $EXIT_OK
 }
 
 for ($cut = 1; $cut -le $Cuts; $cut++) {
@@ -729,8 +1026,9 @@ for ($cut = 1; $cut -le $Cuts; $cut++) {
             Write-Log "STOP: failures=$(Get-Field $before 'failures') is within $WipeMargin of wipe_after=$(Get-Field $before 'wipe_after')."
             Write-Log 'Refusing to continue. Unlock the board with the correct PIN to clear the counter,'
             Write-Log 'then start a new run. This harness does not walk a provisioned board into a wipe.'
-            $rec.flags = 'stopped_near_wipe_threshold'
-            $stopRun = $true
+            $rec.flags  = 'stopped_near_wipe_threshold'
+            $stopRun    = $true
+            $stopReason = "the wipe rail stopped the run at cut $cut : failures=$(Get-Field $before 'failures') is within $WipeMargin of wipe_after=$(Get-Field $before 'wipe_after')"
             $skip = $true
         } elseif ($null -eq $margin) {
             Write-Log 'WARN: wipe_after/failures unreadable, so the wipe margin is unchecked this cut'
@@ -984,7 +1282,8 @@ for ($cut = 1; $cut -le $Cuts; $cut++) {
                 Write-Log 'ends the run: every further cut would spend attempts against the wipe'
                 Write-Log 'threshold with no way to clear them. Leave the board as it is and read'
                 Write-Log 'the transcript before touching it again.'
-                $stopRun = $true
+                $stopRun    = $true
+                $stopReason = "a blocking finding at cut $cut : neither PIN opened the device after the cut"
             }
         }
         'attempt' {
@@ -1039,10 +1338,60 @@ for ($cut = 1; $cut -le $Cuts; $cut++) {
     }
 }
 
-Write-Log "=== run complete: $($records.Count) rows recorded, evidence in $runDir ==="
+# --- How the run ended. Three outcomes, three exit codes, and none of them is silence. ---
+#
+# "run complete" used to print here unconditionally, including after a run that stopped at
+# cut 2 on the wipe rail and after a run whose every row was a harness error. Both exited
+# zero. The count of rows is not the same fact as the count of cuts that landed, and only
+# the second one is evidence.
+$detected      = @($records | Where-Object { $_.cut_detected -eq $true }).Count
+$harnessErrors = @($records | Where-Object { "$($_.flags)" -like 'harness-error*' }).Count
+
+Write-Log "=== run ended: $($records.Count) rows, $detected cut(s) detected, $harnessErrors harness error(s) ==="
 Write-Output ''
 Write-Output "Records : $recordCsv"
 Write-Output "Console : $transcript"
+Write-Output ''
+
+if ($stopReason) {
+    Write-Loud @(
+        'THE RUN DID NOT FINISH.',
+        '',
+        "  $stopReason",
+        '',
+        "  Cuts requested : $Cuts",
+        "  Cuts detected  : $detected",
+        '',
+        'The rows already written are real and are worth reading, but this run did not cover',
+        "the $Cuts cuts it was asked for, and the milestone note must not be written as though",
+        'it did. Clear the cause, then start a new run.'
+    )
+    Write-Output "VERDICT: STOPPED EARLY after $detected of $Cuts cut(s), exit $EXIT_STOPPED_EARLY"
+    Write-Output ''
+    Write-Output 'Next: powershell -NoProfile -ExecutionPolicy Bypass -File tools\hil\summarize-cuts.ps1'
+    exit $EXIT_STOPPED_EARLY
+}
+
+if ($detected -eq 0) {
+    Write-Loud @(
+        'THE RUN RECORDED NOTHING USABLE.',
+        '',
+        "  Rows written    : $($records.Count)",
+        "  Cuts detected   : 0",
+        "  Harness errors  : $harnessErrors",
+        '',
+        'Not one cut was observed, so nothing in cuts.csv evidences any exit criterion. This',
+        'is not a pass and it is not a device finding: read console.log to see how far each',
+        'cycle got. A run whose rows are all harness errors usually means the board stopped',
+        'answering - re-run the probe before spending another evening:',
+        '',
+        "    .\tools\hil\power-cut-gate.ps1 -Port $Port -Mode $Mode -Probe"
+    )
+    Write-Output "VERDICT: NO EVIDENCE, exit $EXIT_NO_EVIDENCE"
+    exit $EXIT_NO_EVIDENCE
+}
+
+Write-Output "Run complete: $detected of $Cuts cut(s) detected, $harnessErrors harness error(s)."
 Write-Output ''
 Write-Output 'This harness does not declare the gate passed. Read cuts.csv against the m4a exit'
 Write-Output 'criteria in docs/plan-0.2.0/MILESTONES.md, and record in the milestone note that the'
@@ -1050,3 +1399,6 @@ Write-Output 'window was SAMPLED by hand rather than swept, which is the one way
 Write-Output 'than the relay rig deferred to 0.3.0.'
 Write-Output ''
 Write-Output 'Next: powershell -NoProfile -ExecutionPolicy Bypass -File tools\hil\summarize-cuts.ps1'
+Write-Output ''
+Write-Output "VERDICT: RUN COMPLETED, $detected cut(s) recorded, exit $EXIT_OK"
+exit $EXIT_OK
