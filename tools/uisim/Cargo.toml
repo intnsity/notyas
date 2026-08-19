@@ -1,14 +1,26 @@
-# Host-side UI simulator for notyas. Drives crates/notyas-ui through its public touch
-# API with deterministic, well-known test-vector data and renders every screen at the
-# primary 720x720 geometry into docs/screenshots/ui/*.png for human review. Same input
-# -> same PNG bytes: the tool renders each frame twice and refuses to write on any
-# divergence.
+# Host-side UI simulator and graphics regression gate for notyas.
+#
+# A library plus a thin binary, deliberately: the docs pictures, the gate in
+# tests/gate.rs and the render/diff commands all drive ONE catalogue of frames
+# through ONE set of driving helpers with ONE set of sample data. A second crate
+# holding a second copy of that data would drift, and the committed pictures would
+# stop being evidence about the thing under gate.
+#
+# The library renders every screen, in every state src/catalog.rs declares it has, on
+# every panel notyas_ui::layout::PANELS ships, into a target that RECORDS what a
+# display would discard - so a draw that leaves the glass is measurable instead of
+# invisible. Same input -> same bytes: each docs picture is rendered twice and refused
+# on any divergence.
+#
+# Commands: `tour` (default) writes docs/screenshots/ui; `approve` runs the bounds and
+# coverage gates and only then rewrites goldens.txt and the pictures; `manifest` prints
+# the manifest and writes nothing; `render` and `diff` are for looking at one frame.
 [package]
 name = "uisim"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
-description = "Renders every notyas-ui screen to PNG with fixed test-vector sample data"
+description = "Renders every notyas-ui screen on every shipped panel, and gates the result"
 license = "GPL-3.0-or-later"
 publish = false
 

@@ -1,9 +1,25 @@
 # UI screenshots (generated - do not edit)
 
-Rendered by `tools/uisim` (`cargo run --release` there) from `crates/notyas-ui` at the
-primary 720x720 panel geometry. Deterministic: same input -> same PNG bytes; the tool
-renders each frame twice and refuses to write on any divergence. Regenerate after any
-UI change and commit the diff.
+Rendered by `tools/uisim` from `crates/notyas-ui`, on the primary 720x720 panel and, where
+the shorter panel reflows into a different ARRANGEMENT rather than a compression, on
+800x480 as well. Deterministic: same input -> same PNG bytes; the tool renders each frame
+twice and refuses to write on any divergence.
+
+These pictures are the HUMAN surface, not the regression gate, and they are a subset of
+what is gated. `tools/uisim/src/catalog.rs` declares every screen in every state it has,
+and `tools/uisim/tests/gate.rs` renders all of them on all five shipped panel geometries
+on every `cargo test`; what is committed here is the curated set worth looking at. A
+picture per gated frame would be roughly 10 MB of binary churn per layout change, so the
+rest is committed as text in `tools/uisim/goldens.txt`.
+
+Do not regenerate these by hand. Approve them, which re-runs the bounds and coverage gates
+first and refuses to write if either fails:
+
+    cargo run -p uisim -- approve
+    git add docs/screenshots/ui tools/uisim/goldens.txt
+
+`cargo run -p uisim -- diff` writes a before/after image per file below into
+`target/uigate/` if you want to see which pixels moved.
 
 Sample data - all of it public test-vector material, none of it a real seed:
 
