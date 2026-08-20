@@ -84,3 +84,27 @@ CONFIG_IDF_EXPERIMENTAL_FEATURES=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 CONFIG_CACHE_L2_CACHE_256KB=y
 CONFIG_CACHE_L2_CACHE_LINE_128B=y
+
+# --- microSD FatFs long file names (0.2.0) ------------------------------------
+# Without LFN, FatFs is 8.3-only: a signed PSBT cannot be named and desktop-written
+# cards list as mangled stems, so sd::mount refuses to mount at all (LONG_NAMES).
+# CONFIG_FATFS_LFN_NONE is the IDF default, so until this block existed every build
+# refused every card before it powered the slot.
+#
+# Shared defaults, not a board overlay: reading a card is a product capability that
+# the whole 0.2.0 signing path depends on regardless of which panel is attached, and
+# the overlays are reserved for what is genuinely per-board (flash size, panel
+# errata). A board that could not read cards would be a different product.
+#
+# HEAP, not STACK: the 512-byte (FF_MAX_LFN+1)*2 UTF-16 working buffer is taken
+# transiently from the heap per FatFs call instead of the main task stack, which
+# has faulted twice before (see ESP_MAIN_TASK_STACK_SIZE above).
+#
+# MAX_LFN and CODEPAGE are the IDF defaults, pinned so a default change upstream
+# cannot silently narrow what a coordinator may name a file. 437 also keeps the
+# ~480 kB CODEPAGE_DYNAMIC tables out of a 4 MiB app partition. Non-ASCII names
+# are refused by notyas_wallet::sd::Name, so the codepage never decides anything
+# security-relevant; it only has to exist.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+CONFIG_FATFS_CODEPAGE_437=y

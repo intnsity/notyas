@@ -246,7 +246,7 @@ fn scanned() -> ReservedSpace {
 fn verify_screen(w: u32, h: u32, status: StoreStatus) -> Ui {
     let mut ui = Ui::new(w, h);
     ui.set_verify_info(readout());
-    ui.set_lock_info(LockInfo { status, nickname: "kitchen-desk".into(), ..LockInfo::default() });
+    ui.set_lock_info(LockInfo { status, device_name: "kitchen-desk".into(), ..LockInfo::default() });
     tap(&mut ui, RegionId::HomeVerifyDevice);
     assert_eq!(ui.screen(), ScreenId::VerifyDevice);
     ui

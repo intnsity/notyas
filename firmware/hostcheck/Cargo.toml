@@ -32,3 +32,23 @@ notyas-core = { path = "../../crates/notyas-core", default-features = false }
 zeroize = { version = "1.9.0", default-features = false, features = ["alloc"] }
 # The vocabulary `flow/model.rs` renders into. Same crate, same pins, no feature of its own.
 notyas-ui = { path = "../../crates/notyas-ui" }
+# The sealing engine, for its error type alone: `unseal.rs` classifies `UnlockError`, and
+# that enum is the whole subject of the test. Same path pin as the firmware's; no feature.
+notyas-wallet = { path = "../../crates/notyas-wallet" }
+
+[dev-dependencies]
+# The same crate again, with the fixture corpus switched on. `testkit` is what makes
+# `notyas_core::psbt::fixture` public, and `tests/signing_complete.rs` drives the signing
+# cover off those exact PSBTs rather than off a second, unpinned set of its own. A
+# dev-dependency and not a dependency: nothing links this package, and the feature has no
+# reason to exist outside its test targets.
+notyas-core = { path = "../../crates/notyas-core", default-features = false, features = ["testkit"] }
+# The sealing engine with its host simulation backends. Same reason as the core's testkit
+# above: `passphrase_forget.rs` has to ask the VAULT whether a stale side still opens, and
+# `open_any_side` plus `SimFlash` are what that question is asked with. A dev-dependency
+# and only a dev-dependency - nothing links this package, and `testkit` must never reach a
+# firmware build (tools/build-graph-check.sh reads the normal edges and this is not one).
+notyas-wallet = { path = "../../crates/notyas-wallet", features = ["testkit"] }
+# The record's own wrapper type, so a test can build a stored passphrase the way the
+# firmware does.
+zeroize = { version = "1.9.0", default-features = false, features = ["alloc"] }

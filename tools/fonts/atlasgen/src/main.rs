@@ -47,6 +47,12 @@ struct Job {
 /// Target sizes for the 720x720 4" panel (~229 PPI): the desktop GUI's 15 px body text
 /// scales by ~2.2x to hold physical size, giving ~32 px body; 44 px is the heading
 /// step, 28 px the dense-mono step.
+///
+/// 24 px Sans Regular is the CAPTION step, added 2026-08-19. It is not a smaller body
+/// size: it exists for controls that carry their own copy inside a target the page
+/// cannot make taller - the wallet action cards get 62 px of inner height on the
+/// 800x480 panel, which holds two 24 px lines and nothing larger. See
+/// docs/plan-0.2.0/UX-SCREENS.md 0.5.
 const JOBS: &[Job] = &[
     Job {
         ttf: "IBMPlexSans-Regular.ttf",
@@ -54,7 +60,7 @@ const JOBS: &[Job] = &[
         family: "notyas Sans",
         ident: "sans",
         style: "Regular",
-        sizes: &[32],
+        sizes: &[24, 32],
     },
     Job {
         ttf: "IBMPlexSans-SemiBold.ttf",

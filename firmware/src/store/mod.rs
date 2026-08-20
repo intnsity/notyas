@@ -479,12 +479,11 @@ impl Store {
 
     /// Erase registry slot `index`. Requires an open session.
     ///
-    /// The one destructive record operation this file publishes, and it is published for
-    /// the registry class alone. A registration is a PUBLIC record that the user can import
-    /// again from the coordinator that issued it, so erasing one costs a re-import; a
-    /// payload slot holds the only copy of somebody's words, and a delete path reachable
-    /// from a screen is not something to add to this file at the same time as the screen
-    /// that would call it.
+    /// A registration is a PUBLIC record that the user can import again from the
+    /// coordinator that issued it, so erasing one costs a re-import. Its payload-class
+    /// twin is [`Store::clear_payload`], which is the same `Vault::clear` over the class
+    /// that holds the only copy of somebody's words - and which is behind a two-sheet
+    /// typed-name consent plus the last-words step for exactly that reason.
     ///
     /// `Vault::clear` is what performs it, and under `Occupancy::AlwaysFilled` it REWRITES
     /// the slot with device-derived filler rather than erasing it: leaving an erased-flash
@@ -492,6 +491,52 @@ impl Store {
     /// close.
     pub fn clear_registry(&mut self, index: u8) -> Result<(), String> {
         let slot = self.registry_slot(index)?;
+        let session = self.session.as_ref().ok_or("locked")?;
+        self.vault
+            .clear(session, slot)
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// Erase payload slot `index`. Requires an open session.
+    ///
+    /// # No empty record is written, and none ever was going to be
+    ///
+    /// The objection this route had to answer is a real one: a record encoder that emitted
+    /// an EMPTY body into the slot would leave bytes that read as occupied and decode as
+    /// nothing - a corrupted wallet wearing a delete's clothes. Nothing here does that.
+    /// `Vault::clear` under [`Occupancy::AlwaysFilled`] writes device FILLER, sealed under
+    /// the key ladder's `filler_root` rather than under this session's PIN-derived key, and
+    /// `Vault::slot_state` tries `filler_root` FIRST and answers [`SlotState::Empty`] when
+    /// it opens. So the slot reads as free to every caller, no wallet-record encoder is
+    /// invoked, and no half-record exists at any instant.
+    ///
+    /// # Why filler and not an erase
+    ///
+    /// Ratified Q2: `AlwaysFilled` is this product's permanent, only storage mode. Erasing
+    /// a payload slot back to 0xff would leave exactly the occupancy tell that mode exists
+    /// to close - a flash dump would say how many wallets a device holds. A delete
+    /// therefore REWRITES. `Vault::clear`'s `Sparse` arm is unreachable here and must stay
+    /// so; the constant above is the only thing that decides it.
+    ///
+    /// # What a power cut does
+    ///
+    /// What a seal does, because this IS a seal. The commit point is the 16-byte header MAC
+    /// of the filler side, programmed last: before it, the old record is still elected and
+    /// the wallet is still there to delete again; after it, the filler wins the max-seq
+    /// election on every boot forever, and `mount`'s cleanup finishes the stale-side erase
+    /// if the cut landed inside it. There is no third outcome and no torn state. The one
+    /// thing it does not promise is instantaneous physical destruction: between the commit
+    /// and the stale-side erase the previous ciphertext is still on the flash, still sealed
+    /// under the user's PIN. `crates/notyas-wallet/src/fuzz.rs`'s `Op::Clear` cuts this
+    /// operation at every step boundary, over a slot holding a real record.
+    ///
+    /// # The read-back is the caller's
+    ///
+    /// This returns what the store returned and claims nothing beyond it. Whether the slot
+    /// is actually free afterwards is a question with an answer on the flash, and
+    /// `crate::wallet::erase` asks it rather than assuming this call implies it.
+    pub fn clear_payload(&mut self, index: u8) -> Result<(), String> {
+        let slot = self.payload_slot(index)?;
         let session = self.session.as_ref().ok_or("locked")?;
         self.vault
             .clear(session, slot)
@@ -567,6 +612,51 @@ impl Store {
             )),
         }
     }
+
+    /// Set the wrong-PIN wipe policy. Re-seals the store under the given PIN, so the
+    /// PIN is confirmed inside the AEAD (PIN-MODES.md). The session is borrowed, not
+    /// consumed: `set_policy` returns a Policy, not a Session.
+    pub fn set_policy(&mut self, pin: &Pin, wipe_after: u8) -> Result<notyas_wallet::config::Policy, String> {
+        let min_pin = self.min_pin_len();
+        let session = self.session.take().ok_or("locked")?;
+        let Some(scratch) = self.scratch.as_mut().map(PsramScratch::borrow) else {
+            self.adopt(session);
+            return Err(String::from("no Argon2 working set"));
+        };
+        let request = notyas_wallet::config::PolicyRequest { wipe_after, min_pin_len: min_pin };
+        match self.vault.set_policy(&session, request, pin, scratch) {
+            Ok(policy) => {
+                self.adopt(session);
+                Ok(policy)
+            }
+            Err(e) => {
+                self.adopt(session);
+                Err(format!("{e:?}"))
+            }
+        }
+    }
+
+    /// Destroy every sealed record and leave the store unformatted (Q5.5). The PIN is
+    /// confirmed inside the AEAD before the wipe. Returns the count of what was destroyed.
+    pub fn remove_pin(&mut self, pin: &Pin) -> Result<notyas_wallet::Destroyed, String> {
+        let session = self.session.take().ok_or("locked")?;
+        let Some(scratch) = self.scratch.as_mut().map(PsramScratch::borrow) else {
+            self.adopt(session);
+            return Err(String::from("no Argon2 working set"));
+        };
+        match self.vault.remove_pin(&session, pin, scratch) {
+            Ok(destroyed) => {
+                // No session to adopt: the store is now unformatted.
+                self.session = None;
+                Ok(destroyed)
+            }
+            Err(e) => {
+                self.adopt(session);
+                Err(format!("{e:?}"))
+            }
+        }
+    }
+
 
     /// The mounted vault, for the paths that need the whole surface (the HIL console).
     /// Deliberately not public to the UI: every operation the product performs has a

@@ -37,8 +37,8 @@ use crate::layout::Rect;
 use crate::screens::{Ctx, Env, Outcome, Screen};
 use crate::theme::*;
 use crate::{
-    secret_buf, BackupState, Page, Region, RegionId, UiRequest, WalletDraft, WalletInfo,
-    WalletKind, NAME_MAX, PHRASE_MAX,
+    secret_buf, BackupState, Page, PassphraseState, Region, RegionId, Secret, UiRequest,
+    WalletDraft, WalletInfo, WalletKind, NAME_MAX, PASS_MAX, PHRASE_MAX,
 };
 use notyas_core::bitcoin::Network;
 use notyas_core::report::Report;
@@ -65,7 +65,13 @@ pub(crate) struct NameState {
     /// that can be wrong.
     fingerprint: String,
     network: Network,
-    passphrase: bool,
+    /// The passphrase this wallet was derived with, empty where none was applied.
+    ///
+    /// The screen reads two things from it and draws neither: whether the Q22
+    /// acknowledgement gates the save, and what the [`WalletDraft`] carries to the
+    /// embedder. It is `Zeroizing` and named in the parent module's drop-equals-zeroize
+    /// check, exactly like the phrase beside it.
+    pub(super) passphrase: Zeroizing<String>,
     backup: BackupState,
     name: String,
     page: Page,
@@ -73,31 +79,52 @@ pub(crate) struct NameState {
     typing: bool,
     /// The Q22 acknowledgement has been given on this screen.
     acked: bool,
+    /// Set when a PersistWallet was refused, so the failure is reported on the panel
+    /// rather than swallowed. Cleared on the next Save tap. (K14)
+    pub(crate) save_failed: bool,
+    /// Whether the user chose to remember the passphrase on this device.
+    /// Only shown when has_passphrase() is true.
+    pub(crate) remember_passphrase: bool,
 }
 
 impl NameState {
-    pub fn new(report: &Report) -> NameState {
+    pub fn new(report: &Report, passphrase: &str) -> NameState {
         // Exact-capacity allocation: a push that reallocated would strand an unwiped
         // partial phrase outside the `Zeroizing` wrapper's reach.
         let mut phrase = secret_buf(PHRASE_MAX);
         phrase.push_str(&report.phrase);
+        let mut pass = secret_buf(PASS_MAX);
+        pass.push_str(passphrase);
+        debug_assert_eq!(
+            report.has_passphrase,
+            !pass.is_empty(),
+            "the carried passphrase and the derivation must describe the same wallet"
+        );
         NameState {
             phrase,
             fingerprint: report.root_fingerprint.clone(),
             network: report.network,
-            passphrase: report.has_passphrase,
+            passphrase: pass,
             backup: BackupState::Verified(String::new()),
             name: String::new(),
             page: Page::Lower,
             typing: false,
             acked: false,
+            save_failed: false,
+            remember_passphrase: false,
         }
+    }
+
+    /// Whether a passphrase is part of this wallet. What the Q22 gate keys on, and the
+    /// only question this screen asks of the value it carries.
+    fn has_passphrase(&self) -> bool {
+        !self.passphrase.is_empty()
     }
 
     /// Whether Save is live. Both preconditions, and whichever one is holding it back
     /// has its reason drawn beside the button.
     fn ready(&self) -> bool {
-        !self.name.trim().is_empty() && (self.acked || !self.passphrase)
+        !self.name.trim().is_empty() && (self.acked || !self.has_passphrase())
     }
 
     /// The wallet as it will read once the store has it. Built here rather than by the
@@ -116,7 +143,14 @@ impl NameState {
             network: self.network,
             registrations: 0,
             stored: true,
-            passphrase: self.passphrase,
+            // `Required` and never `Stored`: a wallet is saved with the passphrase held
+            // for the session only, and storing it is a separate decision the owner makes
+            // afterwards, per wallet, on the wallet home (Q22 amendment, 2026-08-19).
+            passphrase: if self.has_passphrase() {
+                PassphraseState::Required
+            } else {
+                PassphraseState::None
+            },
         }
     }
 }
@@ -180,8 +214,9 @@ impl Screen for NameState {
         );
         let notice_h = write_notice_h(body.w, NOTICE_WHAT, NOTICE_CONFIDENTIALITY);
         let notice = Rect::new(body.x, save.y - g - notice_h, body.w, notice_h);
-        let ack = if self.passphrase {
-            Some(Rect::new(body.x, notice.y - g - ACK_H, body.w, ACK_H))
+        let ack_h = ACK_H * 2 + g;
+        let ack = if self.has_passphrase() {
+            Some(Rect::new(body.x, notice.y - g - ack_h, body.w, ack_h))
         } else {
             None
         };
@@ -200,6 +235,10 @@ impl Screen for NameState {
         }
         if let Some(ack) = l.ack {
             out.push(Region { id: RegionId::PassNotStoredAck, rect: ack });
+        if let Some(a) = l.ack {
+            let remember_y = a.y + ACK_H + ctx.m.gap;
+            out.push(Region { id: RegionId::RememberPassphraseAck, rect: Rect::new(a.x, remember_y, a.w, ACK_H) });
+        }
         }
         out.push(Region { id: RegionId::ConfirmSave, rect: l.save });
     }
@@ -256,6 +295,13 @@ impl Screen for NameState {
         // C12: what is written, then what anyone who reads it could learn.
         write_notice(t, l.notice, NOTICE_WHAT, NOTICE_CONFIDENTIALITY)?;
 
+        // K14: a refused save is reported on the panel, not swallowed.
+        if self.save_failed && !self.typing {
+            let msg_y = l.hint_y + 22;
+            text(t, "Save failed - nothing was written. Try again.",
+                 body.x, msg_y, BODY, DANGER, PAPER_1)?;
+        }
+
         let ready = self.ready();
         let kind = if ready { ButtonKind::Primary } else { ButtonKind::Disabled };
         button(t, l.save, "Save wallet", kind, PAPER_1)?;
@@ -293,6 +339,10 @@ impl Screen for NameState {
                 self.name.pop();
                 Outcome::stay()
             }
+            RegionId::RememberPassphraseAck => {
+                self.remember_passphrase = !self.remember_passphrase;
+                Outcome::stay()
+            }
             RegionId::PassNotStoredAck => {
                 self.acked = !self.acked;
                 Outcome::stay()
@@ -327,6 +377,8 @@ impl Screen for NameState {
             // Drawn disabled until every precondition holds, so a tap before then does
             // nothing at all.
             RegionId::ConfirmSave if self.ready() => {
+                // Clear the failure flag on retry (K14).
+                self.save_failed = false;
                 let mut phrase = secret_buf(PHRASE_MAX);
                 phrase.push_str(&self.phrase);
                 Outcome::ask(UiRequest::PersistWallet(WalletDraft {
@@ -334,7 +386,15 @@ impl Screen for NameState {
                     name: String::from(self.name.trim()),
                     fingerprint: self.fingerprint.clone(),
                     network: *env.network,
-                    passphrase: self.passphrase,
+                    // The one journey this value makes. The embedder needs it to write
+                    // the record's flag truthfully and to seed the session, so that the
+                    // wallet the user just created opens without asking for a passphrase
+                    // they typed a minute ago. `Secret` is what lets it ride inside a
+                    // `Debug`-deriving enum.
+                    passphrase: self
+                        .has_passphrase()
+                        .then(|| Secret::passphrase(&self.passphrase)),
+                    store_passphrase: self.remember_passphrase,
                 }))
             }
             _ => Outcome::stay(),

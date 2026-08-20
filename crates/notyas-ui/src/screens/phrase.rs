@@ -51,7 +51,7 @@ use crate::components::{
 use crate::layout::Rect;
 use crate::screens::deriving::SeedSource;
 use crate::screens::passphrase::PassState;
-use crate::screens::{Ctx, Env, Outcome, Screen, State};
+use crate::screens::{Ctx, Env, Nav, Outcome, Screen, State};
 use crate::theme::*;
 use crate::{secret_buf, Page, Region, RegionId, PHRASE_MAX};
 use notyas_core::bip39::{
@@ -472,6 +472,21 @@ impl Screen for PhraseState {
                 Outcome::push(State::Passphrase(PassState::new(SeedSource::Phrase(normalized))))
             }
             _ => Outcome::stay(),
+        }
+    }
+
+    /// Back over a phrase the user has begun typing asks first, for the reason
+    /// [`super::dice::DiceState::back`] gives: eleven words typed on a touch keyboard are
+    /// work, and Back sits over them. An empty well has nothing to lose and does not ask.
+    ///
+    /// Unconditional in the other direction - the origin does not matter, because Home and
+    /// the wallet list both cost the same typing - and unreachable while the "+N more"
+    /// sheet is open, which emits no Back of its own.
+    fn back(&self) -> Nav {
+        if self.text.is_empty() {
+            Nav::Back
+        } else {
+            Nav::ConfirmExit
         }
     }
 

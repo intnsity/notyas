@@ -48,6 +48,20 @@ impl Rect {
         Rect::new(self.x + dx, self.y + dy, self.w, self.h)
     }
 
+    /// The part of this rectangle that is also inside `clip`, or `None` where nothing is.
+    ///
+    /// What a SCROLLING screen hit-tests with: a control dragged off the panel is not
+    /// drawn, so it must not be tappable, and one that is half on the panel is tappable
+    /// over the half a finger can see. Returning `None` rather than a zero-sized rectangle
+    /// makes "there is nothing to tap here" a case the caller has to handle.
+    pub fn intersection(&self, clip: &Rect) -> Option<Rect> {
+        let x = self.x.max(clip.x);
+        let y = self.y.max(clip.y);
+        let right = self.right().min(clip.right());
+        let bottom = self.bottom().min(clip.bottom());
+        (right > x && bottom > y).then(|| Rect::new(x, y, right - x, bottom - y))
+    }
+
     pub fn overlaps(&self, other: &Rect) -> bool {
         self.x < other.right()
             && other.x < self.right()

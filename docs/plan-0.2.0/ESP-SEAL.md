@@ -335,6 +335,23 @@ Geometry is compile-time in `Config` and is recorded in the superblock; a mismat
 between the two is a hard mount failure, not a best-effort reinterpretation. That is what
 lets a future firmware change the layout safely: it refuses rather than misreads.
 
+**The reserved tail (sectors 58-63) is the format's growth room and is not spare space.**
+Recorded here because 0.2.0 was asked, when the device needed somewhere to keep a
+pre-PIN device name, whether those 24 KiB could hold it. They could not, for three
+independent reasons and any one of them is sufficient. (1) They are inside the region
+`Layout::V1` describes: the slot map, `Config::validate`'s `mapped_sectors` bound, the A/B
+election and the power-loss fuzzer all reason over these 64 sectors, and "sectors 58-63 are
+erased" is an invariant the m4a scan evidence attests - foreign bytes there falsify a
+recorded measurement. (2) The `wallets` partition carries the `encrypted` flag, so on a
+release unit the tail is XTS-encrypted and write-once per 16-byte cipher block between
+erases: the wrong physics for a value rewritten on every Save, and not readable as
+plaintext before a key exists anyway. (3) It would couple a setting's lifetime to the
+store's: FORMAT and the wipe own this partition end to end, and a name drawn on the lock
+screen must not have its storage entangled with sealed-store state transitions. The answer
+was a separate `settings` partition (`BOARDS.md`), which cost 64 KiB of a flash that is
+72.9% empty on the smaller board. The tail stays what it is: room for a Layout V2 with more
+slot sectors, taken without a partition move.
+
 Slot classes:
 
 | Class | id | Sides | Bytes per side | Body capacity | Max payload |

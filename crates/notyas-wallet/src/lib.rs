@@ -98,6 +98,12 @@ mod records;
 // intra-doc links in THIS file's scope, and every one of them then breaks.
 pub mod sd;
 mod session;
+// The public settings region (0.2.0): the two-slot plaintext record holding the values a
+// device must read BEFORE a PIN - today the device name and the network choice. It shares
+// no code, no key and no partition with the sealing engine, and its module docs carry the
+// admission rule that keeps it that way. Plain comment rather than a doc comment for the
+// reason `sd` states above.
+pub mod settings;
 mod slot;
 pub mod transport;
 mod vault;
@@ -118,6 +124,13 @@ pub use error::{
 pub use hal::{DeviceMac, Flash, Geometry, KeyProvenance, Region, Scratch, ScratchBlock};
 pub use pin::{Pin, PinError};
 pub use session::{Liveness, Session, DEFAULT_AUTO_LOCK_MS};
+// Renamed on the way out, not in the module: inside `settings` the plain names read
+// correctly, and at the crate root `Network` would sit one import away from the pipeline's
+// four-way `Network` in the firmware that uses both.
+pub use settings::{
+    NameRefusal, Network as SettingsNetwork, SaveError as SettingsSaveError, Settings,
+    SettingsFlash, SettingsRegion,
+};
 pub use slot::{Identity, Side, SlotClass, SlotId, SlotMap, SlotState};
 pub use transport::{
     Animation, Payload, Playback, Speed, Transport, TransportError, DEFAULT_MAX_FRAGMENT,

@@ -124,7 +124,7 @@ const ELLIPSIS: &str = "\u{2026}";
 // ---------------------------------------------------------------------------------------
 
 /// Padding inside a well or a list row.
-const WELL_PAD: i32 = 12;
+pub(crate) const WELL_PAD: i32 = 12;
 /// Gap between stacked list rows.
 const ROW_GAP: i32 = 6;
 /// One list row: a name line and a detail line, plus its own padding.
@@ -150,6 +150,13 @@ const READY_MIN_H: i32 = 120;
 // ---------------------------------------------------------------------------------------
 // Measured copy
 // ---------------------------------------------------------------------------------------
+//
+// `pub(crate)` from here down, for exactly one other module: `screens::format`, S-49. It
+// renders the same shape of thing for the same reason - a well of measured lines about a
+// card, some of which are sentences the embedder wrote - and the rule this module already
+// states about untrusted text ("drawn only if the atlas can draw it faithfully, bounded
+// before it is wrapped, and always LAST in a block") is a safety rule, so it gets one
+// implementation and not two. Nothing outside `screens` can name any of it.
 
 /// One measured line of a well.
 ///
@@ -158,7 +165,7 @@ const READY_MIN_H: i32 = 120;
 /// height is exactly the sum of its advances plus the well's padding. That is what lets a
 /// block be trimmed to a room bound without the last line's descenders crossing the border
 /// drawn under them.
-struct Line {
+pub(crate) struct Line {
     text: String,
     font: &'static Atlas,
     ink: Rgb565,
@@ -166,11 +173,11 @@ struct Line {
 }
 
 impl Line {
-    fn head(text: String) -> Line {
+    pub(crate) fn head(text: String) -> Line {
         Line { text, font: HEADING, ink: INK_PRIMARY, adv: LINE }
     }
 
-    fn body(text: String) -> Line {
+    pub(crate) fn body(text: String) -> Line {
         Line { text, font: BODY, ink: INK_SECONDARY, adv: LINE }
     }
 
@@ -178,7 +185,7 @@ impl Line {
         Line { text, font: MONO, ink: INK_PRIMARY, adv: LINE }
     }
 
-    fn detail(text: String, ink: Rgb565) -> Line {
+    pub(crate) fn detail(text: String, ink: Rgb565) -> Line {
         Line { text, font: MONO_SMALL, ink, adv: SMALL_LINE }
     }
 }
@@ -189,14 +196,14 @@ impl Line {
 /// wells gets is the landscape half of an 800x480 body, and "The card could not be read."
 /// is wider than that at HEADING. Nothing in this module draws a fixed line it has not
 /// measured.
-fn push_head(out: &mut Vec<Line>, head: &str, w: i32) {
+pub(crate) fn push_head(out: &mut Vec<Line>, head: &str, w: i32) {
     for line in wrap_words(head, w, HEADING) {
         out.push(Line::head(line));
     }
 }
 
 /// Wrap `prose` to `w` px and append it as body lines.
-fn push_prose(out: &mut Vec<Line>, prose: &str, w: i32) {
+pub(crate) fn push_prose(out: &mut Vec<Line>, prose: &str, w: i32) {
     for line in wrap_words(prose, w, BODY) {
         out.push(Line::body(line));
     }
@@ -208,7 +215,7 @@ fn push_prose(out: &mut Vec<Line>, prose: &str, w: i32) {
 /// is linear in a length someone else chose - and always LAST in a block, so a hostile
 /// length can cost nothing but itself (see [`fit_block`]). A sentence that was cut says so,
 /// because [`fit_block`]'s own marker only appears when the PANEL ran out of room.
-fn push_untrusted(out: &mut Vec<Line>, sentence: &str, w: i32) {
+pub(crate) fn push_untrusted(out: &mut Vec<Line>, sentence: &str, w: i32) {
     if !printable(sentence) {
         return;
     }
@@ -224,7 +231,7 @@ fn push_untrusted(out: &mut Vec<Line>, sentence: &str, w: i32) {
 }
 
 /// Height a block needs, well padding included.
-fn block_h(lines: &[Line]) -> i32 {
+pub(crate) fn block_h(lines: &[Line]) -> i32 {
     2 * WELL_PAD + lines.iter().map(|l| l.adv).sum::<i32>()
 }
 
@@ -235,7 +242,7 @@ fn block_h(lines: &[Line]) -> i32 {
 /// panel - or a message whose length someone else chose - can cost is the detail, never
 /// the sentence the user has to act on. A trimmed block ends in a lone ellipsis, so the
 /// reader knows the text continues instead of believing they have read all of it.
-fn fit_block(mut lines: Vec<Line>, room: i32) -> Vec<Line> {
+pub(crate) fn fit_block(mut lines: Vec<Line>, room: i32) -> Vec<Line> {
     if block_h(&lines) <= room {
         return lines;
     }
@@ -249,7 +256,7 @@ fn fit_block(mut lines: Vec<Line>, room: i32) -> Vec<Line> {
     lines
 }
 
-fn draw_block<D: DrawTarget<Color = Rgb565>>(
+pub(crate) fn draw_block<D: DrawTarget<Color = Rgb565>>(
     t: &mut D,
     well: Rect,
     lines: &[Line],
@@ -609,14 +616,17 @@ fn draw_row<D: DrawTarget<Color = Rgb565>>(
 }
 
 // ---------------------------------------------------------------------------------------
-// The C3 Busy frame, shared by both screens
+// The C3 Busy frame, shared by the card screens
 // ---------------------------------------------------------------------------------------
 
 /// C3 Busy: no Back, nothing tappable, and no invented progress.
 ///
+/// Shared with S-49, whose format is the longest blocking operation in the product and the
+/// one where "Do not remove the card" stops being advice.
+///
 /// Indeterminate on purpose. A card read has no unit the std side reports between, so a
 /// trough filled to some fraction would be the fake percentage C3 forbids.
-fn draw_busy<D: DrawTarget<Color = Rgb565>>(
+pub(crate) fn draw_busy<D: DrawTarget<Color = Rgb565>>(
     t: &mut D,
     m: &Metrics,
     heading: &str,
@@ -1320,6 +1330,7 @@ fn psbt_landed(outcome: PsbtOutcome) -> Outcome {
 
 #[cfg(test)]
 mod tests {
+    use crate::UnlockGate;
     use super::*;
     use crate::layout::PANELS;
     use crate::screens::testing::{fits, rows_are_clear_on, Fixture, GEOMETRIES};
@@ -1597,7 +1608,12 @@ mod tests {
             "a row whose name cannot be drawn was made tappable"
         );
         let mut net = Network::Bitcoin;
-        let mut env = Env { network: &mut net, lock: &f.lock, wallets: &f.wallets };
+        let mut env = Env {
+            network: &mut net,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
         assert!(
             s.activate(RegionId::ListRow(0), &mut env).request.is_none(),
             "a row whose name cannot be drawn raised a request"
@@ -1630,7 +1646,12 @@ mod tests {
                 "an oversize row was made tappable"
             );
             let mut net = Network::Bitcoin;
-            let mut env = Env { network: &mut net, lock: &f.lock, wallets: &f.wallets };
+            let mut env = Env {
+            network: &mut net,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
             assert!(
                 s.activate(RegionId::ListRow(0), &mut env).request.is_none(),
                 "an oversize row raised a request"
@@ -1996,7 +2017,12 @@ mod tests {
     fn every_card_failure_reaches_a_sentence() {
         let f = Fixture::new(720, 720);
         let mut net = Network::Bitcoin;
-        let mut env = Env { network: &mut net, lock: &f.lock, wallets: &f.wallets };
+        let mut env = Env {
+            network: &mut net,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
         for outcome in [
             CardOutcome::NoCard,
             CardOutcome::Unreadable(String::from("no FAT filesystem")),
@@ -2022,7 +2048,12 @@ mod tests {
     fn a_load_answer_navigates_and_leaves_a_usable_screen_behind() {
         let f = Fixture::new(720, 720);
         let mut net = Network::Bitcoin;
-        let mut env = Env { network: &mut net, lock: &f.lock, wallets: &f.wallets };
+        let mut env = Env {
+            network: &mut net,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
         for (outcome, is_review) in [
             (PsbtOutcome::Refused(refusal()), false),
             (PsbtOutcome::Reviewed(review()), true),
@@ -2046,7 +2077,12 @@ mod tests {
     fn a_late_answer_is_dropped() {
         let f = Fixture::new(720, 720);
         let mut net = Network::Bitcoin;
-        let mut env = Env { network: &mut net, lock: &f.lock, wallets: &f.wallets };
+        let mut env = Env {
+            network: &mut net,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
         let mut s = picker(CardState::Listed(psbts(3)));
         let out = s.answered(Answer::Card(CardOutcome::NoCard), &mut env);
         assert!(matches!(out.nav, Nav::Stay));
@@ -2062,7 +2098,12 @@ mod tests {
     fn one_transaction_is_offered_and_several_are_a_choice() {
         let f = Fixture::new(720, 720);
         let mut net = Network::Bitcoin;
-        let mut env = Env { network: &mut net, lock: &f.lock, wallets: &f.wallets };
+        let mut env = Env {
+            network: &mut net,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
 
         let mut one = source(CardState::Reading);
         let out = one.answered(Answer::Card(CardOutcome::Listed(psbts(1))), &mut env);
@@ -2092,7 +2133,12 @@ mod tests {
     fn a_directory_is_one_level_deep() {
         let f = Fixture::new(720, 720);
         let mut net = Network::Bitcoin;
-        let mut env = Env { network: &mut net, lock: &f.lock, wallets: &f.wallets };
+        let mut env = Env {
+            network: &mut net,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
         let mut dir = file("bundles", 0);
         dir.kind = FileKind::Directory;
         let mut s = picker(CardState::Listed(listing(vec![dir.clone()])));

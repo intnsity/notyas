@@ -45,6 +45,7 @@
 //! product is here. When that crate-side layer lands, this module becomes its adapter and
 //! [`record`] becomes its format, unchanged.
 
+pub mod erase;
 pub mod record;
 
 use std::fmt;
@@ -59,7 +60,8 @@ use notyas_wallet::SlotState;
 use zeroize::Zeroizing;
 
 use crate::store::Store;
-use record::{RecordError, RegistrationRecord, SealedWallet, WalletRecord};
+use notyas_ui::PassphraseState;
+use record::{RecordError, RegistrationRecord, SealedWallet, StoredPassphrase, WalletRecord};
 
 /// Why a wallet could not be opened or saved.
 #[derive(Debug)]
@@ -249,6 +251,33 @@ impl fmt::Debug for NewWallet<'_> {
     }
 }
 
+/// What a wallet record says about itself, read WITHOUT deriving anything.
+///
+/// One AEAD open and a parse, and no PBKDF2 at all - which is the whole point. The open
+/// path has to decide WHICH passphrase to try before it spends the seconds that trying one
+/// costs, and this is what it decides from: the record's own statement, plus the passphrase
+/// the record carries when the owner has asked this device to remember it.
+///
+/// Secret-bearing in one field, so `Debug` is hand written like every other type here.
+pub struct RecordFacts {
+    pub label: String,
+    pub network: Network,
+    /// The record's statement. A format 1 record makes none, and decodes as
+    /// [`StoredPassphrase::None`] - which is why the open path tries the empty passphrase
+    /// first and asks only if that does not open it.
+    pub passphrase: StoredPassphrase,
+}
+
+impl fmt::Debug for RecordFacts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecordFacts")
+            .field("label", &self.label)
+            .field("network", &self.network)
+            .field("passphrase", &self.passphrase)
+            .finish()
+    }
+}
+
 /// An open wallet: the seed is live.
 ///
 /// Held only for as long as a session is. Secret-bearing, so `Debug` redacts and the seed
@@ -260,6 +289,10 @@ pub struct Wallet {
     network: Network,
     /// Derived from the live seed at open time. The value the engine runs on.
     fingerprint: Fingerprint,
+    /// What a passphrase has to do with this wallet, decided at open time from the record
+    /// AND from what it took to open it. Public - it is what the identity card renders -
+    /// and never the passphrase itself.
+    passphrase: PassphraseState,
     seed: Zeroizing<[u8; 64]>,
     /// The recovery words this wallet was sealed with, normalized.
     ///
@@ -306,6 +339,7 @@ impl fmt::Debug for Wallet {
             .field("label", &self.label)
             .field("network", &self.network)
             .field("fingerprint", &self.fingerprint)
+            .field("passphrase", &self.passphrase)
             .field("registrations", &self.registrations.len())
             .field("faults", &self.faults.len())
             .field("seed", &"<redacted>")
@@ -394,6 +428,14 @@ impl Wallet {
                 network: new.network,
                 phrase: &phrase,
                 fingerprint,
+                // This door stores no passphrase. Storing one is a decision the owner
+                // makes per wallet, afterwards, on a screen that states what it costs
+                // (Q22 amendment, 2026-08-19) - never as a side effect of a save.
+                passphrase: if new.passphrase.is_empty() {
+                    StoredPassphrase::None
+                } else {
+                    StoredPassphrase::Applied
+                },
             },
         )?;
 
@@ -402,6 +444,11 @@ impl Wallet {
             label: new.label.to_string(),
             network: new.network,
             fingerprint,
+            passphrase: if new.passphrase.is_empty() {
+                PassphraseState::None
+            } else {
+                PassphraseState::Required
+            },
             seed,
             phrase,
             // A brand new wallet is a member of nothing. Registrations arrive through
@@ -423,21 +470,7 @@ impl Wallet {
         slot: u8,
         passphrase: &str,
     ) -> Result<Wallet, WalletError> {
-        match payload_state(store, slot)? {
-            SlotState::Occupied { .. } => {}
-            SlotState::Empty | SlotState::Opaque => {
-                return Err(WalletError::SlotEmpty { index: slot })
-            }
-        }
-
-        // Zeroizing because a wallet record is a mnemonic: the buffer holds the user's
-        // words between the AEAD and the parse, and a plain Vec would leave them in freed
-        // heap.
-        let mut buf = Zeroizing::new(vec![0u8; Store::max_payload_bytes()]);
-        let n = store
-            .read_payload(slot, &mut buf)
-            .map_err(WalletError::Storage)?;
-        let record = WalletRecord::decode(buf.get(..n).ok_or(RecordError::Truncated)?)?;
+        let record = read_record(store, slot)?;
 
         let phrase = record.phrase.clone();
         let seed = bip39::seed(&phrase, passphrase);
@@ -449,12 +482,26 @@ impl Wallet {
             });
         }
 
+        // What the identity card will say, decided from the record AND from what it took
+        // to open it. The second half matters for exactly one case and it is the owner's:
+        // a format 1 record carries no flag, so a wallet that HAS a passphrase decodes as
+        // `None`, and the only evidence that it has one is that a non-empty passphrase is
+        // what opened it. Reading the flag alone would put "no passphrase" on the card of
+        // a wallet the user had just typed a passphrase into.
+        let passphrase = match (&record.passphrase, passphrase.is_empty()) {
+            (StoredPassphrase::Stored(_), _) => PassphraseState::Stored,
+            (StoredPassphrase::Applied, _) => PassphraseState::Required,
+            (StoredPassphrase::None, false) => PassphraseState::Required,
+            (StoredPassphrase::None, true) => PassphraseState::None,
+        };
+
         let (registrations, entries, faults) = load_registry(store, slot, record.network, &seed);
         Ok(Wallet {
             slot,
             label: record.label,
             network: record.network,
             fingerprint,
+            passphrase,
             seed,
             phrase,
             registrations,
@@ -606,6 +653,11 @@ impl Wallet {
         Some(report)
     }
 
+    /// What a passphrase has to do with this wallet. Public, and never the passphrase.
+    pub fn passphrase(&self) -> PassphraseState {
+        self.passphrase
+    }
+
     pub fn slot(&self) -> u8 {
         self.slot
     }
@@ -622,6 +674,85 @@ impl Wallet {
     /// screen prints beside every input this device claims.
     pub fn fingerprint(&self) -> Fingerprint {
         self.fingerprint
+    }
+
+    /// Read what the record in `slot` says, without deriving anything.
+    ///
+    /// One AEAD open, no PBKDF2. The open path calls this FIRST, because which passphrase
+    /// to try is a decision that has to be made before trying one costs several seconds -
+    /// and because trying the empty passphrase on a wallet that has one produces a
+    /// mismatch whose derived fingerprint must never reach a screen (it is what the words
+    /// derive with no passphrase, which is an existence proof for a hidden wallet).
+    pub fn inspect(store: &mut Store, slot: u8) -> Result<RecordFacts, WalletError> {
+        let record = read_record(store, slot)?;
+        Ok(RecordFacts {
+            label: record.label,
+            network: record.network,
+            passphrase: record.passphrase,
+        })
+    }
+
+    /// Re-seal the record in `slot` with the passphrase remembered (`Some`) or forgotten
+    /// (`None`), and report what the record says when it is READ BACK.
+    ///
+    /// # Why this is the one place a wallet record is replaced
+    ///
+    /// Every other write path here CREATES: `seal` refuses an occupied slot, deliberately,
+    /// because the record it would replace is the only copy of somebody's words. This one
+    /// replaces on purpose, and it is written so that it cannot lose them: the new body is
+    /// built from the record that was just read, so the phrase, the label, the network and
+    /// the fingerprint are the ones already on the flash, and the ONLY difference is the
+    /// passphrase field.
+    ///
+    /// # Why the passphrase is checked on the way in
+    ///
+    /// [`SealedWallet::confirmed`] re-derives the fingerprint from the words plus the
+    /// passphrase being stored and refuses if they disagree. A stored passphrase that does
+    /// not open its own record would be worse than storing nothing: the wallet would be
+    /// refused forever, with a mismatch that reads exactly like a forgotten passphrase.
+    ///
+    /// # What forgetting destroys
+    ///
+    /// The write goes to the slot's INACTIVE side and the vault erases the stale side
+    /// before it returns (`Vault::write` -> `seal_into` -> `StaleSide::EraseNow`), so when
+    /// this returns there is exactly one side of this slot that opens under the session
+    /// key and it is the one with no passphrase in it. A cut in that window leaves the
+    /// stale side for the next mount's cleanup, which is the same guarantee every other
+    /// record write on this device has.
+    pub fn set_passphrase_storage(
+        store: &mut Store,
+        slot: u8,
+        remember: Option<&str>,
+    ) -> Result<PassphraseState, WalletError> {
+        let record = read_record(store, slot)?;
+        let fingerprint = record.fingerprint.to_string();
+        let sealed = SealedWallet::confirmed(
+            &record.label,
+            record.network,
+            &record.phrase,
+            &fingerprint,
+            match remember {
+                Some(p) => StoredPassphrase::Stored(Zeroizing::new(p.to_string())),
+                None => record.passphrase.forgotten(),
+            },
+        )?;
+        let body = sealed.body(Store::max_payload_bytes())?;
+        store
+            .write_payload(slot, &body)
+            .map_err(WalletError::Storage)?;
+
+        // Read back and re-decode, so what the screen renders is what the flash says
+        // rather than what this function meant. A toggle whose state came from the intent
+        // would be a switch that lies about the one thing it controls.
+        let back = read_record(store, slot)?;
+        Ok(match back.passphrase {
+            StoredPassphrase::Stored(_) => PassphraseState::Stored,
+            StoredPassphrase::Applied => PassphraseState::Required,
+            // Unreachable through this function - `forgotten` never drops to `None` - and
+            // reported honestly rather than asserted: it would mean the record now claims
+            // a wallet that no passphrase belongs to.
+            StoredPassphrase::None => PassphraseState::None,
+        })
     }
 
     /// The multisig wallets this device has proven it is a member of, in slot order.
@@ -658,6 +789,171 @@ impl Wallet {
     pub(crate) fn seed(&self) -> &[u8; 64] {
         &self.seed
     }
+}
+
+/// The recovery words stored in payload slot `slot`, without opening the wallet.
+///
+/// # Why this exists at all, and why it is not [`Wallet::open`]
+///
+/// Opening a wallet derives a seed, which needs a BIP-39 passphrase this device never
+/// stored (ratified Q22) and costs a PBKDF2 stretch. Re-SHOWING the words needs neither: the
+/// record holds the normalized phrase, deliberately, because "a seed cannot be turned back
+/// into words, so a device holding only seeds could never re-show a backup"
+/// (`record.rs`). This reads exactly that field and derives nothing, which is what lets the
+/// last-words step in front of a delete work on a passphrase wallet the session cannot open.
+///
+/// # What the caller is agreeing to
+///
+/// This is the only function in the firmware that returns a stored mnemonic to its caller.
+/// The value is `Zeroizing` and the buffer it was decoded from is too, so the words exist in
+/// exactly two places that both wipe themselves. What the caller must not do is copy them
+/// into anything that does not - the screen that receives them holds this same value and
+/// borrows into it to draw, and `Ui::lock` drops the whole navigation stack on the
+/// auto-lock, which is what takes a revealed screen down with it.
+///
+/// The words alone are NOT the whole of a passphrase wallet, and every surface that shows
+/// them owes the user that sentence. See `crates/notyas-ui/src/screens/erase.rs`.
+pub fn stored_phrase(store: &mut Store, slot: u8) -> Result<Zeroizing<String>, WalletError> {
+    match payload_state(store, slot)? {
+        SlotState::Occupied { .. } => {}
+        SlotState::Empty | SlotState::Opaque => {
+            return Err(WalletError::SlotEmpty { index: slot })
+        }
+    }
+    // Zeroizing for the reason `Wallet::open`'s is: this buffer holds the user's words
+    // between the AEAD and the parse.
+    let mut buf = Zeroizing::new(vec![0u8; Store::max_payload_bytes()]);
+    let n = store
+        .read_payload(slot, &mut buf)
+        .map_err(WalletError::Storage)?;
+    let record = WalletRecord::decode(buf.get(..n).ok_or(RecordError::Truncated)?)?;
+    Ok(record.phrase)
+}
+
+/// [`erase::WalletSlots`] over the real store and the open wallet.
+///
+/// Five short methods and no decisions: the ordering lives in [`erase::erase`] so that the
+/// device and `firmware/hostcheck` run the same one. Exactly the shape
+/// `crate::flow::replace::SlotSwap` has, and for the same reason.
+pub struct StoredWallets<'a> {
+    store: &'a mut Store,
+    /// The wallet the session currently has open, if any. Borrowed rather than owned
+    /// because dropping it is one of the five operations: a wallet whose record is about to
+    /// be erased must not stay live behind the screen that erased it.
+    open: &'a mut Option<Wallet>,
+}
+
+impl<'a> StoredWallets<'a> {
+    pub fn new(store: &'a mut Store, open: &'a mut Option<Wallet>) -> StoredWallets<'a> {
+        StoredWallets { store, open }
+    }
+}
+
+impl erase::WalletSlots for StoredWallets<'_> {
+    type Error = String;
+
+    /// Every registry slot whose record NAMES this payload slot.
+    ///
+    /// Deliberately not [`load_registry`]: that one re-proves each registration against a
+    /// live seed, and a delete must work on a wallet nobody has opened. What is needed here
+    /// is the `wallet_slot` field and nothing else, so no seed is touched and no
+    /// registration is re-derived.
+    ///
+    /// A registry record that will not decode is SKIPPED rather than erased. It names no
+    /// wallet this device can read, so attributing it to the one being deleted would be a
+    /// guess, and the thing the guess destroys on a miss is another wallet's registration.
+    /// It is already invisible to every wallet (`load_registry` reports it as a fault and
+    /// moves on); leaving it costs a registry slot and no correctness.
+    fn registrations_of(&mut self, slot: u8) -> Result<Vec<u8>, String> {
+        // A registration record is public - cosigner xpubs, a threshold, a name - so this
+        // buffer needs no wiping, unlike a payload one.
+        let mut buf = vec![0u8; Store::max_registry_bytes()];
+        let mut out = Vec::new();
+        for index in 0..Store::registry_slots() {
+            match self.store.registry_state(index) {
+                Ok(SlotState::Occupied { .. }) => {}
+                // Empty is empty; `Opaque` is another PIN identity's record and is not this
+                // session's to read, let alone to erase.
+                Ok(_) => continue,
+                // A slot that will not even report its state stops the walk. Pressing on
+                // would be deciding that a registration this device could not look at does
+                // not belong to the wallet about to be erased - which is exactly the orphan
+                // the ordering rule exists to prevent.
+                Err(e) => return Err(format!("registry slot {index} did not read: {e}")),
+            }
+            let n = match self.store.read_registry(index, &mut buf) {
+                Ok(n) => n,
+                Err(e) => return Err(format!("registry slot {index} did not open: {e}")),
+            };
+            let record = match buf
+                .get(..n)
+                .ok_or(record::RecordError::Truncated)
+                .and_then(RegistrationRecord::decode)
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    log::error!(
+                        "wallet: registry slot {index} is not a readable registration ({e}), \
+                         so the delete of wallet slot {slot} leaves it alone"
+                    );
+                    continue;
+                }
+            };
+            if record.wallet_slot == slot {
+                out.push(index);
+            }
+        }
+        Ok(out)
+    }
+
+    fn erase_registration(&mut self, registry_slot: u8) -> Result<(), String> {
+        self.store.clear_registry(registry_slot)
+    }
+
+    fn erase_wallet(&mut self, slot: u8) -> Result<(), String> {
+        if slot >= Store::payload_slots() {
+            return Err(format!("there is no wallet slot {slot}"));
+        }
+        self.store.clear_payload(slot)
+    }
+
+    fn occupancy(&mut self, slot: u8) -> Result<erase::Occupancy, String> {
+        match payload_state(self.store, slot).map_err(|e| e.to_string())? {
+            SlotState::Empty => Ok(erase::Occupancy::Free),
+            SlotState::Occupied { .. } => Ok(erase::Occupancy::Mine),
+            SlotState::Opaque => Ok(erase::Occupancy::Opaque),
+        }
+    }
+
+    /// Take the open wallet when it is the one being erased. The take IS the wipe: `Wallet`
+    /// owns the seed and the phrase under `Zeroizing`, so dropping it here is what stops a
+    /// deleted wallet's key material outliving its record.
+    fn close_if_open(&mut self, slot: u8) {
+        if self.open.as_ref().is_some_and(|w| w.slot() == slot) {
+            self.open.take();
+            log::info!("wallet: slot {slot} was open - the session wallet was dropped first");
+        }
+    }
+}
+
+/// Read and decode the wallet record in `slot`.
+///
+/// The one reader, so that "an occupied slot, opened with this session's key, decoded as a
+/// wallet" is one piece of code rather than three copies that can drift. The buffer is
+/// `Zeroizing` because a wallet record IS a mnemonic: it holds the user's words between
+/// the AEAD and the parse, and a plain `Vec` would leave them in freed heap.
+fn read_record(store: &mut Store, slot: u8) -> Result<WalletRecord, WalletError> {
+    match payload_state(store, slot)? {
+        SlotState::Occupied { .. } => {}
+        SlotState::Empty | SlotState::Opaque => {
+            return Err(WalletError::SlotEmpty { index: slot })
+        }
+    }
+    let mut buf = Zeroizing::new(vec![0u8; Store::max_payload_bytes()]);
+    let n = store
+        .read_payload(slot, &mut buf)
+        .map_err(WalletError::Storage)?;
+    Ok(WalletRecord::decode(buf.get(..n).ok_or(RecordError::Truncated)?)?)
 }
 
 /// A payload slot's state, with the slot index checked as a wallet-level fact rather than

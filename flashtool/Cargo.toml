@@ -1,0 +1,21 @@
+[package]
+name = "notyas-flashtool"
+version = "0.1.0"
+edition = "2021"
+description = "Verify and flash notyas ESP32-P4 hardware wallet releases"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+eframe = "0.31"
+rfd = "0.15"
+serialport = "4.7"
+sha2 = "0.10"
+hex = "0.4"
+
+[profile.release]
+opt-level = "z"
+strip = true
+
+# Standalone package, not part of the notyas workspace.
+[workspace]

@@ -1605,6 +1605,7 @@ fn draw_signing<D: DrawTarget<Color = Rgb565>>(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::UnlockGate;
     use super::*;
     use crate::layout::TOUCH_MIN;
     use crate::screens::testing::{fits, rows_are_clear_on, Fixture, GEOMETRIES};
@@ -1813,14 +1814,15 @@ pub(crate) mod tests {
         out.into_iter().map(|r| r.id).collect()
     }
 
-    fn env<'a>(f: &'a Fixture, network: &'a mut Network) -> Env<'a> {
-        Env { network, lock: &f.lock, wallets: &f.wallets }
+    fn env<'a>(f: &'a Fixture, network: &'a mut Network, gate: &'a mut UnlockGate) -> Env<'a> {
+        Env { network, lock: &f.lock, wallets: &f.wallets, gate }
     }
 
     /// Walk the whole traversal with Next, which is what a user who reads every page does.
     fn read_everything(s: &mut ReviewState, f: &Fixture) {
         let mut net = Network::Bitcoin;
-        let mut e = env(f, &mut net);
+        let mut gate = UnlockGate::default();
+        let mut e = env(f, &mut net, &mut gate);
         for _ in 0..s.pages() {
             s.activate(RegionId::ReviewNext, &mut e);
         }
@@ -1928,7 +1930,8 @@ pub(crate) mod tests {
                 "{w}x{h}: a refused transaction offered the hold"
             );
             let mut net = Network::Bitcoin;
-            let out = s.activate(RegionId::HoldConfirm, &mut env(&f, &mut net));
+        let mut gate = UnlockGate::default();
+            let out = s.activate(RegionId::HoldConfirm, &mut env(&f, &mut net, &mut gate));
             assert!(out.request.is_none(), "{w}x{h}: a forced hold raised SignTx");
             assert_eq!(s.id(), ScreenId::ReviewTransaction, "{w}x{h}: it entered S-37 anyway");
         }
@@ -1962,8 +1965,9 @@ pub(crate) mod tests {
                 "{w}x{h}: the reason is not on the page the control is on"
             );
             let mut net = Network::Bitcoin;
+        let mut gate = UnlockGate::default();
             assert!(
-                s.activate(RegionId::HoldConfirm, &mut env(&f, &mut net)).request.is_none(),
+                s.activate(RegionId::HoldConfirm, &mut env(&f, &mut net, &mut gate)).request.is_none(),
                 "{w}x{h}: a hold fired from Ui::tick bypassed the traversal"
             );
 
@@ -1985,7 +1989,8 @@ pub(crate) mod tests {
     fn the_visited_set_counts_pages_and_not_distance() {
         let f = Fixture::new(720, 720);
         let mut net = Network::Bitcoin;
-        let mut e = env(&f, &mut net);
+        let mut gate = UnlockGate::default();
+        let mut e = env(&f, &mut net, &mut gate);
         let mut s = ReviewState::new(plain_review());
         let pages = s.pages();
         s.activate(RegionId::ReviewNext, &mut e);
@@ -2003,20 +2008,21 @@ pub(crate) mod tests {
     fn the_hold_is_the_only_route_into_signing() {
         let f = Fixture::new(800, 480);
         let mut net = Network::Bitcoin;
+        let mut gate = UnlockGate::default();
         let mut s = ReviewState::new(plain_review());
         for id in [RegionId::ReviewNext, RegionId::ReviewPrev, RegionId::Back, RegionId::Lock] {
-            let out = s.activate(id, &mut env(&f, &mut net));
+            let out = s.activate(id, &mut env(&f, &mut net, &mut gate));
             assert!(out.request.is_none(), "{id:?} raised a request");
             assert_eq!(s.id(), ScreenId::ReviewTransaction, "{id:?} entered S-37");
         }
         read_everything(&mut s, &f);
-        let out = s.activate(RegionId::HoldConfirm, &mut env(&f, &mut net));
+        let out = s.activate(RegionId::HoldConfirm, &mut env(&f, &mut net, &mut gate));
         assert!(matches!(out.request, Some(UiRequest::SignTx)));
         assert_eq!(s.id(), ScreenId::Signing, "the hold must publish S-37 before the work");
         // S-37 is inert: nothing tappable, no Back, and no second signature.
         assert!(ids(&s, &f).is_empty(), "S-37 offered a control");
         assert!(matches!(s.back(), Nav::Stay), "S-37 offered a way out");
-        assert!(s.activate(RegionId::HoldConfirm, &mut env(&f, &mut net)).request.is_none());
+        assert!(s.activate(RegionId::HoldConfirm, &mut env(&f, &mut net, &mut gate)).request.is_none());
     }
 
     /// Both halves of the signing answer land somewhere the user can act on.
@@ -2024,9 +2030,10 @@ pub(crate) mod tests {
     fn signing_answers_both_ways() {
         let f = Fixture::new(720, 720);
         let mut net = Network::Bitcoin;
+        let mut gate = UnlockGate::default();
         let mut s = ReviewState::new(plain_review());
         read_everything(&mut s, &f);
-        s.activate(RegionId::HoldConfirm, &mut env(&f, &mut net));
+        s.activate(RegionId::HoldConfirm, &mut env(&f, &mut net, &mut gate));
         let signed = SignedTx {
             signed_inputs: 2,
             verified_inputs: 2,
@@ -2035,19 +2042,19 @@ pub(crate) mod tests {
             artifacts: Vec::new(),
             psbt_id: String::from("00"),
         };
-        let out = s.answered(Answer::Sign(SignOutcome::Signed(signed)), &mut env(&f, &mut net));
+        let out = s.answered(Answer::Sign(SignOutcome::Signed(signed)), &mut env(&f, &mut net, &mut gate));
         assert!(matches!(out.nav, Nav::Enter(State::Deliver(_))));
 
         let mut s = ReviewState::new(plain_review());
         read_everything(&mut s, &f);
-        s.activate(RegionId::HoldConfirm, &mut env(&f, &mut net));
+        s.activate(RegionId::HoldConfirm, &mut env(&f, &mut net, &mut gate));
         let notice = RefusalNotice {
             code: RefusalCode::SignatureCheckFailed,
             happened: String::from("The device produced a signature that did not verify."),
             details: String::from("check 10"),
             after_signing: true,
         };
-        let out = s.answered(Answer::Sign(SignOutcome::Refused(notice)), &mut env(&f, &mut net));
+        let out = s.answered(Answer::Sign(SignOutcome::Refused(notice)), &mut env(&f, &mut net, &mut gate));
         assert!(matches!(out.nav, Nav::Enter(State::Refusal(_))), "a refusal must be a screen");
     }
 
@@ -2056,6 +2063,7 @@ pub(crate) mod tests {
     fn back_asks_before_it_leaves() {
         let f = Fixture::new(720, 720);
         let mut net = Network::Bitcoin;
+        let mut gate = UnlockGate::default();
         let s = ReviewState::new(plain_review());
         assert!(matches!(s.back(), Nav::Stay), "Back must move nothing on its own");
         let sheet: Vec<RegionId> = ids(&s, &f);
@@ -2066,13 +2074,13 @@ pub(crate) mod tests {
         );
         let mut s = s;
         assert!(matches!(
-            s.activate(RegionId::DangerCancel, &mut env(&f, &mut net)).nav,
+            s.activate(RegionId::DangerCancel, &mut env(&f, &mut net, &mut gate)).nav,
             Nav::Stay
         ));
         assert!(ids(&s, &f).contains(&RegionId::ReviewNext), "cancel returns to the page");
         s.back();
         assert!(matches!(
-            s.activate(RegionId::DangerConfirm, &mut env(&f, &mut net)).nav,
+            s.activate(RegionId::DangerConfirm, &mut env(&f, &mut net, &mut gate)).nav,
             Nav::Back
         ));
     }

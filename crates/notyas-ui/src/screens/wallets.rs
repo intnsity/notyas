@@ -37,7 +37,7 @@ use crate::screens::phrase::PhraseState;
 use crate::screens::settings::SettingsState;
 use crate::screens::{Ctx, Env, Nav, Outcome, Screen, State};
 use crate::theme::*;
-use crate::{BackupState, Region, RegionId, UiRequest, WalletRow, WALLET_SLOTS};
+use crate::{BackupState, DeleteOutcome, Region, RegionId, UiRequest, WalletRow, WALLET_SLOTS};
 use notyas_core::bitcoin::Network;
 
 /// The list holds only its scroll offset. Every wallet it shows belongs to the `Ui`,
@@ -55,7 +55,20 @@ pub(crate) struct WalletsState {
     ///
     /// Cleared by the next tap, because the band is about ONE attempt: leaving it up while
     /// the user opens a different wallet would attach a failure to a row it is not about.
-    notice: Option<String>,
+    notice: Option<(String, Tone)>,
+}
+
+/// What a band is about, which is the only thing that varies about how it is drawn.
+///
+/// Two tones and not a colour parameter: a caller that could pass any colour is a caller
+/// that can eventually paint a completed delete in danger ink, and the one thing this band
+/// must never do is make "it is done" and "it did not happen" look alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tone {
+    /// Something the user asked for did not happen, or did not fully happen.
+    Refused,
+    /// Something the user asked for happened. S-47's status band.
+    Done,
 }
 
 impl WalletsState {
@@ -63,9 +76,35 @@ impl WalletsState {
         WalletsState { scroll: 0, notice: None }
     }
 
+    /// The list as it reads after a delete, with a band naming what happened to it.
+    ///
+    /// S-47 ratifies both halves: the user lands here, and the band says `Deleted "savings"`.
+    /// The band is not decoration - it is the only thing that distinguishes a wallet that is
+    /// gone from a list the user is not sure they are reading correctly, which is exactly
+    /// the doubt the previous build left them in.
+    pub(crate) fn after_delete(name: &str, outcome: DeleteOutcome) -> WalletsState {
+        let notice = match outcome {
+            // The count is the one that actually happened. Named because the consequence
+            // sheet named a number a minute ago and the user is owed the real one.
+            DeleteOutcome::Gone { registrations: 0 } => {
+                (format!("Deleted \"{name}\"."), Tone::Done)
+            }
+            DeleteOutcome::Gone { registrations: 1 } => (
+                format!("Deleted \"{name}\" and its 1 multisig registration."),
+                Tone::Done,
+            ),
+            DeleteOutcome::Gone { registrations: n } => (
+                format!("Deleted \"{name}\" and its {n} multisig registrations."),
+                Tone::Done,
+            ),
+            DeleteOutcome::Refused(why) | DeleteOutcome::Damaged(why) => (why, Tone::Refused),
+        };
+        WalletsState { scroll: 0, notice: Some(notice) }
+    }
+
     /// State that a wallet did not open, in the embedder's own words.
     pub(crate) fn report_failure(&mut self, reason: String) {
-        self.notice = Some(reason);
+        self.notice = Some((reason, Tone::Refused));
     }
 }
 
@@ -140,7 +179,7 @@ fn empty_state(viewport: &Rect) -> Empty {
 pub(crate) struct Layout {
     /// The failure band, present exactly when the last open did not happen. Above the
     /// rows and inside the body, so it takes room from the list rather than covering it.
-    notice: Option<(Rect, Vec<String>)>,
+    notice: Option<(Rect, Vec<String>, Tone)>,
     viewport: Rect,
     capacity: Rect,
     new: Rect,
@@ -169,15 +208,15 @@ impl Screen for WalletsState {
         // three-line sentence takes the whole body of the 800x480 panel, and a screen whose
         // failure band hides every wallet has replaced one dead end with another.
         let room = capacity.y - g - body.y;
-        let notice = self.notice.as_ref().map(|text| {
+        let notice = self.notice.as_ref().map(|(text, tone)| {
             let lines = trimmed(
                 wrap_words(clipped(text), body.w - 2 * NOTICE_PAD, BODY),
                 (room - ROW_H - g - 2 * NOTICE_PAD) / LINE,
             );
             let h = 2 * NOTICE_PAD + lines.len() as i32 * LINE;
-            (Rect::new(body.x, body.y, body.w, h), lines)
+            (Rect::new(body.x, body.y, body.w, h), lines, *tone)
         });
-        let top = notice.as_ref().map_or(body.y, |(r, _)| r.bottom() + g);
+        let top = notice.as_ref().map_or(body.y, |(r, _, _)| r.bottom() + g);
         Layout {
             notice,
             viewport: Rect::new(body.x, top, body.w, whole_rows(capacity.y - g - top)),
@@ -209,10 +248,15 @@ impl Screen for WalletsState {
                 out.push(Region { id: RegionId::ListRow(w.slot), rect: r });
             }
         }
-        // Offered only while there is a slot to put a wallet in. At capacity both are
-        // drawn `Disabled` with the reason beside them, and a tap does nothing.
-        out.push(Region { id: RegionId::WalletNew, rect: l.new });
-        out.push(Region { id: RegionId::WalletRestore, rect: l.restore });
+        // Offered only while there is a slot to put a wallet in. At capacity both are still
+        // DRAWN, `Disabled` and with the reason beside them, and neither is hit-tested -
+        // the same shape as the review screen's disabled hold: a control that is not
+        // available is not a control. Painting them keeps the reason attached to the thing
+        // it is about; withholding the regions is what makes the paint true.
+        if has_free_slot(ctx.wallets) {
+            out.push(Region { id: RegionId::WalletNew, rect: l.new });
+            out.push(Region { id: RegionId::WalletRestore, rect: l.restore });
+        }
     }
 
     fn draw<D: DrawTarget<Color = Rgb565>>(&self, t: &mut D, ctx: &Ctx) -> Result<(), D::Error> {
@@ -232,12 +276,19 @@ impl Screen for WalletsState {
 
         // The band first: it changes what the rows under it mean, and on the short panel
         // it is the difference between a tap that did nothing and a tap that was refused.
-        if let Some((rect, lines)) = &l.notice {
-            fill(t, *rect, DANGER_TINT)?;
-            frame(t, *rect, DANGER)?;
+        if let Some((rect, lines, tone)) = &l.notice {
+            // A completed delete is not a failure and must not be painted as one: the band
+            // that says a wallet is gone is the same shape in success ink, so a user
+            // glancing at the panel can tell the two apart before reading a word.
+            let (ink, tint) = match tone {
+                Tone::Refused => (DANGER, DANGER_TINT),
+                Tone::Done => (SUCCESS, PAPER_0),
+            };
+            fill(t, *rect, tint)?;
+            frame(t, *rect, ink)?;
             let mut y = rect.y + NOTICE_PAD;
             for line in lines {
-                text(t, line, rect.x + NOTICE_PAD, y, BODY, DANGER, DANGER_TINT)?;
+                text(t, line, rect.x + NOTICE_PAD, y, BODY, ink, tint)?;
                 y += LINE;
             }
         }
@@ -272,7 +323,7 @@ impl Screen for WalletsState {
             PAPER_1,
         )?;
 
-        let free = used < WALLET_SLOTS as usize;
+        let free = has_free_slot(ctx.wallets);
         let kind = if free { ButtonKind::Primary } else { ButtonKind::Disabled };
         let second = if free { ButtonKind::Secondary } else { ButtonKind::Disabled };
         button(t, l.new, "New wallet", kind, PAPER_1)?;
@@ -292,7 +343,7 @@ impl Screen for WalletsState {
         Ok(())
     }
 
-    fn activate(&mut self, id: RegionId, _env: &mut Env) -> Outcome {
+    fn activate(&mut self, id: RegionId, env: &mut Env) -> Outcome {
         match id {
             // The UI cannot unseal a record - it owns no key - so it asks. The slot
             // travels in the region id, which is why `activate` can name it without
@@ -302,8 +353,16 @@ impl Screen for WalletsState {
                 self.notice = None;
                 Outcome::ask(UiRequest::OpenWallet(slot))
             }
-            RegionId::WalletNew => Outcome::push(State::Dice(DiceState::new())),
-            RegionId::WalletRestore => Outcome::push(State::Phrase(PhraseState::new())),
+            // Guarded here as well as in `regions`, and against the store rather than
+            // against anything this screen remembers: the two are read a frame apart, and
+            // the wallet that fills the last slot can land in between. A caller that
+            // reaches `activate` without consulting `regions` gets the same answer.
+            RegionId::WalletNew if has_free_slot(env.wallets) => {
+                Outcome::push(State::Dice(DiceState::new()))
+            }
+            RegionId::WalletRestore if has_free_slot(env.wallets) => {
+                Outcome::push(State::Phrase(PhraseState::new()))
+            }
             RegionId::Lock => Outcome::ask(UiRequest::LockSession),
             // Pushed, so Back from settings returns to the list rather than to an empty
             // stack that happens to look like it.
@@ -333,6 +392,20 @@ impl Screen for WalletsState {
         let content = row_extent(ctx.wallets.len() as i32);
         (content - l.viewport.h).max(0)
     }
+}
+
+/// Whether a new wallet has anywhere to go.
+///
+/// One predicate for the three places that have to agree about capacity - `draw` paints
+/// from it, `regions` hit-tests from it, `activate` refuses from it. They disagreed: the
+/// pair was painted `Disabled` at eight wallets and offered and honoured anyway, so the
+/// user could roll a seed the terminal save would then refuse.
+///
+/// A slot holding a record this device cannot read back counts as occupied. The store
+/// cannot put a wallet where bytes already are, whatever those bytes turn out to be, so
+/// counting rows is the same question as counting slots.
+fn has_free_slot(wallets: &[WalletRow]) -> bool {
+    wallets.len() < usize::from(WALLET_SLOTS)
 }
 
 /// The Lock chip in the top bar, shared by the two screens a session is read from.
@@ -513,10 +586,11 @@ fn row<D: DrawTarget<Color = Rgb565>>(
 
 #[cfg(test)]
 mod tests {
+    use crate::UnlockGate;
     use super::*;
     use crate::layout::{PANELS, TOUCH_MIN};
     use crate::screens::testing::{fits, rows_are_clear_on, Fixture, GEOMETRIES};
-    use crate::{WalletInfo, WalletKind};
+    use crate::{PassphraseState, WalletInfo, WalletKind};
 
     fn wallet(n: u8) -> WalletRow {
         WalletRow::Wallet(WalletInfo {
@@ -530,7 +604,7 @@ mod tests {
             network: Network::Bitcoin,
             registrations: 0,
             stored: true,
-            passphrase: false,
+            passphrase: PassphraseState::None,
         })
     }
 
@@ -682,7 +756,7 @@ mod tests {
             let mut s = WalletsState::new();
             s.report_failure(String::from(long));
             let l = s.layout(&ctx);
-            let (rect, lines) = l.notice.as_ref().expect("a reported failure is drawn");
+            let (rect, lines, _) = l.notice.as_ref().expect("a reported failure is drawn");
             let body = f.m.body();
             assert!(
                 rect.y >= body.y && rect.bottom() <= l.viewport.y,
@@ -719,12 +793,85 @@ mod tests {
         let mut f = Fixture::new(720, 720);
         f.wallets = vec![wallet(0)];
         let mut network = Network::Bitcoin;
-        let mut env = Env { network: &mut network, lock: &f.lock, wallets: &f.wallets };
+        let mut env = Env {
+            network: &mut network,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
         let mut s = WalletsState::new();
         s.report_failure(String::from("Wallet slot 0 did not open."));
         let out = s.activate(RegionId::ListRow(0), &mut env);
         assert_eq!(out.request, Some(UiRequest::OpenWallet(0)));
         assert!(s.notice.is_none(), "a new attempt clears the band about the last one");
+    }
+
+    /// The pair that creates a wallet is offered only while there is a slot to put one in.
+    ///
+    /// At capacity both buttons are still PAINTED, `Disabled` and with the reason beside
+    /// them, and neither is a region and neither acts. The half that was missing is the
+    /// acting half: the buttons drew grey and started the flow anyway, and that flow ends
+    /// at a save the device refuses, several minutes and one dice seed later. `activate`
+    /// is driven directly as well as through `regions`, because the guard has to hold for
+    /// a caller that never asked what was tappable.
+    #[test]
+    fn creating_a_wallet_is_refused_at_capacity() {
+        let pair = [RegionId::WalletNew, RegionId::WalletRestore];
+        for (w, h) in GEOMETRIES {
+            let mut f = Fixture::new(w, h);
+            f.wallets = (0..WALLET_SLOTS).map(wallet).collect();
+            let mut s = WalletsState::new();
+            let mut out = Vec::new();
+            s.regions(&f.ctx(), &mut out);
+            for id in pair {
+                assert!(
+                    !out.iter().any(|r| r.id == id),
+                    "{w}x{h}: {id:?} is hit-tested on a device with no free slot"
+                );
+            }
+            let mut network = Network::Bitcoin;
+            let mut env = Env {
+            network: &mut network,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
+            for id in pair {
+                let outcome = s.activate(id, &mut env);
+                assert!(
+                    matches!(outcome.nav, Nav::Stay) && outcome.request.is_none(),
+                    "{w}x{h}: {id:?} started a flow at capacity"
+                );
+            }
+
+            // ...and the same screen one slot short offers both and opens both, so the
+            // guard is capacity and not a control that has been switched off.
+            let mut f = Fixture::new(w, h);
+            f.wallets = (0..WALLET_SLOTS - 1).map(wallet).collect();
+            let mut out = Vec::new();
+            s.regions(&f.ctx(), &mut out);
+            for id in pair {
+                assert!(out.iter().any(|r| r.id == id), "{w}x{h}: {id:?} is gone with a free slot");
+            }
+            let mut network = Network::Bitcoin;
+            let mut env = Env {
+            network: &mut network,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
+            assert!(
+                matches!(s.activate(RegionId::WalletNew, &mut env).nav, Nav::Push(State::Dice(_))),
+                "{w}x{h}: New wallet did not open the dice flow"
+            );
+            assert!(
+                matches!(
+                    s.activate(RegionId::WalletRestore, &mut env).nav,
+                    Nav::Push(State::Phrase(_))
+                ),
+                "{w}x{h}: Restore did not open the words flow"
+            );
+        }
     }
 
     /// The viewport is a whole number of rows, and both shipped panels hold at least two.

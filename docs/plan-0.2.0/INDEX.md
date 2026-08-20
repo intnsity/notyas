@@ -179,7 +179,7 @@ Q63.** Q51 (outbound contributions under a receiving project's licence) is answe
 Q52-Q61 are VERIFY.md's ten items, all ratified; **Q62 and Q63 were raised on 2026-08-18
 by the owner's own answers and were both closed by the owner the same day - (b) and (a)
 respectively - so no item in the list is open.** If a further design document
-lands, continue the numbering from **Q64**, attribute the source document, keep its
+lands, continue the numbering from **Q65** (Q64 is the 2026-08-19 removal of the pre-PIN lock word), attribute the source document, keep its
 recommendation, and give each item a blast radius and an owning milestone; apply
 correctness fixes to the plan texts directly rather than raising them as questions.
 

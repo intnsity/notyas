@@ -381,15 +381,50 @@ this file" is.
 ## Flash size and partition table
 
 Waveshare has 32 MB flash, Elecrow 16 MB. Decision: **one shared partition table,
-sized within 16 MB, used by both boards.** notyas is stateless - no NVS, no OTA in
-0.1.0, no data partition - so the table is minimal (bootloader, partition table,
-single factory app partition of ~4 MB, generous). Identical layout on both boards
-means the app image offset, size accounting, and the Verify screen's running-app
-SHA256 procedure are board-independent; the extra 16 MB on the Waveshare board is
-simply unused. Only `CONFIG_ESPTOOLPY_FLASHSIZE_*` differs (bootloader flash-size
-header field), which the per-board sdkconfig overlay owns. If 0.2.x ever wants an
+sized within 16 MB, used by both boards.** Identical layout on both boards means
+the app image offset, size accounting, and the Verify screen's running-app SHA256
+procedure are board-independent; the extra 16 MB on the Waveshare board is simply
+unused. Only `CONFIG_ESPTOOLPY_FLASHSIZE_*` differs (bootloader flash-size header
+field), which the per-board sdkconfig overlay owns. If 0.2.x ever wants an
 OTA/anti-rollback scheme it must still fit 16 MB, keeping the smallest board the
 binding constraint by policy.
+
+The table as 0.2.0 ships it (`firmware/partitions.csv`, handed to espflash
+verbatim by `tools/flash.ps1`, so it is repo-pinned rather than an IDF build
+artifact). Still no NVS, no otadata, no phy_init, no coredump and no emul_efuse:
+
+| Name | Type | Subtype | Offset | Size | End | Flags |
+| --- | --- | --- | --- | --- | --- | --- |
+| `factory` | app | factory | `0x10000` | 4 MiB | `0x410000` | |
+| `wallets` | data | undefined | `0x410000` | 256 KiB | `0x450000` | `encrypted` |
+| `counters` | data | undefined | `0x450000` | 16 KiB | `0x454000` | |
+| *(gap)* | | | `0x454000` | 48 KiB | `0x460000` | deliberate, see below |
+| `settings` | data | undefined | `0x460000` | 64 KiB | `0x470000` | |
+
+Everything below `0x10000` is silicon-fixed: key manager `0x0-0x2000`,
+bootloader `0x2000-0x8000`, partition table `0x8000-0x9000`, gap to `0x10000`.
+
+Free tail after the table: **11.56 MB** of the 16 MB Elecrow-5 and **27.56 MB**
+of the 32 MB Waveshare-4b. The 16 MB budget is the only designable one.
+
+`settings` (added in 0.2.0) is the one region that is not the sealing engine's:
+two A/B slots of one sector each holding the public values the device must read
+BEFORE a PIN - the device name the lock screen draws and the network choice -
+plus a 14-sector reserve for a format revision that must not need a table change.
+It carries no `encrypted` flag because it must be readable before any key exists.
+Its charter and its exclusion list are in `crates/notyas-wallet/src/settings.rs`;
+the one-line rule is that a value may live there only if "an attacker sets this to
+any value of their choosing" is an acceptable outcome, which is why the wipe
+policy, the boot counter, attempts-left and anything about wallet occupancy are
+excluded from it by name.
+
+The 48 KiB gap before it is deliberate, and it is the migration story rather than
+waste: it leaves the next free offset at the 64 KiB-aligned `0x470000`, which is
+where 0.3.0's anti-rollback set (`otadata` + a second app slot - app partitions
+must be 64 KiB-aligned, SECUREBOOT.md section 8) can be appended without moving
+anything that has shipped. Every addition appends at the aligned tail; no shipped
+offset is ever re-derived, so the Verify running-partition procedure and every
+superblock-recorded geometry stay valid across the change.
 
 ## Build and flash tooling (implemented in tools/build.ps1 + tools/flash.ps1)
 

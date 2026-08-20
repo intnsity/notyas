@@ -4,11 +4,13 @@
 # screen's running-partition SHA256 procedure is board-independent).
 #
 # 0.1.0 shipped a single app partition and nothing else. 0.2.0-m4a adds the two
-# raw regions the sealing engine owns, and NOTHING ELSE: still no NVS, no
-# otadata, no phy_init, no coredump, no emul_efuse (SECUREBOOT.md trap T4).
-# SECURITY.md invariant 2 is unchanged in substance - a device that has never
-# saved a wallet still writes nothing, which is a property of the firmware and
-# is proven by a flash readback, not by the absence of somewhere to write.
+# raw regions the sealing engine owns, and 0.2.0 adds one more: `settings`, the
+# plaintext region holding the values the device must read BEFORE a PIN. Still
+# no NVS, no otadata, no phy_init, no coredump, no emul_efuse (SECUREBOOT.md
+# trap T4). SECURITY.md invariant 2 keeps its substance and gains one stated
+# exception - a device that has never saved a wallet AND has never saved a
+# setting still writes nothing, which is a property of the firmware and is
+# proven by a flash readback, not by the absence of somewhere to write.
 #
 # The two regions are separate partitions rather than one because their write
 # rules are physically different (ESP-SEAL.md 2.2 / ARCHITECTURE.md 2.5):
@@ -37,10 +39,42 @@
 # guarded bit-log advances by clearing bits in an already-programmed cell,
 # which an encrypted partition cannot express at all.
 #
+# `settings` (0.2.0) is the third region and the only one that is NOT the
+# sealing engine's. It holds the public, user-set values a device has to read
+# before anyone has typed a PIN - today the device name the lock screen draws
+# and the network choice - as two A/B slots of one sector each, plus a
+# fourteen-sector reserve for a 0.3.0 format revision that must not need a
+# table change. Its charter, and the reason it is safe for it to be plaintext,
+# are in crates/notyas-wallet/src/settings.rs; the admission rule in one line is
+# that a value may live here only if "an attacker sets this to any value of
+# their choosing" is an acceptable outcome. So NOT here, ever: the wipe policy,
+# attempts-left or min_pin_len (the sealed ledger owns those, with policy_gen
+# and the strictness rule); the boot counter or any acknowledgement timestamp
+# (a counter an attacker resets reveals nothing); wallet count, occupancy,
+# labels or fingerprints (the pre-PIN Verify sheet withholds these on purpose -
+# ratified Q2a); anything secret or secret-derived, including the S-04 device
+# words; and provisioning or anti-rollback state, which are eFuse facts and may
+# never be read from flash. It carries NO `encrypted` flag: it must be readable
+# before any key exists, and XTS write-once-per-16-byte-block rules are hostile
+# to a region that is rewritten on every Save.
+#
+# It is APPENDED, at a 64 KiB-aligned offset, and nothing before it moves. The
+# 48 KiB hole at 0x454000-0x460000 is deliberate: it aligns this region and,
+# more usefully, leaves the next free offset at the 64 KiB-aligned 0x470000,
+# which is where SECUREBOOT.md section 8's 0.3.0 anti-rollback set (otadata +
+# ota_1, app partitions needing 64 KiB alignment) can be appended without
+# moving anything that has shipped. Every future addition appends at the
+# aligned tail; no shipped offset is ever re-derived.
+#
 # tools/flash.ps1 hands this CSV to espflash directly, so the flashed table is
 # repo-pinned, not an IDF build artifact.
+#
+# End of table = 0x470000 (4,653,056 B). Free tail: 11.56 MB of the 16 MB
+# Elecrow-5, 27.56 MB of the 32 MB Waveshare-4b. The table is sized within the
+# smaller board and both flash it verbatim.
 #
 # Name,   Type, SubType,   Offset,   Size, Flags
 factory,  app,  factory,   0x10000,  4M
 wallets,  data, undefined, 0x410000, 256K, encrypted
 counters, data, undefined, 0x450000, 16K
+settings, data, undefined, 0x460000, 64K

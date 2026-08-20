@@ -211,6 +211,25 @@ fn clear_under_always_filled_writes_filler_rather_than_erasing() {
     v.clear(&session, slot).expect("clear");
     assert!(matches!(v.slot_state(&session, slot), Ok(SlotState::Empty)));
     assert_eq!(v.occupancy().count(), 0);
+
+    // ... and it is still empty on the next boot, which is the half a user cares about.
+    // The filler wins the max-seq election on every mount, so the record it replaced can
+    // never be elected again; without this line the test would pass on a `clear` that only
+    // updated the in-memory slot table.
+    drop(session);
+    let mut v = remount(v, &cfg);
+    let mut s = scratch(&cfg);
+    let session = v.unlock(&pin("135790"), s.scratch()).expect("unlock");
+    assert!(
+        matches!(v.slot_state(&session, slot), Ok(SlotState::Empty)),
+        "a cleared slot must still read empty after a remount"
+    );
+    assert_eq!(v.occupancy().count(), 0);
+    let mut buf = [0u8; 64];
+    assert!(
+        v.read(&session, slot, &mut buf).is_err(),
+        "the record a clear replaced must not be readable after a remount"
+    );
 }
 
 // ---------------------------------------------------------------------------

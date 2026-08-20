@@ -216,6 +216,40 @@ UX-SCREENS section 7 defers it and PARITY calls it class b/d. It is the only cov
 
 ---
 
+## E. Ratified specs corrected after implementation
+
+### E1. The type scale gains a sixth face, because S-21's cards are geometrically impossible at five (2026-08-19)
+**Changes:** UX-SCREENS 0.5 (amended in place), `crates/notyas-fonts/src/gen/sans_regular_24.rs` (new atlas), `canvas::CAPTION`, `screens/wallet.rs`, `screens/deliver.rs`, `LICENSE-fonts`.
+
+Reported from hardware: on the 800x480 Elecrow every wallet action card showed its title
+and no second line. The cause is arithmetic and no amount of copy editing reaches it. Four
+cards under the identity card, each at or above the 60 px touch floor, are 88 px tall and 62
+px inside; `HEADING` over `BODY` is 84 px of line box; the 720x720 panel is the same failure
+with 71 px. The five committed faces have no smaller Sans - the only 28 px atlas is
+monospace, which 0.5 forbids for prose - so two lines of type could not be drawn in that
+card at any ratified size.
+
+Nothing was omitted quietly: the draw loop already skipped a line it could not hold, which
+is why the bounds gate stayed green - the card clips to its own rectangle, so an overrun is
+truncated INSIDE the panel where only a person holding the device sees it. Three surfaces
+were in that state (S-21's cards, S-38's status card, S-41's unreadable registry row) and
+each now carries a measured-fit assertion; the S-21 test additionally asserts that NOTHING
+is omitted, so the skip can never become the mechanism again.
+
+**Resolution.** Add `CAPTION` (Sans Regular 24, line box 31 px) for the lines inside a
+control whose height the finger and the panel own, and amend 0.5's "hints differ by ink,
+not size" with the boundary it was always missing - it governs pages, and a card is not a
+page. Both of a card's lines take the new size together and keep separating by ink. Copy
+that was merely long was shortened instead of shrunk, per surface, and nothing a user
+compares against another device changed size.
+
+**Derivation:** notyas's own rule that an affordance is never drawn where nothing can be
+read; the fix is the smallest exception that keeps it.
+**Scope:** inside 0.2.0. Cost ~17.9 KiB of flash against ~419-594 KB of app-partition
+headroom.
+
+---
+
 ## The three things that would make a reviewer call this the best interaction design in open source hardware wallets
 
 **1. One receipt ritual, learned once, applied everywhere (C1).** Every device in the survey asks to be trusted somewhere and hides that fact in a different place, and each teaches five unrelated verification ceremonies that users perform zero or one times. notyas's honest structural weakness - firmware attestation with no secure element, conceded in VERIFY 9.1 - converts into the organizing principle: nothing the device says ever has to be taken on faith, because every assertion leaves as a portable receipt an open tool re-derives. Two screens in 0.2.0 is enough to establish the ritual; the position of the chip is the part that must be fixed now.

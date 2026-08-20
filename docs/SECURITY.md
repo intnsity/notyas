@@ -252,6 +252,19 @@ exposure and stops there.
    crate compiling; `Zeroizing`/`ZeroizeOnDrop` types through notyas-core and
    notyas-wallet; and the partition table itself, which declares nowhere else to write.
 
+   **The one exception, stated rather than buried (0.2.0).** A device that has never
+   stored a wallet but HAS saved a public setting - a device name, or the network toggle -
+   has written to flash: to the `settings` partition, and only there. That region holds no
+   secret and no secret-derived value; it exists because the lock screen draws the device
+   name BEFORE any PIN, so the value cannot live in a store that is unreadable until the
+   unlock it is displayed in front of. It is plaintext, unauthenticated, and rewritten by
+   the user at will, and the admission rule for anything ever added to it is that "an
+   attacker sets this to any value of their choosing" must be an acceptable outcome - which
+   is why the wipe policy, attempts-left, `min_pin_len`, the boot counter, acknowledgement
+   timestamps and anything about wallet occupancy are excluded from it by name
+   (`crates/notyas-wallet/src/settings.rs`). A device that has saved neither a wallet nor a
+   setting still writes nothing at all, and that remains provable by a flash readback.
+
    **Corollary on QR display, carried forward from 0.1.0.** QR display covers PUBLIC
    values only - receive addresses, account xpub/SLIP-132, descriptors, signed PSBTs and
    final transactions - and never a mnemonic, xprv, seed or WIF. SeedQR display-out is
@@ -262,10 +275,12 @@ exposure and stops there.
    SLIP-132 key), and the UI tests assert what those buttons emit.
 
 2b. **What the device may write is enumerated, public, and closed.** Flash: the `wallets`
-   partition (sealed records and sealed multisig registrations, ciphertext only) and the
+   partition (sealed records and sealed multisig registrations, ciphertext only), the
    plaintext `counters` partition (attempt and guard bit-logs, seal_seq high-water,
    wipe_epoch, the wipe-policy log - no secret content, plaintext by necessity because
-   bit-clear counters are incompatible with XTS write granularity). SD, when the SD
+   bit-clear counters are incompatible with XTS write granularity), and the plaintext
+   `settings` partition (device name and network choice - public preferences the user
+   explicitly saves, read before any PIN, listed exhaustively in 2a). SD, when the SD
    subsystem ships: `*-signed.psbt`, `*-final.txn`, exported xpubs and descriptors.
    **Nothing else, and nothing conditional** - encrypted backups were the one conditional
    item and Q14 deferred them whole. No key material, no PIN material and no logs reach SD.

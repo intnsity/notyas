@@ -60,6 +60,11 @@ fn the_sharp_subset_holds() {
         &fuzz_config(),
         &[
             Op::SealRepeated,
+            // CLEAR is in the default subset because a wallet delete now reaches it from a
+            // screen. An erase whose cut behaviour is only checked by a gate somebody has
+            // to remember to run is an erase nobody has tested; this is the one operation
+            // in the set whose failure mode is a wallet that is half gone.
+            Op::Clear,
             Op::Wipe,
             Op::UnlockToWipe,
             Op::PolicyDisable,
@@ -88,6 +93,7 @@ fn the_shipped_geometry_holds_on_the_operations_that_scale_with_it() {
             Op::SealNew,
             Op::SealOverwrite,
             Op::SealRepeated,
+            Op::Clear,
             Op::ChangePin { records: 4 },
             Op::Wipe,
             Op::PolicyDisable,

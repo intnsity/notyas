@@ -15,7 +15,7 @@
 //! save a few hundred microseconds once would be flash spent on nothing.
 
 /// CRC-32/ISO-HDLC of `data`.
-pub(super) fn crc32(data: &[u8]) -> u32 {
+pub(crate) fn crc32(data: &[u8]) -> u32 {
     const POLY: u32 = 0xedb8_8320;
 
     let mut crc = u32::MAX;

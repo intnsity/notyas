@@ -270,6 +270,7 @@ fn screen_slug(s: ScreenId) -> &'static str {
         ScreenId::MnemonicDisplay => "mnemonic",
         ScreenId::PhraseEntry => "phrase",
         ScreenId::PassphraseEntry => "passphrase",
+        ScreenId::PassphraseUnlock => "passphrase-unlock",
         ScreenId::Deriving => "deriving",
         ScreenId::Schemes => "schemes",
         ScreenId::VerifyDevice => "verify-device",
@@ -282,7 +283,10 @@ fn screen_slug(s: ScreenId) -> &'static str {
         ScreenId::KeepOrSave => "keep-or-save",
         ScreenId::NameWallet => "name-wallet",
         ScreenId::WalletHome => "wallet-home",
+        ScreenId::EraseWallet => "erase-wallet",
         ScreenId::Settings => "settings",
+        ScreenId::DeviceName => "device-name",
+        ScreenId::AboutDeviceWords => "about-device-words",
         ScreenId::WipePolicy => "wipe-policy",
         ScreenId::SignSource => "sign-source",
         ScreenId::FilePicker => "file-picker",
@@ -294,6 +298,7 @@ fn screen_slug(s: ScreenId) -> &'static str {
         ScreenId::MultisigList => "multisig-list",
         ScreenId::MultisigImport => "multisig-import",
         ScreenId::MultisigDetail => "multisig-detail",
+        ScreenId::FormatCard => "format-card",
     }
 }
 

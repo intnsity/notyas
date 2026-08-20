@@ -552,23 +552,42 @@ current geometry has no room for a signed bootloader at all.
 it is the smallest 4 KiB-aligned move that leaves the rest of the frozen Q7 geometry
 completely untouched:
 
+**Corrected 2026-08-19.** The table below previously showed the superseded Q7 draft
+geometry (`wallets` at `0xE00000`). The shipped `firmware/partitions.csv` is the
+`0x410000` layout, and 0.2.0 appended a third region; the diagram now states what is
+actually on the boards:
+
 ```
   before                                  after (0.3.0)
   0x000000 .. 0x002000   key manager      0x000000 .. 0x002000   unchanged
   0x002000 .. 0x008000   bootloader 24K   0x002000 .. 0x00C000   bootloader 40K
   0x008000 .. 0x009000   part. table      0x00C000 .. 0x00D000   part. table
   0x009000 .. 0x010000   gap 28K          0x00D000 .. 0x010000   gap 12K
-  0x010000 .. 0xE00000   factory app      unchanged
-  0xE00000 .. 0xE40000   wallets          unchanged
-  0xE40000 .. 0xE44000   counters         unchanged
+  0x010000 .. 0x410000   factory app 4M   unchanged
+  0x410000 .. 0x450000   wallets    256K  unchanged
+  0x450000 .. 0x454000   counters    16K  unchanged
+  0x454000 .. 0x460000   gap         48K  unchanged (alignment, see below)
+  0x460000 .. 0x470000   settings    64K  unchanged
+                                          0x470000 ..            appended here
 ```
 
-The app does not move, `wallets` and `counters` do not move, and `partition-table.bin`'s
-*content* does not change at all, because the CSV records absolute partition offsets rather
-than the table's own location. What changes: `bootloader.bin` (it embeds the offset), the
-flashing offsets in `flash.ps1` and the merged-image recipe, `VERIFY.md` 2.3's stated
-partition-table offset, and the must-be-blank span map in `VERIFY.md` 3.1. All of that is
-regenerated at a burn anyway, which is why section 2.2 rejects doing it in 0.2.0.
+No partition sits below `0xD000`, so the rule that *"no partition has an offset lower than
+`CONFIG_PARTITION_TABLE_OFFSET + 0x1000`"* is satisfied with the whole 28 KiB to spare -
+the earliest region is the app at `0x10000`.
+
+The app does not move, `wallets`, `counters` and `settings` do not move, and
+`partition-table.bin`'s *content* does not change at all, because the CSV records absolute
+partition offsets rather than the table's own location. What changes: `bootloader.bin` (it
+embeds the offset), the flashing offsets in `flash.ps1` and the merged-image recipe,
+`VERIFY.md` 2.3's stated partition-table offset, and the must-be-blank span map in
+`VERIFY.md` 3.1. All of that is regenerated at a burn anyway, which is why section 2.2
+rejects doing it in 0.2.0.
+
+**The next free offset is `0x470000`, and it is 64 KiB aligned on purpose.** That is what
+the 48 KiB gap at `0x454000` buys: section 8.2's option (b) needs an `otadata` and a second
+app slot, app partitions must be 64 KiB aligned, and both can now be APPENDED without
+moving a byte of what has shipped (`otadata` 8 KiB at `0x470000`, `ota_1` 4 MiB at
+`0x480000`, ending at `0x880000` - comfortably inside the 16 MB board).
 
 **40 KiB of bootloader budget is a projection, not a measurement.** A signed secure-boot
 bootloader on comparable targets runs in the high twenties of kilobytes plus the 4 KiB
@@ -643,8 +662,12 @@ Two options, both requiring a decision taken in the same edit as section 7's off
   in `PARITY.md` that the downgrade-protection row is not closed. Cost: an attacker holding
   a burned device can flash any *older, still-validly-signed* notyas release, including one
   with a known bug. Secure boot does not distinguish our old signature from our new one.
-- **(b) Adopt it.** Change the app partition's subtype from `factory` to `ota_0` and add an
-  8 KiB `otadata` partition in the `0xD000..0xF000` gap that section 7's move creates. The
+- **(b) Adopt it.** Change the app partition's subtype from `factory` to `ota_0` and append
+  an 8 KiB `otadata` (plus the second app slot) at the 64 KiB-aligned `0x470000` that
+  section 7's corrected map ends on - nothing that has shipped moves, which is the whole
+  reason the 48 KiB gap before `settings` exists. (This supersedes the earlier suggestion
+  of placing `otadata` in the `0xD000..0xF000` pre-app gap; that gap is 8 KiB of the
+  bootloader's own headroom and spending it would couple the two decisions.) The
   bootloader then enforces the eFuse floor. Cost: the partition table's *content* changes
   (so `partition_table_sha256`, the composite `firmware_digest` and the whole published
   manifest change - fine at a minor release, but it means the 0.2.0 and 0.3.0 tables are

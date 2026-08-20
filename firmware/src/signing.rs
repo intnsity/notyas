@@ -67,7 +67,8 @@ use notyas_core::bitcoin::psbt::Psbt;
 use notyas_core::bitcoin::{Amount, Network};
 use notyas_core::derive;
 use notyas_core::psbt::{
-    self, CheckFailure, InputFacts, Inspection, Malformed, OutputFacts, SignFailure, SignReport,
+    self, CheckFailure, InputFacts, Inspection, Malformed, OutputFacts, ScriptKind, SignFailure,
+    SignReport,
 };
 
 use crate::wallet::Wallet;
@@ -274,13 +275,24 @@ impl Review {
 /// An input nobody has signed yet is not complete, whoever it belongs to. A foreign input
 /// therefore keeps the file incomplete, which is the truth: another signer has to act
 /// before it can be broadcast.
+///
+/// Every one of those rules is asked of `InputFacts::kind`, which is the engine's verdict
+/// from rebuilding the script, and never of which fields the file happens to carry. The
+/// distinction is the whole of this function's honesty. `tap_key_sig` is a coordinator-
+/// writable slot that nothing rejects on a non-taproot input - `global_sanity` does not
+/// scan for it, check 8 runs only on inputs classified `P2tr`, `unsigned_id` strips it
+/// before hashing, and `psbt::sign` clones the input file into its output - so a planted
+/// one arrives here intact. Read as evidence it would have said a 2-of-3 holding one of
+/// its two signatures was ready to broadcast, which is the one lie a signer's delivery
+/// screen exists to prevent. It is evidence of nothing except on the one kind of input
+/// whose witness actually consumes it.
 fn is_complete(psbt: &Psbt, inspection: &Inspection) -> bool {
     inspection.inputs.iter().all(|facts| {
         let Some(input) = psbt.inputs.get(usize::from(facts.index)) else {
             return false;
         };
-        if input.tap_key_sig.is_some() {
-            return true;
+        if facts.kind == ScriptKind::P2tr {
+            return input.tap_key_sig.is_some();
         }
         let needed = match &facts.multisig {
             Some(binding) => usize::from(crate::flow::model::multisig_threshold(
@@ -373,4 +385,101 @@ pub fn review(wallet: &Wallet, bytes: &[u8]) -> Result<Review, Refusal> {
 /// runs, and a refusal still ends the transaction.
 pub fn sign(wallet: &Wallet, bytes: &[u8]) -> Result<Signed, Refusal> {
     review(wallet, bytes)?.sign(wallet)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Host cover for the judgements this file makes that no engine owns. Compiled and run
+    //! by `firmware/hostcheck/tests/signing_complete.rs`, which supplies the crate root -
+    //! the firmware itself cannot be built on a host at any price. See that file.
+
+    use super::*;
+    use notyas_core::bitcoin::secp256k1::schnorr;
+    use notyas_core::bitcoin::sighash::TapSighashType;
+    use notyas_core::bitcoin::taproot;
+    use notyas_core::psbt::fixture;
+
+    /// A taproot key-path signature nobody produced. Sixty-four bytes of a fixed pattern is
+    /// everything the PSBT field has to be: it is a coordinator-writable slot, no check
+    /// reads it on a non-taproot input, and `unsigned_id` strips it before hashing, so a
+    /// file carrying one is a file this device accepts and signs.
+    fn planted_tap_key_sig() -> taproot::Signature {
+        taproot::Signature {
+            signature: schnorr::Signature::from_slice(&[0x11; 64]).expect("64 bytes"),
+            sighash_type: TapSighashType::Default,
+        }
+    }
+
+    /// A 2-of-3 P2WSH input carrying a planted `tap_key_sig` is NOT complete after this
+    /// device signs it: the witness that spends it takes two ECDSA signatures off the
+    /// witness script and will never read a taproot field, so the honest answer is that the
+    /// file still needs the other cosigner.
+    ///
+    /// The field is planted BEFORE the inspection, which is where an attacker puts it - the
+    /// card file is what it is by the time this device reads it - and the inspection binds
+    /// to those exact bytes, so this is one file travelling one path.
+    #[test]
+    fn a_planted_tap_key_sig_does_not_complete_a_multisig_input() {
+        let registry = vec![fixture::registration()];
+        let mut psbt = fixture::multisig_psbt();
+        psbt.inputs[0].tap_key_sig = Some(planted_tap_key_sig());
+
+        let inspection = psbt::inspect(&psbt, &fixture::context_with(&registry))
+            .expect("a stray taproot field is not a refusal - no check reads it");
+        let signed = psbt::sign(&psbt, &inspection, &fixture::SEED).expect("our leg signs");
+
+        // One of the two signatures the script demands, which is the fact the flag has to
+        // report. The planted field survives into the output because `sign` clones the
+        // input file, which is exactly how it reaches the flag.
+        assert_eq!(signed.psbt().inputs[0].partial_sigs.len(), 1);
+        assert!(signed.psbt().inputs[0].tap_key_sig.is_some());
+        assert!(
+            !is_complete(signed.psbt(), &inspection),
+            "a 2-of-3 with one signature was reported ready to broadcast"
+        );
+    }
+
+    /// The same planting on a FOREIGN input - one this device does not own and will not
+    /// sign. Nobody has signed it, so the file is not complete whatever the field says, and
+    /// the user still has to forward it.
+    #[test]
+    fn a_planted_tap_key_sig_does_not_complete_a_foreign_input() {
+        let mut psbt = fixture::ours_and_a_foreign_input_psbt();
+        psbt.inputs[1].tap_key_sig = Some(planted_tap_key_sig());
+
+        let inspection = psbt::inspect(&psbt, &fixture::context()).expect("a readable file");
+        let signed = psbt::sign(&psbt, &inspection, &fixture::SEED).expect("our input signs");
+
+        // Ours is done; the cosigner's is untouched, which is the whole point of the flag.
+        assert_eq!(signed.psbt().inputs[0].partial_sigs.len(), 1);
+        assert!(signed.psbt().inputs[1].partial_sigs.is_empty());
+        assert!(
+            !is_complete(signed.psbt(), &inspection),
+            "an input nobody has signed was reported ready to broadcast"
+        );
+    }
+
+    /// The other direction, so the gate above cannot be tightened into a lie: a real
+    /// taproot key-path spend IS complete on its `tap_key_sig` alone, because BIP-341 puts
+    /// exactly one signature in that witness.
+    #[test]
+    fn a_taproot_key_path_input_is_complete_on_its_tap_key_sig() {
+        let psbt = fixture::p2tr_psbt();
+        let inspection = psbt::inspect(&psbt, &fixture::context()).expect("a readable file");
+        let signed = psbt::sign(&psbt, &inspection, &fixture::SEED).expect("our key signs");
+
+        assert!(signed.psbt().inputs[0].partial_sigs.is_empty());
+        assert!(signed.psbt().inputs[0].tap_key_sig.is_some());
+        assert!(is_complete(signed.psbt(), &inspection));
+    }
+
+    /// And the ordinary single-sig case, which the count has always covered.
+    #[test]
+    fn a_signed_p2wpkh_input_is_complete() {
+        let psbt = fixture::p2wpkh_psbt();
+        let inspection = psbt::inspect(&psbt, &fixture::context()).expect("a readable file");
+        let signed = psbt::sign(&psbt, &inspection, &fixture::SEED).expect("our key signs");
+
+        assert!(is_complete(signed.psbt(), &inspection));
+    }
 }

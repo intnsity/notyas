@@ -178,7 +178,12 @@ pub enum Op {
     /// sequence cursor never advances, which was verified by mutation and is exactly the
     /// kind of hole a fuzzer is supposed to not have.
     SealRepeated,
-    /// CLEAR, which under AlwaysFilled is a filler write rather than an erase.
+    /// CLEAR over a slot that holds a real record, which under AlwaysFilled is a filler
+    /// write rather than an erase.
+    ///
+    /// The setup writes the record first (see `prepare_image`): this is the shape the
+    /// product's delete-wallet route has, and clearing an untouched slot instead would
+    /// make I2 vacuous - filler over filler is `None` before and `None` after.
     Clear,
     /// A successful unlock: attempt cell, four opens, catch-up.
     UnlockGood,
@@ -585,8 +590,17 @@ fn build_pre_state(cfg: &Config, op: Op, pins: &Pins) -> Option<SimImage> {
             _ => {
                 format_store(&mut v, cfg, pins)?;
                 match op {
-                    Op::SealNew | Op::Clear | Op::UnlockGood | Op::UnlockBad | Op::Wipe => {}
-                    Op::SealOverwrite | Op::SealRepeated => {
+                    Op::SealNew | Op::UnlockGood | Op::UnlockBad | Op::Wipe => {}
+                    // CLEAR joins the overwrite arm rather than starting from a blank
+                    // slot, and the difference is the whole sharpness of the operation.
+                    // Under `Occupancy::AlwaysFilled` an untouched payload slot already
+                    // holds filler, so a clear of one is filler over filler: I2's "the
+                    // pre-operation record or the post-operation record" assertion is
+                    // vacuous there, because both are `None`. What the product actually
+                    // does - and what the delete route ships - is filler over somebody's
+                    // wallet, so the setup writes a real record first and I2 then has two
+                    // distinguishable states to hold the store to.
+                    Op::SealOverwrite | Op::SealRepeated | Op::Clear => {
                         let session = unlock(&mut v, &pins.old, cfg)?;
                         v.write(&session, user_slot(cfg, 0)?, b"the record being replaced")
                             .ok()?;

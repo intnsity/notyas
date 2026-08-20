@@ -439,7 +439,7 @@ fn sheet(ctx: &Ctx) -> Vec<Row> {
 
     // --- identity (10.1) --------------------------------------------------------------
     r.push(Row::Section("identity"));
-    r.push(k1("Device name", device_name(&ctx.lock.nickname)));
+    r.push(k1("Device name", device_name(&ctx.lock.device_name)));
     r.push(k1("Board", opt(&v.board)));
     r.push(k1("Chip", opt(&v.chip)));
     r.push(k1("Chip revision", opt(&v.chip_revision)));
@@ -608,11 +608,16 @@ fn since_acknowledged(v: &VerifyInfo) -> Cell {
 
 /// The user's own label. Empty is a setting they have not made, which is a value the
 /// device read; it is not a value it failed to read.
-fn device_name(nickname: &str) -> Cell {
-    if nickname.is_empty() {
+///
+/// It is a LABEL on this sheet too, and the sheet is read by someone checking whether the
+/// device in their hand is theirs. What answers that question here is the digest rows
+/// below, not this one: the name is what the owner chose and anyone holding the device can
+/// read it (see [`crate::LockInfo::device_name`]).
+fn device_name(name: &str) -> Cell {
+    if name.is_empty() {
         Cell::read("not set")
     } else {
-        Cell::read(nickname)
+        Cell::read(name)
     }
 }
 
@@ -1374,26 +1379,38 @@ mod tests {
             flash_size_detected: Some(String::from("32 MB")),
             jedec_id: Some(String::from("c8 40 19")),
             flash_unique_id: Some(String::from("4d81 2f60 aa39 07c5")),
+            // The table `firmware/partitions.csv` actually ships, including the
+            // subtype every region really carries: `undefined` (0x06), because
+            // esp-idf-part panics on a numeric user-range data subtype and the LABEL is
+            // the identity. A fixture that showed a table nobody flashes would make the
+            // column test below prove nothing.
             partitions: alloc::vec![
                 PartitionRow {
                     name: String::from("factory"),
                     kind: String::from("app/fact"),
                     offset: 0x0001_0000,
-                    size: 14_614_528,
+                    size: 4_194_304,
                     encrypted: false,
                 },
                 PartitionRow {
                     name: String::from("wallets"),
-                    kind: String::from("data/0x40"),
-                    offset: 0x00E0_0000,
+                    kind: String::from("data/0x06"),
+                    offset: 0x0041_0000,
                     size: 262_144,
                     encrypted: true,
                 },
                 PartitionRow {
                     name: String::from("counters"),
-                    kind: String::from("data/0x41"),
-                    offset: 0x00E4_0000,
+                    kind: String::from("data/0x06"),
+                    offset: 0x0045_0000,
                     size: 16_384,
+                    encrypted: false,
+                },
+                PartitionRow {
+                    name: String::from("settings"),
+                    kind: String::from("data/0x06"),
+                    offset: 0x0046_0000,
+                    size: 65_536,
                     encrypted: false,
                 },
             ],
@@ -1452,7 +1469,7 @@ mod tests {
         f.verify = wireframe();
         f.lock = LockInfo {
             status: if unlocked { StoreStatus::Unlocked } else { StoreStatus::Locked },
-            nickname: String::from("kitchen-desk"),
+            device_name: String::from("kitchen-desk"),
             ..LockInfo::default()
         };
         f
@@ -1893,9 +1910,13 @@ mod tests {
                 _ => None,
             })
             .expect("the partition map");
-        assert_eq!(lines[0], "factory  app/fact  0x010000 14272K");
-        assert_eq!(lines[1], "wallets  data/0x40 0xE00000   256K enc");
-        assert_eq!(lines[2], "counters data/0x41 0xE40000    16K");
+        assert_eq!(lines[0], "factory  app/fact  0x010000  4096K");
+        assert_eq!(lines[1], "wallets  data/0x06 0x410000   256K enc");
+        assert_eq!(lines[2], "counters data/0x06 0x450000    16K");
+        // 0.2.0's third region. Public, pre-PIN, and it volunteers nothing: the map says
+        // a partition exists and how big it is, which the same person reads off the table
+        // at 0x8000 with a USB cable.
+        assert_eq!(lines[3], "settings data/0x06 0x460000    64K");
         assert!(lines.iter().all(|l| l.chars().count() <= TABLE_COLS), "{lines:?}");
     }
 

@@ -117,16 +117,20 @@ use crate::canvas::fill;
 use crate::layout::Metrics;
 use crate::theme::PAPER_1;
 use crate::{
-    CardOutcome, ImportOutcome, LockInfo, Press, PsbtOutcome, Region, RegionId,
-    RegistrationInfo, RegistrationOutcome, ScreenId, SignOutcome, UiRequest, VerifyInfo,
-    WalletRow, WriteOutcome,
+    CardOutcome, DeleteOutcome, FormatOffer, FormatOutcome, ImportOutcome, LockInfo, Press,
+    PsbtOutcome, Region, RegionId,
+    RegistrationInfo, RegistrationOutcome, ScreenId, SignOutcome, SignedQrOutcome,
+    StorageOutcome, UiRequest,
+    UnlockGate, VerifyInfo, WalletRow, WordsOutcome, WriteOutcome,
 };
 use notyas_core::bitcoin::Network;
 
 pub(crate) mod deriving;
 pub(crate) mod dice;
+mod erase;
 pub(crate) mod door;
 pub(crate) mod fork;
+pub(crate) mod format;
 pub(crate) mod home;
 pub(crate) mod lock;
 pub(crate) mod mnemonic;
@@ -144,19 +148,25 @@ pub(crate) mod verify;
 pub(crate) mod wallet;
 pub(crate) mod wallets;
 pub(crate) mod sdcard;
+pub(crate) mod devicename;
 pub(crate) mod review;
 pub(crate) mod refusal;
 pub(crate) mod deliver;
+pub(crate) mod deliverqr;
+pub(crate) mod words;
 
 use deriving::{DerivingState, SeedSource};
+use devicename::DeviceNameState;
 use dice::DiceState;
 use fork::ForkState;
+use format::FormatCardState;
 use home::HomeState;
 use lock::LockState;
+use erase::EraseState;
 use mnemonic::MnemonicState;
 use multisig::{MultisigDetailState, MultisigImportState, MultisigListState};
 use name::NameState;
-use passphrase::PassState;
+use passphrase::{PassState, PassUnlockState};
 use phrase::PhraseState;
 use pin::PinState;
 use policy::PolicyState;
@@ -171,6 +181,7 @@ use sdcard::{FilePickerState, SignSourceState};
 use deliver::DeliverState;
 use refusal::RefusalState;
 use review::ReviewState;
+use words::WordsInfoState;
 
 // ---------------------------------------------------------------------------------------
 // The contract
@@ -204,6 +215,9 @@ pub(crate) struct Ctx<'a> {
     /// cannot reach the `Ui` that tracks them; read by the danger sheet's hold grade.
     pub press: Option<Press>,
     pub hold_released: bool,
+    /// The passphrase retry gate, so the screen that is waiting can draw the countdown
+    /// and refuse to offer a control the wait is holding.
+    pub gate: &'a UnlockGate,
 }
 
 /// The device-wide state a screen may CHANGE, as distinct from the much larger set it may
@@ -223,6 +237,9 @@ pub(crate) struct Env<'a> {
     /// the store, not on the screen.
     pub lock: &'a LockInfo,
     pub wallets: &'a [WalletRow],
+    /// The passphrase retry gate. Device-wide state a screen may CHANGE - it outlives
+    /// every screen that reads it, which is the whole reason it is not a field of one.
+    pub gate: &'a mut UnlockGate,
 }
 
 /// Where the tap leaves the user.
@@ -305,10 +322,30 @@ pub(crate) enum Answer {
     /// The signed transaction the std side was holding is gone. False is a refusal to
     /// destroy it, which S-38 states rather than leaving the user believing it is gone.
     Discard(bool),
+    /// The signed transaction as a symbol S-39 can draw, or why it is not going on the
+    /// glass. The symbol lives in the delivery screen's own state and dies with it.
+    SignedQr(SignedQrOutcome),
     Import(ImportOutcome),
+    /// Whether the card in the slot can be repaired by a format (S-49). Nothing has been
+    /// written when this arrives.
+    FormatOffer(FormatOffer),
+    /// What became of a format that WAS run. The one answer in this enum that can mean the
+    /// user's own data is gone.
+    Formatted(FormatOutcome),
     Register(RegistrationOutcome),
     /// The registry slot was erased. False is a refusal, stated on the screen that asked.
     DeleteRegistration(bool),
+    /// What became of a wallet the user consented to destroy. Never a bool: "nothing was
+    /// destroyed" and "some of it was" are different sentences and the second one is the
+    /// dangerous one to get wrong.
+    DeleteWallet(DeleteOutcome),
+    /// The stored recovery words for the wallet about to be erased, or why there are none
+    /// to show. Secret-bearing - see [`WordsOutcome`].
+    RecoveryWords(WordsOutcome),
+    /// Whether this device now remembers the wallet's passphrase, as the record READ BACK
+    /// says - or why nothing was written. Carries no passphrase and never will: the
+    /// subject is what the flash holds, not what it holds.
+    PassphraseStorage(StorageOutcome),
 }
 
 /// The four entry points every screen exports, plus two defaulted hooks.
@@ -351,8 +388,33 @@ pub(crate) trait Screen: Sized {
     /// What Back means here. The default is the screen the user came from; a screen
     /// holding a derived secret returns [`Nav::ConfirmExit`] instead, and a screen that
     /// is the floor of a locked device returns [`Nav::Stay`].
+    ///
+    /// A screen whose Back has to MOVE what it owns implements [`Screen::back_moving`]
+    /// instead - this receiver cannot, and the two ways around that are both worse than
+    /// the hook.
     fn back(&self) -> Nav {
         Nav::Back
+    }
+
+    /// Back, from the receiver that can MOVE.
+    ///
+    /// This is the one the dispatcher calls; the default forwards to [`Screen::back`],
+    /// which is what a screen implements when answering Back only NAMES a destination.
+    /// Override THIS one, and not that one, when answering Back means handing this
+    /// screen's own state to the screen it names - the export view returning a derivation
+    /// to the wallet it was lent, so that the wallet can offer Export a second time.
+    ///
+    /// The hook exists because `&self` leaves exactly two ways to do that, and both are
+    /// defects this crate has already paid for. COPYING the value breaks the one-copy rule
+    /// for key material (crate docs, "Secrecy rules"). DEFERRING the move to the next tap -
+    /// the [`review::ReviewState::leaving`] pattern, which is right when Back is a QUESTION
+    /// because the sheet it opens supplies that tap - turns a Back that should be one tap
+    /// into two.
+    ///
+    /// A screen implements one or the other, never both: the `back` of a screen that
+    /// overrides this is dead code, and the two would be free to disagree.
+    fn back_moving(&mut self) -> Nav {
+        self.back()
     }
 
     /// The scroll offset this screen owns, while it is scrollable. `None` opts out, which
@@ -387,6 +449,11 @@ pub(crate) enum State {
     Mnemonic(MnemonicState),
     Phrase(PhraseState),
     Passphrase(PassState),
+    /// S-21b. The passphrase of a wallet that already exists, asked for at open time.
+    /// Distinct from `Passphrase`, which is part of MAKING one: this screen belongs to a
+    /// record, has one field and an Unlock, and reports `Working` while the derivation it
+    /// asked for runs.
+    PassUnlock(PassUnlockState),
     Deriving(DerivingState),
     Schemes(SchemesState),
     Verify(VerifyState),
@@ -401,12 +468,27 @@ pub(crate) enum State {
     Fork(ForkState),
     Name(NameState),
     Wallet(WalletState),
+    /// S-47b. The step between the typed-name consent and the write: read the recovery
+    /// words once more, or erase knowing the backup is checked.
+    Erase(EraseState),
     Settings(SettingsState),
+    /// S-44a. The one string this device shows before a PIN is typed. Distinct from
+    /// `Name`, which names a WALLET: the two accept different characters, refuse for
+    /// different reasons and commit to different places.
+    DeviceName(DeviceNameState),
+    /// S-04a. What the anti-phishing words are and when to look at them, at the two
+    /// moments a user can act on it.
+    WordsInfo(WordsInfoState),
     Policy(PolicyState),
     /// S-27. The card ingress path: what is on the card, and what may be read off it.
     SignSource(SignSourceState),
     /// S-28. The picker, when auto-detect is not enough.
     FilePicker(FilePickerState),
+    /// S-49. The card repair: look at a card this device cannot read, and - only where a
+    /// format would repair it - offer to write an empty filesystem into the partition it
+    /// already has. Opened from Settings, and the only screen in the product that can
+    /// destroy something the device never held.
+    FormatCard(FormatCardState),
     /// S-41. What this wallet is registered in, and the way to import more.
     MultisigList(MultisigListState),
     /// S-42. The cosigner review: every key in full, and this device's own statement
@@ -436,6 +518,9 @@ impl State {
             State::Mnemonic(_) => ScreenId::MnemonicDisplay,
             State::Phrase(_) => ScreenId::PhraseEntry,
             State::Passphrase(_) => ScreenId::PassphraseEntry,
+            // Another screen that names itself, for the reason `State::Verify` does: while
+            // the derivation runs it is a C3 frame with no Back and nothing tappable.
+            State::PassUnlock(s) => s.id(),
             State::Deriving(_) => ScreenId::Deriving,
             State::Schemes(_) => ScreenId::Schemes,
             // The one variant that names itself: S-46 becomes a C3 Busy screen while its
@@ -451,7 +536,13 @@ impl State {
             State::Fork(_) => ScreenId::KeepOrSave,
             State::Name(_) => ScreenId::NameWallet,
             State::Wallet(_) => ScreenId::WalletHome,
+            // Another screen that names itself: it becomes a C3 Busy frame while the erase
+            // it announced is running, and a frame with no Back is a different screen to an
+            // embedder rather than a mode of the sheet underneath it.
+            State::Erase(s) => s.id(),
             State::Settings(_) => ScreenId::Settings,
+            State::DeviceName(_) => ScreenId::DeviceName,
+            State::WordsInfo(_) => ScreenId::AboutDeviceWords,
             State::Policy(_) => ScreenId::WipePolicy,
             // Each of the three reports `ScreenId::Working` while its own request is in
             // flight, on the `State::Verify` precedent: a C3 frame has no Back and nothing
@@ -460,6 +551,10 @@ impl State {
             // screen is showing" has to say so - see `State::Verify` above.
             State::SignSource(s) => s.id(),
             State::FilePicker(s) => s.id(),
+            // Names itself for the same reason, with more at stake: while its format runs
+            // the panel is a C3 frame with nothing tappable and a card being overwritten
+            // behind it.
+            State::FormatCard(s) => s.id(),
             State::MultisigList(s) => s.id(),
             State::MultisigImport(s) => s.id(),
             State::MultisigDetail(s) => s.id(),
@@ -486,6 +581,7 @@ pub(crate) fn regions(state: &State, ctx: &Ctx) -> Vec<Region> {
         State::Mnemonic(s) => s.regions(ctx, &mut out),
         State::Phrase(s) => s.regions(ctx, &mut out),
         State::Passphrase(s) => s.regions(ctx, &mut out),
+        State::PassUnlock(s) => s.regions(ctx, &mut out),
         State::Deriving(s) => s.regions(ctx, &mut out),
         State::Schemes(s) => s.regions(ctx, &mut out),
         State::Verify(s) => s.regions(ctx, &mut out),
@@ -497,10 +593,14 @@ pub(crate) fn regions(state: &State, ctx: &Ctx) -> Vec<Region> {
         State::Fork(s) => s.regions(ctx, &mut out),
         State::Name(s) => s.regions(ctx, &mut out),
         State::Wallet(s) => s.regions(ctx, &mut out),
+        State::Erase(s) => s.regions(ctx, &mut out),
         State::Settings(s) => s.regions(ctx, &mut out),
+        State::DeviceName(s) => s.regions(ctx, &mut out),
+        State::WordsInfo(s) => s.regions(ctx, &mut out),
         State::Policy(s) => s.regions(ctx, &mut out),
         State::SignSource(s) => s.regions(ctx, &mut out),
         State::FilePicker(s) => s.regions(ctx, &mut out),
+        State::FormatCard(s) => s.regions(ctx, &mut out),
         State::MultisigList(s) => s.regions(ctx, &mut out),
         State::MultisigImport(s) => s.regions(ctx, &mut out),
         State::MultisigDetail(s) => s.regions(ctx, &mut out),
@@ -524,6 +624,7 @@ pub(crate) fn draw<D: DrawTarget<Color = Rgb565>>(
         State::Mnemonic(s) => s.draw(t, ctx),
         State::Phrase(s) => s.draw(t, ctx),
         State::Passphrase(s) => s.draw(t, ctx),
+        State::PassUnlock(s) => s.draw(t, ctx),
         State::Deriving(s) => s.draw(t, ctx),
         State::Schemes(s) => s.draw(t, ctx),
         State::Verify(s) => s.draw(t, ctx),
@@ -535,10 +636,14 @@ pub(crate) fn draw<D: DrawTarget<Color = Rgb565>>(
         State::Fork(s) => s.draw(t, ctx),
         State::Name(s) => s.draw(t, ctx),
         State::Wallet(s) => s.draw(t, ctx),
+        State::Erase(s) => s.draw(t, ctx),
         State::Settings(s) => s.draw(t, ctx),
+        State::DeviceName(s) => s.draw(t, ctx),
+        State::WordsInfo(s) => s.draw(t, ctx),
         State::Policy(s) => s.draw(t, ctx),
         State::SignSource(s) => s.draw(t, ctx),
         State::FilePicker(s) => s.draw(t, ctx),
+        State::FormatCard(s) => s.draw(t, ctx),
         State::MultisigList(s) => s.draw(t, ctx),
         State::MultisigImport(s) => s.draw(t, ctx),
         State::MultisigDetail(s) => s.draw(t, ctx),
@@ -555,6 +660,7 @@ pub(crate) fn activate(state: &mut State, id: RegionId, env: &mut Env) -> Outcom
         State::Mnemonic(s) => s.activate(id, env),
         State::Phrase(s) => s.activate(id, env),
         State::Passphrase(s) => s.activate(id, env),
+        State::PassUnlock(s) => s.activate(id, env),
         State::Deriving(s) => s.activate(id, env),
         State::Schemes(s) => s.activate(id, env),
         State::Verify(s) => s.activate(id, env),
@@ -566,10 +672,14 @@ pub(crate) fn activate(state: &mut State, id: RegionId, env: &mut Env) -> Outcom
         State::Fork(s) => s.activate(id, env),
         State::Name(s) => s.activate(id, env),
         State::Wallet(s) => s.activate(id, env),
+        State::Erase(s) => s.activate(id, env),
         State::Settings(s) => s.activate(id, env),
+        State::DeviceName(s) => s.activate(id, env),
+        State::WordsInfo(s) => s.activate(id, env),
         State::Policy(s) => s.activate(id, env),
         State::SignSource(s) => s.activate(id, env),
         State::FilePicker(s) => s.activate(id, env),
+        State::FormatCard(s) => s.activate(id, env),
         State::MultisigList(s) => s.activate(id, env),
         State::MultisigImport(s) => s.activate(id, env),
         State::MultisigDetail(s) => s.activate(id, env),
@@ -592,6 +702,7 @@ pub(crate) fn answered(state: &mut State, answer: Answer, env: &mut Env) -> Outc
         State::Mnemonic(s) => s.answered(answer, env),
         State::Phrase(s) => s.answered(answer, env),
         State::Passphrase(s) => s.answered(answer, env),
+        State::PassUnlock(s) => s.answered(answer, env),
         State::Deriving(s) => s.answered(answer, env),
         State::Schemes(s) => s.answered(answer, env),
         State::Verify(s) => s.answered(answer, env),
@@ -603,10 +714,14 @@ pub(crate) fn answered(state: &mut State, answer: Answer, env: &mut Env) -> Outc
         State::Fork(s) => s.answered(answer, env),
         State::Name(s) => s.answered(answer, env),
         State::Wallet(s) => s.answered(answer, env),
+        State::Erase(s) => s.answered(answer, env),
         State::Settings(s) => s.answered(answer, env),
+        State::DeviceName(s) => s.answered(answer, env),
+        State::WordsInfo(s) => s.answered(answer, env),
         State::Policy(s) => s.answered(answer, env),
         State::SignSource(s) => s.answered(answer, env),
         State::FilePicker(s) => s.answered(answer, env),
+        State::FormatCard(s) => s.answered(answer, env),
         State::MultisigList(s) => s.answered(answer, env),
         State::MultisigImport(s) => s.answered(answer, env),
         State::MultisigDetail(s) => s.answered(answer, env),
@@ -618,34 +733,43 @@ pub(crate) fn answered(state: &mut State, answer: Answer, env: &mut Env) -> Outc
 
 /// What the top bar's Back does on the current screen. Routed separately from
 /// [`activate`] so that every screen has an answer whether or not it thought about one.
-pub(crate) fn back(state: &State) -> Nav {
+///
+/// `&mut` because [`Screen::back_moving`] is the hook this calls: a screen whose Back
+/// hands its own state to the screen it is naming needs a receiver that can move, and
+/// every screen that does not simply takes the default forwarding to [`Screen::back`].
+pub(crate) fn back(state: &mut State) -> Nav {
     match state {
-        State::Home(s) => s.back(),
-        State::Dice(s) => s.back(),
-        State::Mnemonic(s) => s.back(),
-        State::Phrase(s) => s.back(),
-        State::Passphrase(s) => s.back(),
-        State::Deriving(s) => s.back(),
-        State::Schemes(s) => s.back(),
-        State::Verify(s) => s.back(),
-        State::Lock(s) => s.back(),
-        State::Pin(s) => s.back(),
-        State::SetPin(s) => s.back(),
-        State::Wallets(s) => s.back(),
-        State::Quiz(s) => s.back(),
-        State::Fork(s) => s.back(),
-        State::Name(s) => s.back(),
-        State::Wallet(s) => s.back(),
-        State::Settings(s) => s.back(),
-        State::Policy(s) => s.back(),
-        State::SignSource(s) => s.back(),
-        State::FilePicker(s) => s.back(),
-        State::MultisigList(s) => s.back(),
-        State::MultisigImport(s) => s.back(),
-        State::MultisigDetail(s) => s.back(),
-        State::Review(s) => s.back(),
-        State::Refusal(s) => s.back(),
-        State::Deliver(s) => s.back(),
+        State::Home(s) => s.back_moving(),
+        State::Dice(s) => s.back_moving(),
+        State::Mnemonic(s) => s.back_moving(),
+        State::Phrase(s) => s.back_moving(),
+        State::Passphrase(s) => s.back_moving(),
+        State::PassUnlock(s) => s.back_moving(),
+        State::Deriving(s) => s.back_moving(),
+        State::Schemes(s) => s.back_moving(),
+        State::Verify(s) => s.back_moving(),
+        State::Lock(s) => s.back_moving(),
+        State::Pin(s) => s.back_moving(),
+        State::SetPin(s) => s.back_moving(),
+        State::Wallets(s) => s.back_moving(),
+        State::Quiz(s) => s.back_moving(),
+        State::Fork(s) => s.back_moving(),
+        State::Name(s) => s.back_moving(),
+        State::Wallet(s) => s.back_moving(),
+        State::Erase(s) => s.back_moving(),
+        State::Settings(s) => s.back_moving(),
+        State::DeviceName(s) => s.back_moving(),
+        State::WordsInfo(s) => s.back_moving(),
+        State::Policy(s) => s.back_moving(),
+        State::SignSource(s) => s.back_moving(),
+        State::FilePicker(s) => s.back_moving(),
+        State::FormatCard(s) => s.back_moving(),
+        State::MultisigList(s) => s.back_moving(),
+        State::MultisigImport(s) => s.back_moving(),
+        State::MultisigDetail(s) => s.back_moving(),
+        State::Review(s) => s.back_moving(),
+        State::Refusal(s) => s.back_moving(),
+        State::Deliver(s) => s.back_moving(),
     }
 }
 
@@ -657,6 +781,7 @@ pub(crate) fn scroll(state: &mut State, dy: i32, ctx: &Ctx) {
         State::Mnemonic(s) => scroll_one(s, dy, ctx),
         State::Phrase(s) => scroll_one(s, dy, ctx),
         State::Passphrase(s) => scroll_one(s, dy, ctx),
+        State::PassUnlock(s) => scroll_one(s, dy, ctx),
         State::Deriving(s) => scroll_one(s, dy, ctx),
         State::Schemes(s) => scroll_one(s, dy, ctx),
         State::Verify(s) => scroll_one(s, dy, ctx),
@@ -668,10 +793,14 @@ pub(crate) fn scroll(state: &mut State, dy: i32, ctx: &Ctx) {
         State::Fork(s) => scroll_one(s, dy, ctx),
         State::Name(s) => scroll_one(s, dy, ctx),
         State::Wallet(s) => scroll_one(s, dy, ctx),
+        State::Erase(s) => scroll_one(s, dy, ctx),
         State::Settings(s) => scroll_one(s, dy, ctx),
+        State::DeviceName(s) => scroll_one(s, dy, ctx),
+        State::WordsInfo(s) => scroll_one(s, dy, ctx),
         State::Policy(s) => scroll_one(s, dy, ctx),
         State::SignSource(s) => scroll_one(s, dy, ctx),
         State::FilePicker(s) => scroll_one(s, dy, ctx),
+        State::FormatCard(s) => scroll_one(s, dy, ctx),
         State::MultisigList(s) => scroll_one(s, dy, ctx),
         State::MultisigImport(s) => scroll_one(s, dy, ctx),
         State::MultisigDetail(s) => scroll_one(s, dy, ctx),
@@ -728,6 +857,7 @@ fn secrets_wipe_when_a_screen_is_dropped(
     mnemonic: &MnemonicState,
     phrase: &PhraseState,
     pass: &PassState,
+    unlock: &PassUnlockState,
     deriving: &DerivingState,
     schemes: &SchemesState,
     pin: &PinState,
@@ -747,12 +877,25 @@ fn secrets_wipe_when_a_screen_is_dropped(
 
     wipes(&dice.rolls);
     wipes(&dice.entropy);
-    wipes(&mnemonic.dice);
-    wipes(&mnemonic.mnem);
+    // Both variants of the words screen, named separately: the create path owns the dice
+    // and the derived mnemonic, and the re-show path owns a phrase read back out of a
+    // record. A wipe check that covered only the first would leave the newer surface -
+    // which shows the words of a wallet that is about to be deleted - outside the property.
+    match &mnemonic.words {
+        mnemonic::Words::Fresh { dice, mnem, .. } => {
+            wipes(dice);
+            wipes(mnem);
+        }
+        mnemonic::Words::Stored { phrase } => wipes(phrase),
+    }
     wipes(&phrase.text);
     seed_wipes(&pass.source);
     wipes(&pass.entry);
     wipes(&pass.confirm);
+    // The one field of the unlock screen that is a secret. It is wiped on the way OUT of
+    // the busy phase as well (see `PassUnlockState::refused`), which is a second wipe on
+    // top of this one rather than a substitute for it.
+    wipes(&unlock.entry);
     seed_wipes(&deriving.source);
     wipes(&deriving.passphrase);
     wipes(&schemes.report);
@@ -763,8 +906,13 @@ fn secrets_wipe_when_a_screen_is_dropped(
     wipes(&setpin.entry);
     wipes(&setpin.confirm);
     wipes(&quiz.report);
+    // In transit from the entry screen to the save, on three screens in a row. Each one
+    // is the only holder while it is alive, and each drops it on the way out.
+    wipes(&quiz.passphrase);
     wipes(&fork.report);
+    wipes(&fork.passphrase);
     wipes(&name.phrase);
+    wipes(&name.passphrase);
     wipes(&wallet.report);
 }
 
@@ -869,6 +1017,8 @@ pub(crate) mod testing {
         pub verify: VerifyInfo,
         pub wallets: Vec<WalletRow>,
         pub registrations: Vec<RegistrationInfo>,
+        pub network: Network,
+        pub gate: UnlockGate,
     }
 
     impl Fixture {
@@ -879,6 +1029,8 @@ pub(crate) mod testing {
                 verify: VerifyInfo::default(),
                 wallets: Vec::new(),
                 registrations: Vec::new(),
+                network: Network::Bitcoin,
+                gate: UnlockGate::default(),
             }
         }
 
@@ -889,9 +1041,23 @@ pub(crate) mod testing {
                 verify: &self.verify,
                 wallets: &self.wallets,
                 registrations: &self.registrations,
-                network: Network::Bitcoin,
+                network: self.network,
                 press: None,
                 hold_released: false,
+                gate: &self.gate,
+            }
+        }
+        /// The narrow half of the same fixture: what a tap may CHANGE.
+        ///
+        /// One constructor, so a screen test that needs to drive `activate` does not have
+        /// to know which fields `Env` has today - which is what made adding one to it a
+        /// twelve-file edit.
+        pub fn env(&mut self) -> Env<'_> {
+            Env {
+                network: &mut self.network,
+                lock: &self.lock,
+                wallets: &self.wallets,
+                gate: &mut self.gate,
             }
         }
     }

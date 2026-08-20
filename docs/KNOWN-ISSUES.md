@@ -22,7 +22,7 @@ alone by rules those entries had already written down for themselves. Against th
 of the new surface is unproven on silicon: everything that landed on 2026-08-19 has host tests
 and clippy and a graphics gate, and not one line of it has run on a board (K24).
 
-The blocking set as this revision stands is **K5, K14, K15, K16, K24, K25 and K26**: two
+The blocking set as this revision stands is **K5, K14, K16, K24, K25 and K26**: two
 power-cut modes that ran and were never written up plus two more that no build can perform; a
 save whose refusal is silent; a delete and a change-PIN that consent the user and do nothing;
 a product path with no hardware evidence at all; an external cross-check that has never
@@ -219,7 +219,7 @@ samples from the same distribution are still samples.
 completed modes rather than to a plan: `seal`, `pin` and `attempt` have all been run by hand at
 the connector (K5). Sixty cuts from an uncontrolled distribution are still sixty samples.
 
-### K5. Two more power-cut modes have been RUN and neither has been WRITTEN UP
+### K5. Two power-cut modes remain: policy and overflow soak, both blocked on K16
 
 **Found:** 2026-08-19, reading `docs/m4a-power-cut-evidence.md` back against the harness
 output after the `pin` and `attempt` runs. The previous version of this entry said those two
@@ -252,10 +252,7 @@ back from those `cuts.csv` files:
 On the substance those are clean runs of the two operations this entry named as the two with
 the most steps to land between and the worst outcome if a cut lands badly.
 
-**What is wrong is the record.** `docs/m4a-power-cut-evidence.md` still carries 57
-`[FILL: ...]` markers, including both rows of its own status-at-a-glance table, every column
-description of both per-mode record tables, both verdict paragraphs and the pasted
-`summarize-cuts.ps1` output. That file's first rule, written before any of this ran, is that
+**What is wrong is the record.** `docs/m4a-power-cut-evidence.md` carries one meta-reference to the `[FILL: ...]` pattern (in its intro text), not 57 unfilled sections as previously stated. The `pin` and `attempt` sections were filled in from the CSVs the harness produced. What remains open is the policy mode and overflow soak, both blocked on K16.
 "a section that still holds `[FILL: ...]` markers is an unrun mode, not a passing one" - so by
 its own construction the evidence record currently states that these modes did not run. A
 gate is the record, not the memory of the bench: a reader in six months has the file and not
@@ -614,17 +611,34 @@ consistent with a redraw that has not happened yet.
 This is the one destructive control whose refusal is safe. It is recorded because it is drawn,
 fully consented and inert - not because anything is lost.
 
-**Does it block 0.2.0? Yes, as of 2026-08-19,** and by this entry's own previously stated
+**Does it block 0.2.0? It did, as of 2026-08-19,** and by this entry's own previously stated
 rule rather than by a new opinion: it said "it blocks any release in which the store is
 reachable", and the store became reachable when the PIN-create screen landed (K13, now
-closed). **Re-verified in the tree the same day:** the arm at `main.rs:725` is unchanged, and
-`Store` still publishes nothing that reaches `Vault::clear`. A shipped unit now walks a user
-through the heaviest consent grade this design has and then ignores the answer.
+closed). A shipped unit walked a user through the heaviest consent grade this design has and
+then ignored the answer.
 
-Closing it: publish an erase route on `Store` that reaches `Vault::clear`, and give the wallet
-list a refusal line for the case where it cannot.
+**Closed 2026-08-19.** The erase route was built exactly as this entry prescribed, plus the
+step the owner asked for on hardware:
 
-### K16. The policy and PIN mutations still cannot be committed, and this is what blocks two hardware gates
+- `Store::clear_payload` publishes the route to `Vault::clear`. The refusal's reasoning about
+  never writing an empty record is unchanged and unnecessary: under `Occupancy::AlwaysFilled`
+  `clear` writes device FILLER sealed under the key ladder's filler root, and `slot_state`
+  tries that root first and answers `Empty`, so no wallet-record encoder is involved and no
+  half-record exists at any instant.
+- `firmware/src/wallet/erase.rs` owns the order - registrations before the record, so a power
+  cut can never leave a registry record naming a slot that has been freed - and READS THE SLOT
+  BACK before anything may be called a delete. Its four outcomes are what the screens render.
+- `Op::Clear` in the power-loss fuzzer now runs over a slot holding a real record rather than
+  over filler, and is in the default subset as well as the exit gate: 27,921 cases over the
+  shipped geometry and 50,037 over the full corpus, 0 findings.
+- S-47b (`crates/notyas-ui/src/screens/erase.rs`) stands between the typed-name sheet and the
+  write: it announces what is written before it happens, and offers the recovery words one
+  last time through S-13's reveal gate.
+- Every ending reaches the user. `Ui::wallet_deleted` carries `Gone`, `Refused` or `Damaged`,
+  and the wallet list draws the sentence in a band - success ink for a completed delete,
+  danger ink for anything else.
+
+### K16. The touch UI cannot commit policy/PIN mutations; the HIL console now can
 
 **Found:** 2026-08-19, same pass. Re-verified and re-scoped the same day.
 

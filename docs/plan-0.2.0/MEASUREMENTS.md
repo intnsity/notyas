@@ -408,6 +408,68 @@ grow for the camera, and the storage freeze does not have to reserve for it
 beyond what is already there. This retires the assumption that the camera gated
 the partition freeze - it was asserted against a number nobody had.
 
+### 8.4 App image size, microSD long file names in versus out (both boards, dev profile)
+
+Taken **2026-08-19**, on the workstation rather than on the boards: these are
+sizes of the artifact, by the same method as 8.3 - `espflash save-image --chip
+esp32p4 --flash-size <board>` over the built ELF, which is exactly the image
+`tools/flash.ps1` writes. Everything else in this document was read off the
+silicon; this subsection is host-side by nature, and the two on-hardware numbers
+it is paired with are still owed (below).
+
+The change measured is `CONFIG_FATFS_LFN_HEAP=y` plus the two pinned defaults
+`CONFIG_FATFS_MAX_LFN=255` and `CONFIG_FATFS_CODEPAGE_437=y` in
+`firmware/sdkconfig.base.defaults`, i.e. FatFs going from `FF_USE_LFN=0` to
+`FF_USE_LFN=3`. Before the change `CONFIG_FATFS_LFN_NONE=y` (the ESP-IDF
+default) was in force on every build, `sd::Card::mount` refused every card
+before powering the slot, and no card had ever been addressed.
+
+Both builds are the dev profile (`opt-level = "z"`) with the same features the
+bench uses: `hil-console` on the Elecrow 5, `unsafe-emulated-key,hil-console` on
+the Waveshare 4B.
+
+| Build | app.bin bytes | Delta | Of the 4 MiB app partition |
+|---|---|---|---|
+| Elecrow 5, LFN off (`CONFIG_FATFS_LFN_NONE`, the shipped defect) | 3,785,856 | - | 90.3%, 408,448 B free |
+| Elecrow 5, **LFN on (`CONFIG_FATFS_LFN_HEAP`)** | **3,853,344** | **+67,488 B (+65.9 KiB, +1.8%)** | **91.9%, 340,960 B free** |
+| Waveshare 4B, LFN off | 3,826,288 | - | 91.2%, 368,016 B free |
+| Waveshare 4B, **LFN on** | **3,893,408** | **+67,120 B (+65.5 KiB, +1.8%)** | **92.8%, 300,896 B free** |
+
+The two boards' deltas agree to within 368 bytes, which is what you would expect
+of a change that is entirely FatFs code and the CP437 tables in `ffunicode.c`:
+it is the same object code on both, and the small difference is layout.
+
+**The estimate this replaces was low by a factor of about three.** The change was
+specified at "+10 to +25 KiB"; it costs 66 KiB. It still fits comfortably - the
+tighter of the two boards keeps 294 KiB of the app partition free - but the
+headroom figure quoted alongside that estimate (~560 KiB free, from a 3.62 MB
+image) was also stale: the tree had already grown past it before this change was
+made. Record the real number rather than the projection, because the app
+partition is frozen at 4 MiB and 8.3's camera option (+406,288 B) is still
+notionally on the table. That option no longer fits: camera on top of today's
+tree with LFN on comes to 4,259,632 B on the Elecrow 5 and 4,299,696 B on the
+Waveshare 4B, i.e. **65,328 B and 105,392 B PAST the 4 MiB app partition**. 8.3
+concluded the camera left the geometry alone; that conclusion was true of a
+2.6 MB tree and is not true of this one. LFN is not what broke it - the tree
+grew 1.2 MB between the two measurements and LFN is 66 KB of that - but the
+camera decision now has to be taken against a partition change.
+
+RAM cost is zero statically. The 512-byte `(FF_MAX_LFN+1)*2` UTF-16 working
+buffer that LFN needs is taken from the heap per FatFs call and freed on return
+(`FF_USE_LFN=3` -> `ff_memalloc`), which is why `LFN_HEAP` was chosen over
+`LFN_STACK`: `LFN_STACK` would put those 512 bytes on the main task stack, on top
+of the deepest frames this firmware has (`std::fs` -> VFS -> FatFs), and the main
+task stack is the one number this project has twice got wrong on hardware rather
+than on paper (see `CONFIG_ESP_MAIN_TASK_STACK_SIZE` in
+`firmware/sdkconfig.base.defaults`).
+
+**Still owed, and only the bench can pay it** (the boards are not on this
+machine): after a full SD flow on real hardware - mount, list, read a PSBT - read
+the boot-log line `main task stack: N bytes free of M` (printed every boot from
+`firmware/src/main.rs` via `store::stack_headroom()`) and record it here beside
+the pre-change reading. That number is what proves the `LFN_HEAP` choice cost the
+stack nothing; the sizes above prove only what it cost the image.
+
 ## 9. Findings that disprove design assumptions
 
 ### A. **64 MiB of Argon2 working memory does not exist on this hardware, and neither does 16 MiB of internal SRAM**

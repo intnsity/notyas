@@ -22,6 +22,7 @@ use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::Pixel;
 
 use notyas_ui::{
+    PassphraseState,
     BackupState, LockInfo, Network, Region, RegionId, Report, ScreenId, StoreStatus, TouchEvent,
     Ui, UiRequest, UnsealOutcome, VerifyInfo, WalletInfo, WalletKind, WalletRow, ADDRESS_ROWS,
 };
@@ -139,7 +140,7 @@ fn wallet(slot: u8) -> WalletInfo {
         network: Network::Bitcoin,
         registrations: 0,
         stored: true,
-        passphrase: false,
+        passphrase: PassphraseState::None,
     }
 }
 
@@ -149,8 +150,7 @@ fn unlocked(w: u32, h: u32) -> Ui {
     let mut ui = Ui::new(w, h);
     ui.set_lock_info(LockInfo {
         status: StoreStatus::Locked,
-        nickname: String::from("kitchen-desk"),
-        lock_word: String::from("anvil"),
+        device_name: String::from("kitchen-desk"),
         wipe_after: Some(10),
         ..LockInfo::default()
     });
@@ -249,7 +249,7 @@ fn verify_device_is_reachable_from_a_session_and_can_be_acknowledged() {
 
         tap(&mut ui, RegionId::OpenSettings);
         assert_eq!(ui.screen(), ScreenId::Settings);
-        tap_settings_row(&mut ui, w, h, 2);
+        tap_settings_row(&mut ui, w, h, 3);
         assert_eq!(ui.screen(), ScreenId::VerifyDevice, "{w}x{h}: Verify device did not open");
         regions_are_sane(&ui, w, h);
 
@@ -296,15 +296,15 @@ fn the_network_can_be_chosen_after_unlock_and_survives_to_the_next_derivation() 
         assert!(!has(&ui, RegionId::NetToggle), "the list carries no toggle of its own");
 
         tap(&mut ui, RegionId::OpenSettings);
-        tap_settings_row(&mut ui, w, h, 0);
+        tap_settings_row(&mut ui, w, h, 1);
         assert_eq!(ui.network(), Network::Testnet, "{w}x{h}: the network row did not act");
         assert_eq!(ui.screen(), ScreenId::Settings, "a row that acts in place goes nowhere");
         regions_are_sane(&ui, w, h);
 
         // It flips back, so the row is a choice rather than a one-way trip.
-        tap_settings_row(&mut ui, w, h, 0);
+        tap_settings_row(&mut ui, w, h, 1);
         assert_eq!(ui.network(), Network::Bitcoin);
-        tap_settings_row(&mut ui, w, h, 0);
+        tap_settings_row(&mut ui, w, h, 1);
 
         // ...and the choice outlives the screen that made it, all the way to the flow that
         // reads it.
@@ -344,6 +344,11 @@ fn a_stored_wallet_reaches_its_public_keys_when_the_embedder_sends_them() {
         ui.wallet_opened_with_keys(wallet(0), report());
         assert_eq!(ui.screen(), ScreenId::WalletHome);
         assert!(has(&ui, RegionId::ActExport), "{w}x{h}: an unsealed wallet must export");
+        // A wallet with everything - keys, a registry and the passphrase actions - carries
+        // more cards than the 800x480 panel holds, so the wallet home scrolls (its layout
+        // marks the overflow with the same "more below" chip four other screens use).
+        // Deletable still means reachable, and this is what reaching it looks like.
+        scroll_to(&mut ui, RegionId::WalletDelete, w, h);
         assert!(has(&ui, RegionId::WalletDelete), "and must still be deletable");
         regions_are_sane(&ui, w, h);
 
@@ -358,6 +363,64 @@ fn a_stored_wallet_reaches_its_public_keys_when_the_embedder_sends_them() {
             panic!("{w}x{h}: a receive-address QR must ask the embedder to encode it");
         };
         assert!(!target.payload.is_empty(), "an address QR with no address in it");
+    }
+}
+
+/// Export and Back are a ROUND TRIP on a stored wallet: Back lands on the wallet it was
+/// taken from, and that wallet arrives whole - able to export again, and able to sign.
+///
+/// This is the reported defect, and the trap under it. Export MOVES the derivation onto the
+/// export view, because the crate keeps exactly one copy of it; the wallet gates both its
+/// Export card and its Sign card on holding one. So a Back that only popped the stack would
+/// return the user to a wallet that had silently lost the ability to sign - the thing the
+/// device is for - recoverable only by leaving to the list and re-opening the wallet so the
+/// embedder unseals it a second time. The second lap is what proves the keys came back;
+/// Sign is what proves they came back to a wallet the store still holds.
+///
+/// The last leg checks the stack itself: the wallet is still the screen the list pushed, so
+/// leaving it is the list and not some deeper screen the export walked past.
+#[test]
+fn exporting_a_stored_wallet_returns_to_it_and_it_can_export_again() {
+    for (w, h) in GEOMETRIES {
+        let mut ui = unlocked(w, h);
+        tap(&mut ui, RegionId::ListRow(0));
+        ui.wallet_opened_with_keys(wallet(0), report());
+        assert_eq!(ui.screen(), ScreenId::WalletHome);
+
+        for lap in 1..=2 {
+            assert!(has(&ui, RegionId::ActExport), "{w}x{h} lap {lap}: no export card");
+            tap(&mut ui, RegionId::ActExport);
+            assert_eq!(ui.screen(), ScreenId::Schemes, "{w}x{h} lap {lap}: export opens S-26");
+            regions_are_sane(&ui, w, h);
+
+            tap(&mut ui, RegionId::Back);
+            assert_eq!(
+                ui.screen(),
+                ScreenId::WalletHome,
+                "{w}x{h} lap {lap}: Back off an export belongs to the wallet it came from"
+            );
+            assert!(
+                has(&ui, RegionId::ActSign),
+                "{w}x{h} lap {lap}: the wallet came back without the keys it lent out, so it \
+                 can no longer sign"
+            );
+            scroll_to(&mut ui, RegionId::WalletDelete, w, h);
+            assert!(has(&ui, RegionId::WalletDelete), "{w}x{h} lap {lap}: still a stored wallet");
+            regions_are_sane(&ui, w, h);
+        }
+
+        // The stack under the wallet is untouched by the round trip. The confirm is taken
+        // if it is offered: this wallet is sealed in flash and leaving loses nothing, but
+        // whether its Back asks is wallet.rs's question, not this route's.
+        tap(&mut ui, RegionId::Back);
+        if ui.screen() == ScreenId::WalletHome {
+            tap(&mut ui, RegionId::ModalConfirm);
+        }
+        assert_eq!(
+            ui.screen(),
+            ScreenId::WalletList,
+            "{w}x{h}: the wallet list is still behind it"
+        );
     }
 }
 
@@ -403,18 +466,29 @@ fn every_post_pin_surface_holds_on_both_panels() {
         ui.pin_removed(false);
         regions_are_sane(&ui, w, h);
 
-        // The network row, in both states, because one of them draws a different control.
+        // The device name, in both of its phases: the keyboard is raised by the field and
+        // put away by Done, and the two phases draw entirely different bodies.
         tap_settings_row(&mut ui, w, h, 0);
+        assert_eq!(ui.screen(), ScreenId::DeviceName);
         regions_are_sane(&ui, w, h);
-        tap_settings_row(&mut ui, w, h, 0);
+        tap(&mut ui, RegionId::DeviceNameField);
+        regions_are_sane(&ui, w, h);
+        tap(&mut ui, RegionId::KeyDone);
+        regions_are_sane(&ui, w, h);
+        tap(&mut ui, RegionId::Back);
+
+        // The network row, in both states, because one of them draws a different control.
+        tap_settings_row(&mut ui, w, h, 1);
+        regions_are_sane(&ui, w, h);
+        tap_settings_row(&mut ui, w, h, 1);
         regions_are_sane(&ui, w, h);
 
         // The wipe-policy editor and the Verify readout, from their new row positions.
-        tap_settings_row(&mut ui, w, h, 1);
+        tap_settings_row(&mut ui, w, h, 2);
         assert_eq!(ui.screen(), ScreenId::WipePolicy);
         regions_are_sane(&ui, w, h);
         tap(&mut ui, RegionId::Back);
-        tap_settings_row(&mut ui, w, h, 2);
+        tap_settings_row(&mut ui, w, h, 3);
         assert_eq!(ui.screen(), ScreenId::VerifyDevice);
         regions_are_sane(&ui, w, h);
         tap(&mut ui, RegionId::Back);
@@ -424,9 +498,13 @@ fn every_post_pin_surface_holds_on_both_panels() {
         tap(&mut ui, RegionId::ListRow(0));
         ui.wallet_opened_with_keys(wallet(0), report());
         regions_are_sane(&ui, w, h);
+        // The tightest layout is now taller than the shortest panel, so the destructive
+        // card is one drag down on it and already on screen on the tall one.
+        scroll_to(&mut ui, RegionId::WalletDelete, w, h);
         tap(&mut ui, RegionId::WalletDelete);
         regions_are_sane(&ui, w, h);
         tap(&mut ui, RegionId::DangerCancel);
+        scroll_to(&mut ui, RegionId::ActExport, w, h);
         tap(&mut ui, RegionId::ActExport);
         assert_eq!(ui.screen(), ScreenId::Schemes);
         regions_are_sane(&ui, w, h);

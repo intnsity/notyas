@@ -272,6 +272,7 @@ impl Screen for RefusalState {
 
 #[cfg(test)]
 mod tests {
+    use crate::UnlockGate;
     use super::*;
     use crate::screens::testing::{rows_are_clear_on, Fixture, GEOMETRIES};
     use crate::RefusalCode;
@@ -365,7 +366,12 @@ mod tests {
     fn details_are_hidden_until_asked_for_and_then_complete() {
         let f = Fixture::new(720, 720);
         let mut net = crate::Network::Bitcoin;
-        let mut e = Env { network: &mut net, lock: &f.lock, wallets: &f.wallets };
+        let mut e = Env {
+            network: &mut net,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
         let mut s = RefusalState::new(notice(RefusalCode::MissingPrevTx, false));
         assert!(!s.details);
         let plain = s.content_h(&f.m, f.m.body().w);

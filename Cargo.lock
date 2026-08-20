@@ -1485,6 +1485,7 @@ version = "0.2.0"
 dependencies = [
  "notyas-core",
  "notyas-ui",
+ "notyas-wallet",
  "zeroize",
 ]
 

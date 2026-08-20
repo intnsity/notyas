@@ -17,10 +17,25 @@
 //!
 //! # What is deliberately not done here
 //!
-//! **The card is never formatted.** `format_if_mount_failed` is false and there is no code
-//! path that sets it. A signer that reformats a card it cannot read would destroy the only
-//! copy of a transaction the user was trying to sign, and it would do it in response to
-//! input from outside the airgap.
+//! **A mount never formats.** `format_if_mount_failed` is false and there is no code path
+//! that sets it. A signer that reformats a card it cannot read would destroy the only copy
+//! of a transaction the user was trying to sign, and it would do it in response to input
+//! from outside the airgap.
+//!
+//! That statement is narrower than it used to be, and the narrowing is the point. The
+//! device CAN now format a card, through [`super::format`], and every property the old
+//! wording protected is still held - by the route rather than by the absence of one:
+//!
+//! - it is never a consequence of inserting a card or of a mount failing. It is a screen
+//!   the user walks to from Settings, and the two ESP-IDF wrappers that would have made it
+//!   automatic (`format_if_mount_failed` and `esp_vfs_fat_sdcard_format*`) are unusable
+//!   here anyway - both rewrite the partition table, which is the one thing forbidden;
+//! - it is never offered where it would not repair the fault. `super::probe` decides that
+//!   from sector 0, in pure host-tested code, and refuses far more cards than it accepts;
+//! - it destroys nothing this device holds. Nothing secret is ever written to a card
+//!   (SECURITY.md, restated at `notyas_wallet::sd`), so a format costs the USER's files
+//!   and no key, wallet or setting on the device - which is exactly why the device cannot
+//!   judge what they are worth and asks for typed consent instead of deciding.
 //!
 //! **The power gate is never driven.** On the Waveshare 4B the microSD supply is a P-FET
 //! with a pulldown, so the card is powered from reset, and the vendor BSP leaves the line
@@ -63,26 +78,68 @@ const FLAG_DEINIT_ARG: u32 = 1 << 5;
 
 /// Whether this build's FatFs can represent a name longer than 8.3.
 ///
-/// `CONFIG_FATFS_LFN_NONE` is the ESP-IDF default and it is what this build currently has:
-/// `sys::CONFIG_FATFS_LFN_NONE` is present in the generated bindings today. Under it FatFs
+/// This asks whether the CHOSEN option is present, not whether the broken one is absent,
+/// and the difference is the entire history of this constant. It shipped as
+/// `!cfg!(esp_idf_fatfs_lfn_none)` - a negative test, which reads as success for every
+/// reason the cfg could be missing, including reasons that are not fixes. What it silently
+/// found instead was the ESP-IDF default: `CONFIG_FATFS_LFN_NONE` was in force on every
+/// build, so [`Card::mount`] refused every card before it powered the slot and nothing in
+/// the signing path had ever addressed a card. `CONFIG_FATFS_LFN_HEAP=y` now sits in
+/// `firmware/sdkconfig.base.defaults`, and asking for THAT cfg fails on all three ways this
+/// configuration can rot: a regression to `LFN_NONE`, a move to `LFN_STACK` (whose 512-byte
+/// working buffer would land on the main task stack rather than the heap), and an upstream
+/// rename of the option.
+///
+/// What the option buys, and why a wrong answer is not cosmetic: without long names FatFs
 /// stores and returns short names only, which means `psbt-2026-08-17-signed.psbt` cannot be
 /// created and a card written by any desktop operating system lists as a set of mangled
-/// stems. Both failures are silent in the sense that matters: the device would look like it
-/// worked and the user would look at the wrong file names.
+/// stems. Both failures are silent in the sense that matters - the device would look like
+/// it worked and the user would look at the wrong file names - so the subsystem refuses to
+/// mount rather than mounting into a filesystem it cannot name things in.
 ///
-/// So the subsystem refuses to mount and says exactly which line is missing, rather than
-/// mounting into a filesystem it cannot name things in. The `esp_idf_*` cfgs are the ones
-/// esp-idf-sys derives from sdkconfig (the same mechanism behind
-/// `esp_idf_esp32p4_selects_rev_less_v3` in esp-idf-hmac); `esp_idf_fatfs_lfn_none` is set
-/// today and stops being set the moment the choice moves to `CONFIG_FATFS_LFN_HEAP`.
+/// The `esp_idf_*` cfgs are the ones esp-idf-sys derives from the GENERATED sdkconfig (the
+/// same mechanism behind `esp_idf_esp32p4_selects_rev_less_v3` in esp-idf-hmac), so this
+/// asks about the configuration actually compiled into the artifact - board overlay and
+/// all - rather than about the text of a defaults file something later could override.
 #[allow(unexpected_cfgs)]
-// The lint is waived because this deliberately asks about a cfg the build may NOT set:
-// cargo can only know the names a build script actually emitted, and the whole purpose of
-// the question is to notice when this one stops being emitted.
-pub const LONG_NAMES: bool = !cfg!(esp_idf_fatfs_lfn_none);
+// The lint is waived because this deliberately asks about a cfg a MISCONFIGURED build
+// would not set: cargo can only know the names a build script actually emitted, and the
+// whole purpose of the question is to notice when this one is not among them.
+pub const LONG_NAMES: bool = cfg!(esp_idf_fatfs_lfn_heap);
 
-/// The sdkconfig change [`LONG_NAMES`] is waiting for. Quoted verbatim in the error so the
-/// person reading a boot log does not have to go looking for it.
+// The regression gate for the defect above: no image exists at all unless the effective
+// sdkconfig selects long names on the heap.
+//
+// A compile-time failure rather than a test, because this crate is never host-tested
+// (`cargo test --workspace` excludes it, so no test can ever observe an `esp_idf_*` cfg),
+// and rather than a grep in tools/, because a grep tests the INPUT file - which a board
+// overlay can override and an upstream rename can invalidate - instead of the effective
+// configuration. A build failure cannot be waived, configured away or lost in a log, and it
+// fires on every `tools\build.ps1` run, which is the gate the release process already
+// passes through. The runtime `ShortNamesOnly` refusal below stays as the second layer:
+// this one keeps the image from existing, that one keeps a card from being touched.
+//
+// It asserts LONG_NAMES rather than re-asking the cfg with `#[cfg(not(...))]
+// compile_error!`, for two reasons. The gate and the runtime guard then read the SAME
+// constant and cannot drift apart - a later edit to what LONG_NAMES means moves both. And a
+// second cfg query cannot be waived: `#[allow(unexpected_cfgs)]` on an item that
+// cfg-stripping removes is not honoured by rustc, so that form warns on every build of a
+// CORRECTLY configured image, and a warning that fires when nothing is wrong is how the
+// real ones get ignored.
+//
+// The message repeats LONG_NAMES_FIX word for word because a const panic takes a literal
+// and cannot name a constant. COPY 1 OF 2; the other is LONG_NAMES_FIX, directly below.
+const _: () = assert!(
+    LONG_NAMES,
+    "this build's FatFs has no long file names, so sd::Card::mount would refuse every \
+     card: firmware/sdkconfig.base.defaults needs CONFIG_FATFS_LFN_HEAP=y (long file \
+     names, allocated on the heap rather than on the main task stack)"
+);
+
+/// The sdkconfig change [`LONG_NAMES`] requires. Quoted verbatim in the error so the person
+/// reading a boot log does not have to go looking for it.
+///
+/// COPY 2 OF 2: the const assertion above says the same thing and cannot name a constant.
 pub const LONG_NAMES_FIX: &str = "firmware/sdkconfig.base.defaults needs \
      CONFIG_FATFS_LFN_HEAP=y (long file names, allocated on the heap rather than on the \
      main task stack)";
@@ -117,7 +174,9 @@ pub enum CardError {
     /// This board has no verified microSD wiring in `pins.rs`. Every scaffold board is
     /// here (docs/BOARDS.md marks them UNTESTED) and it is not a runtime fault.
     NoSlot,
-    /// The build's FatFs is short-names-only. See [`LONG_NAMES`].
+    /// The build's FatFs is short-names-only. Unreachable since the compile gate beside
+    /// [`LONG_NAMES`] began refusing to produce such an image; kept as the second layer,
+    /// because a refusal that also explains itself at runtime costs one variant.
     ShortNamesOnly,
     /// A `Card` already exists. A programming error, not a card fault: the guard is the
     /// mechanism that keeps the mount inside one flow, and two flows want reviewing rather
@@ -183,87 +242,25 @@ impl Card {
             return Err(CardError::AlreadyMounted);
         }
 
-        // SDMMC_HOST_DEFAULT(), with two departures, both deliberate:
-        //
-        // - the width flags advertise only the lines this board actually routes, so a
-        //   1-bit board can never negotiate a 4-bit transfer onto pins that carry the
-        //   panel's sync signals;
-        // - the slot index comes from the wiring table rather than from the macro's
-        //   SDMMC_HOST_SLOT_1.
-        let width_flags = if slot.width >= 4 {
-            FLAG_1BIT | FLAG_4BIT
-        } else {
-            FLAG_1BIT
-        };
-        let host = sys::sdmmc_host_t {
-            flags: width_flags | FLAG_DDR | FLAG_DEINIT_ARG,
-            slot: slot.index,
-            max_freq_khz: sys::SDMMC_FREQ_DEFAULT as i32,
-            io_voltage: 3.3,
-            driver_strength: sys::sdmmc_driver_strength_t_SDMMC_DRIVER_STRENGTH_B,
-            current_limit: sys::sdmmc_current_limit_t_SDMMC_CURRENT_LIMIT_200MA,
-            init: Some(sys::sdmmc_host_init),
-            set_bus_width: Some(sys::sdmmc_host_set_bus_width),
-            get_bus_width: Some(sys::sdmmc_host_get_slot_width),
-            set_bus_ddr_mode: Some(sys::sdmmc_host_set_bus_ddr_mode),
-            set_card_clk: Some(sys::sdmmc_host_set_card_clk),
-            set_cclk_always_on: Some(sys::sdmmc_host_set_cclk_always_on),
-            do_transaction: Some(sys::sdmmc_host_do_transaction),
-            // FLAG_DEINIT_ARG is set above, so the driver calls the slot-taking arm of
-            // this union. Setting the other arm with that flag set would hand the driver
-            // a function of the wrong shape.
-            __bindgen_anon_1: sys::sdmmc_host_t__bindgen_ty_1 {
-                deinit_p: Some(sys::sdmmc_host_deinit_slot),
-            },
-            io_int_enable: Some(sys::sdmmc_host_io_int_enable),
-            io_int_wait: Some(sys::sdmmc_host_io_int_wait),
-            command_timeout_ms: 0,
-            get_real_freq: Some(sys::sdmmc_host_get_real_freq),
-            input_delay_phase: sys::sdmmc_delay_phase_t_SDMMC_DELAY_PHASE_0,
-            set_input_delay: Some(sys::sdmmc_host_set_input_delay),
-            dma_aligned_buffer: std::ptr::null_mut(),
-            pwr_ctrl_handle: std::ptr::null_mut(),
-            get_dma_info: None,
-            check_buffer_alignment: Some(sys::sdmmc_host_check_buffer_alignment),
-            is_slot_set_to_uhs1: Some(sys::sdmmc_host_is_slot_set_to_uhs1),
-        };
-
-        // Card detect and write protect are NOT routed on either board, and the union
-        // fields default to zero, which would mean GPIO0. They are set to GPIO_NUM_NC
-        // explicitly for that reason; a default here is a wrong pin, not an absent one.
-        let nc = sys::gpio_num_t_GPIO_NUM_NC;
-        let slot_config = sys::sdmmc_slot_config_t {
-            clk: slot.clk(),
-            cmd: slot.cmd(),
-            d0: slot.d0(),
-            d1: if slot.d1() == NC { nc } else { slot.d1() },
-            d2: if slot.d2() == NC { nc } else { slot.d2() },
-            d3: if slot.d3() == NC { nc } else { slot.d3() },
-            // d4-d7 are ignored in 1- and 4-line mode, and on the Waveshare 4B the chip's
-            // default d4 is GPIO45, the card's own power gate. NC, always.
-            d4: nc,
-            d5: nc,
-            d6: nc,
-            d7: nc,
-            __bindgen_anon_1: sys::sdmmc_slot_config_t__bindgen_ty_1 { cd: nc },
-            __bindgen_anon_2: sys::sdmmc_slot_config_t__bindgen_ty_2 { wp: nc },
-            width: slot.width,
-            // No SDMMC_SLOT_FLAG_INTERNAL_PULLUP: the internal pullups are documented as
-            // insufficient for a real bus and both boards carry external ones.
-            flags: 0,
-        };
+        let host = host_config(&slot);
+        let slot_config = slot_config(&slot);
 
         let mount_config = sys::esp_vfs_fat_mount_config_t {
             // Never. See the module docs.
             format_if_mount_failed: false,
             max_files: MAX_OPEN_FILES,
-            // Only consulted when formatting, which never happens.
+            // Never read: `format_if_mount_failed` above is false, so this call has no
+            // formatting branch to consult it. `super::format` does not go through this
+            // structure at all - it calls `f_mkfs` directly, with an allocation unit of
+            // zero for a DIFFERENT reason (FatFs auto-selects only at zero, while
+            // `esp_vfs_fat_get_allocation_unit_size` would raise a zero here to 512 and
+            // pin pathological cluster counts on a large card).
             allocation_unit_size: 0,
             // The real disk-status call costs a command per transfer, and the thing it
             // buys - noticing a card pulled out from under an open file - is bought here
             // instead by never holding a mount outside a flow.
             disk_status_check_enable: false,
-            // Only consulted when formatting.
+            // Never read, for the reason above.
             use_one_fat: false,
         };
 
@@ -308,6 +305,90 @@ impl Card {
     /// minutes is a bug report.
     pub fn held(&self) -> std::time::Duration {
         self.at.elapsed()
+    }
+}
+
+/// `SDMMC_HOST_DEFAULT()`, with two departures, both deliberate:
+///
+/// - the width flags advertise only the lines this board actually routes, so a 1-bit
+///   board can never negotiate a 4-bit transfer onto pins that carry the panel's sync
+///   signals;
+/// - the slot index comes from the wiring table rather than from the macro's
+///   `SDMMC_HOST_SLOT_1`.
+///
+/// Shared with [`super::format`], and that sharing is the point: the format path brings
+/// the same slot up without the VFS, and a second copy of this table would be a second
+/// set of pins, clock limits and driver strengths that could drift from the one the
+/// mount path has been proven on.
+pub(super) fn host_config(slot: &pins::Slot) -> sys::sdmmc_host_t {
+    let width_flags = if slot.width >= 4 {
+        FLAG_1BIT | FLAG_4BIT
+    } else {
+        FLAG_1BIT
+    };
+    sys::sdmmc_host_t {
+        flags: width_flags | FLAG_DDR | FLAG_DEINIT_ARG,
+        slot: slot.index,
+        max_freq_khz: sys::SDMMC_FREQ_DEFAULT as i32,
+        io_voltage: 3.3,
+        driver_strength: sys::sdmmc_driver_strength_t_SDMMC_DRIVER_STRENGTH_B,
+        current_limit: sys::sdmmc_current_limit_t_SDMMC_CURRENT_LIMIT_200MA,
+        init: Some(sys::sdmmc_host_init),
+        set_bus_width: Some(sys::sdmmc_host_set_bus_width),
+        get_bus_width: Some(sys::sdmmc_host_get_slot_width),
+        set_bus_ddr_mode: Some(sys::sdmmc_host_set_bus_ddr_mode),
+        set_card_clk: Some(sys::sdmmc_host_set_card_clk),
+        set_cclk_always_on: Some(sys::sdmmc_host_set_cclk_always_on),
+        do_transaction: Some(sys::sdmmc_host_do_transaction),
+        // FLAG_DEINIT_ARG is set above, so the driver calls the slot-taking arm of this
+        // union. Setting the other arm with that flag set would hand the driver a
+        // function of the wrong shape.
+        __bindgen_anon_1: sys::sdmmc_host_t__bindgen_ty_1 {
+            deinit_p: Some(sys::sdmmc_host_deinit_slot),
+        },
+        io_int_enable: Some(sys::sdmmc_host_io_int_enable),
+        io_int_wait: Some(sys::sdmmc_host_io_int_wait),
+        command_timeout_ms: 0,
+        get_real_freq: Some(sys::sdmmc_host_get_real_freq),
+        input_delay_phase: sys::sdmmc_delay_phase_t_SDMMC_DELAY_PHASE_0,
+        set_input_delay: Some(sys::sdmmc_host_set_input_delay),
+        dma_aligned_buffer: std::ptr::null_mut(),
+        pwr_ctrl_handle: std::ptr::null_mut(),
+        get_dma_info: None,
+        check_buffer_alignment: Some(sys::sdmmc_host_check_buffer_alignment),
+        is_slot_set_to_uhs1: Some(sys::sdmmc_host_is_slot_set_to_uhs1),
+    }
+}
+
+/// The slot wiring, from the board's table.
+///
+/// Card detect and write protect are NOT routed on either board, and the union fields
+/// default to zero, which would mean GPIO0. They are set to `GPIO_NUM_NC` explicitly for
+/// that reason; a default here is a wrong pin, not an absent one. The consequence is
+/// stated where it bites: with `wp` unrouted a physically locked card is invisible to
+/// this firmware, which is why [`super::format`] treats a write failure as "the card may
+/// have been left worse than it was found" rather than as a clean refusal.
+pub(super) fn slot_config(slot: &pins::Slot) -> sys::sdmmc_slot_config_t {
+    let nc = sys::gpio_num_t_GPIO_NUM_NC;
+    sys::sdmmc_slot_config_t {
+        clk: slot.clk(),
+        cmd: slot.cmd(),
+        d0: slot.d0(),
+        d1: if slot.d1() == NC { nc } else { slot.d1() },
+        d2: if slot.d2() == NC { nc } else { slot.d2() },
+        d3: if slot.d3() == NC { nc } else { slot.d3() },
+        // d4-d7 are ignored in 1- and 4-line mode, and on the Waveshare 4B the chip's
+        // default d4 is GPIO45, the card's own power gate. NC, always.
+        d4: nc,
+        d5: nc,
+        d6: nc,
+        d7: nc,
+        __bindgen_anon_1: sys::sdmmc_slot_config_t__bindgen_ty_1 { cd: nc },
+        __bindgen_anon_2: sys::sdmmc_slot_config_t__bindgen_ty_2 { wp: nc },
+        width: slot.width,
+        // No SDMMC_SLOT_FLAG_INTERNAL_PULLUP: the internal pullups are documented as
+        // insufficient for a real bus and both boards carry external ones.
+        flags: 0,
     }
 }
 

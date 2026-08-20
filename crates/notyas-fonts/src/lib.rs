@@ -36,7 +36,10 @@
 
 pub mod gen;
 
-pub use gen::{ALL, MONO_REGULAR_28, MONO_REGULAR_32, SANS_REGULAR_32, SANS_SEMIBOLD_32, SANS_SEMIBOLD_44};
+pub use gen::{
+    ALL, MONO_REGULAR_28, MONO_REGULAR_32, SANS_REGULAR_24, SANS_REGULAR_32, SANS_SEMIBOLD_32,
+    SANS_SEMIBOLD_44,
+};
 
 use embedded_graphics_core::draw_target::DrawTarget;
 use embedded_graphics_core::geometry::Point;

@@ -13,6 +13,7 @@ use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::Pixel;
 
 use notyas_ui::{
+    PassphraseState,
     theme, BackupState, LockInfo, PinShape, QrData, Region, RegionId, ScreenId, StoreStatus,
     TouchEvent, Network, Ui, UiRequest, UnsealOutcome, VerifyInfo, WalletInfo, WalletKind,
     WalletRow, UNLOCK_MS_M1, WALLET_SLOTS, WIPE_AFTER_MAX, WIPE_AFTER_MIN,
@@ -181,6 +182,11 @@ const VECTOR1_PHRASE: &str = "abandon abandon abandon abandon abandon abandon ab
 const MIXED: &str =
     "12345123451234512345123451234512345123451234512345123451234512345123451234512345";
 
+/// The two shipped panels (docs/BOARDS.md): Waveshare 4B and Elecrow 5inch. Every claim
+/// about where a tap LANDS is made on both, because a route that exists only on the tall
+/// one is a route the 800x480 board does not have.
+const GEOMETRIES: [(u32, u32); 2] = [(720, 720), (800, 480)];
+
 fn ui_at_mnemonic(w: u32, h: u32, dice: &str) -> Ui {
     let mut ui = Ui::new(w, h);
     tap(&mut ui, RegionId::HomeNewSeed);
@@ -325,12 +331,16 @@ fn walk_all_screens(w: u32, h: u32) {
     tap(&mut ui, RegionId::ModalClose);
     check(&ui);
 
-    // Back from Schemes: exit modal opens (serious screen). Confirm navigates
-    // back through the chain: Schemes -> Passphrase -> Mnemonic -> Dice -> Home.
-    // Each serious screen gates Back with the exit modal; Dice (input-only) goes
-    // straight to Home.
+    // Back out of the whole chain: Schemes -> Wallet home -> Passphrase -> Mnemonic ->
+    // Dice -> Home. Schemes was reached from a wallet, so its Back is a step back INTO
+    // that wallet and asks nothing - the wallet still exists and the keys go back with
+    // the user. Every screen after it holds work that leaving would discard, so each
+    // gates Back with the exit modal.
     tap(&mut ui, RegionId::Back);
-    check(&ui); // exit modal open over Schemes
+    assert_eq!(ui.screen(), ScreenId::WalletHome, "Back off an export lands on the wallet");
+    check(&ui);
+    tap(&mut ui, RegionId::Back);
+    check(&ui); // exit modal open over the session wallet
     assert_eq!(ui.regions().len(), 2, "exit modal: only Cancel/Confirm");
     tap(&mut ui, RegionId::ModalConfirm);
     assert_eq!(ui.screen(), ScreenId::PassphraseEntry);
@@ -346,6 +356,9 @@ fn walk_all_screens(w: u32, h: u32) {
     assert_eq!(ui.screen(), ScreenId::DiceEntry);
     check(&ui);
     tap(&mut ui, RegionId::Back);
+    check(&ui); // the rolls are still typed, so this one asks too
+    assert_eq!(ui.screen(), ScreenId::DiceEntry, "Back over 64 rolls asks first");
+    tap(&mut ui, RegionId::ModalConfirm);
     assert_eq!(ui.screen(), ScreenId::Home);
 
     // Phrase entry, all keyboard pages, with the suggestion strip both empty and full.
@@ -373,7 +386,10 @@ fn walk_all_screens(w: u32, h: u32) {
     tap(&mut ui, RegionId::PageLetters);
     check(&ui);
     tap(&mut ui, RegionId::Back);
-    // Phrase is non-serious: Back goes straight to Home (no exit modal).
+    // A phrase has been typed into this one, so Back asks before discarding it.
+    check(&ui);
+    assert_eq!(ui.screen(), ScreenId::PhraseEntry, "Back over typed words asks first");
+    tap(&mut ui, RegionId::ModalConfirm);
     assert_eq!(ui.screen(), ScreenId::Home);
 
     // Verify device.
@@ -508,8 +524,15 @@ fn roll_history_tail_is_bounded_by_its_well() {
 fn back_zeroizes_by_leaving_and_home_restarts_clean() {
     let mut ui = Ui::new(720, 720);
     tap(&mut ui, RegionId::HomeNewSeed);
-    type_dice(&mut ui, SIXES);
+    // An untouched dice screen has no work to lose, so Back does not stop to ask.
     tap(&mut ui, RegionId::Back);
+    assert_eq!(ui.screen(), ScreenId::Home, "Back over no rolls at all just leaves");
+    tap(&mut ui, RegionId::HomeNewSeed);
+    type_dice(&mut ui, SIXES);
+    // With rolls on it, leaving discards them, so it asks - and confirming still leaves.
+    tap(&mut ui, RegionId::Back);
+    assert_eq!(ui.screen(), ScreenId::DiceEntry, "Back over rolls asks first");
+    tap(&mut ui, RegionId::ModalConfirm);
     assert_eq!(ui.screen(), ScreenId::Home);
     // Re-entering starts from zero rolls: Done is inert again.
     tap(&mut ui, RegionId::HomeNewSeed);
@@ -546,13 +569,80 @@ fn back_from_passphrase_restores_mnemonic() {
     assert_eq!(ui.screen(), ScreenId::MnemonicDisplay, "Back restored the Mnemonic");
 }
 
+/// Back off the export view returns to the wallet it was opened from - on BOTH panels -
+/// and the wallet that comes back can export again.
+///
+/// This is the reported bug, driven the way the owner drove it. The export view moves the
+/// derivation off the wallet home (one copy of the keys, always), so a Back that merely
+/// popped would restore a wallet whose Export card - and whose Sign card - had vanished
+/// with them. The second round trip is the assertion that says so: it can only happen if
+/// the first Back handed the keys back.
+///
+/// The screen behind the wallet is unchanged by any of it, which the last leg checks: a
+/// session wallet is the end of a fresh derivation, so leaving THAT still asks first and
+/// still lands on the passphrase screen it came from.
 #[test]
-fn back_from_schemes_restores_passphrase() {
-    let mut ui = ui_at_schemes(720, 720);
-    tap(&mut ui, RegionId::Back);
-    assert_eq!(ui.screen(), ScreenId::Schemes, "modal stays over Schemes");
-    tap(&mut ui, RegionId::ModalConfirm);
-    assert_eq!(ui.screen(), ScreenId::PassphraseEntry, "Back restored the Passphrase");
+fn back_from_an_export_returns_to_the_wallet_and_it_can_export_again() {
+    for (w, h) in GEOMETRIES {
+        let mut ui = ui_at_schemes(w, h);
+        for round in 1..=2 {
+            assert_eq!(ui.screen(), ScreenId::Schemes, "{w}x{h} round {round}");
+            tap(&mut ui, RegionId::Back);
+            assert_eq!(
+                ui.screen(),
+                ScreenId::WalletHome,
+                "{w}x{h} round {round}: Back off an export belongs to the wallet it came from"
+            );
+            assert!(
+                ui.regions().iter().any(|r| r.id == RegionId::ActExport),
+                "{w}x{h} round {round}: the wallet came back without the keys it lent out"
+            );
+            tap(&mut ui, RegionId::ActExport);
+        }
+        tap(&mut ui, RegionId::Back);
+        // The fresh-derivation half: the session wallet IS the work, so leaving asks.
+        assert_eq!(ui.screen(), ScreenId::WalletHome);
+        tap(&mut ui, RegionId::Back);
+        assert_eq!(ui.screen(), ScreenId::WalletHome, "{w}x{h}: modal stays over the wallet");
+        assert_eq!(ui.regions().len(), 2, "{w}x{h}: exit modal: only Cancel/Confirm");
+        tap(&mut ui, RegionId::ModalConfirm);
+        assert_eq!(ui.screen(), ScreenId::PassphraseEntry, "{w}x{h}: Back restored the Passphrase");
+    }
+}
+
+/// Nothing on the export route becomes a screen the user cannot leave.
+///
+/// The class the export bug belongs to is "Back lands somewhere it should not", and its
+/// worst form is Back landing where it started. This walks the whole chain from the export
+/// view down to the floor, taking each screen's answer to Back (through the confirmation
+/// where one is offered) and refusing both a step that moves nowhere and a step that
+/// returns to a screen already left - so a Back that stalls, or two screens that bounce
+/// off each other, fails here rather than on a device.
+#[test]
+fn every_screen_on_the_export_route_can_be_left() {
+    for (w, h) in GEOMETRIES {
+        let mut ui = ui_at_schemes(w, h);
+        let mut seen = vec![ui.screen()];
+        while ui.screen() != ScreenId::Home {
+            let from = ui.screen();
+            tap(&mut ui, RegionId::Back);
+            if ui.screen() == from {
+                // Back was a question here: only the modal is tappable, and answering it
+                // must be what moves.
+                assert_eq!(ui.regions().len(), 2, "{w}x{h}: {from:?} answered Back with nothing");
+                tap(&mut ui, RegionId::ModalConfirm);
+            }
+            let to = ui.screen();
+            assert_ne!(to, from, "{w}x{h}: {from:?} cannot be left");
+            assert!(!seen.contains(&to), "{w}x{h}: {from:?} went back to {to:?}, already left");
+            seen.push(to);
+            assert!(seen.len() < 12, "{w}x{h}: the way out of {from:?} is not a way out");
+        }
+        assert!(
+            seen.contains(&ScreenId::WalletHome),
+            "{w}x{h}: the route out of an export must pass through its wallet"
+        );
+    }
 }
 
 #[test]
@@ -1155,11 +1245,14 @@ fn deriving_interstitial_is_painted_before_the_derivation_runs() {
     assert!(!ui.tick(0).dirty);
 }
 
-/// Back from Schemes lands on the passphrase screen with its fields intact - the
-/// Deriving state passes through the navigation stack without becoming a stop on it.
+/// Back out of a session wallet lands on the passphrase screen with its fields intact -
+/// the Deriving state passes through the navigation stack without becoming a stop on it.
+/// Neither do the backup check and the fork, which the same step walks past.
 #[test]
 fn deriving_is_not_a_step_on_the_back_stack() {
     let mut ui = ui_at_schemes(720, 720);
+    tap(&mut ui, RegionId::Back);
+    assert_eq!(ui.screen(), ScreenId::WalletHome, "the export view belongs to its wallet");
     tap(&mut ui, RegionId::Back);
     tap(&mut ui, RegionId::ModalConfirm);
     assert_eq!(ui.screen(), ScreenId::PassphraseEntry);
@@ -1215,8 +1308,7 @@ fn locked(w: u32, h: u32) -> Ui {
     let mut ui = Ui::new(w, h);
     ui.set_lock_info(LockInfo {
         status: StoreStatus::Locked,
-        nickname: String::from("kitchen-desk"),
-        lock_word: String::from("anvil"),
+        device_name: String::from("kitchen-desk"),
         attempts_left: Some(9),
         wipe_after: Some(15),
         ..LockInfo::default()
@@ -1437,7 +1529,19 @@ fn the_device_words_need_a_prefix_and_answer_for_any_of_them() {
     // The request alone shows nothing: the words appear only when the embedder answers.
     let before = Fb::render(&ui, 720, 720);
     ui.show_device_words([String::from("anvil"), String::from("mercury")]);
+    // The first answer of a power-up explains what the words are before showing them, so
+    // that the instruction the whole mechanism depends on - check them BEFORE typing the
+    // rest of the PIN - arrives while the rest is still untyped.
+    assert_eq!(ui.screen(), ScreenId::AboutDeviceWords);
+    tap(&mut ui, RegionId::WordsUnderstood);
+    assert_eq!(ui.screen(), ScreenId::PinEntry, "the explainer hands PIN entry back");
     assert_ne!(before.px, Fb::render(&ui, 720, 720).px, "the answer must draw");
+
+    // ...and only the first time. A second look goes straight to the words.
+    type_pin(&mut ui, "5");
+    tap(&mut ui, RegionId::PinShowWords);
+    ui.show_device_words([String::from("cactus"), String::from("mercury")]);
+    assert_eq!(ui.screen(), ScreenId::PinEntry, "nobody reads the explainer twice");
 }
 
 /// A wrong PIN wipes the entry, drops the words with it, and updates the counter the
@@ -1452,6 +1556,7 @@ fn a_wrong_pin_clears_the_entry_and_updates_the_counter() {
     tap(&mut ui, RegionId::LockWake);
     type_pin(&mut ui, "123456");
     ui.show_device_words([String::from("anvil"), String::from("mercury")]);
+    tap(&mut ui, RegionId::WordsUnderstood);
     let typed = Fb::render(&ui, 720, 720);
     assert_eq!(
         ui.unseal_result(UnsealOutcome::WrongPin { attempts_left: Some(8) }),
@@ -1681,6 +1786,7 @@ fn the_lock_and_pin_screens_hold_on_both_geometries() {
         // Every state the screen has, drawn: words shown, wrong PIN, the low-attempt
         // warning and the unlimited-tries line all wrap inside their reserved blocks.
         ui.show_device_words([String::from("anvil"), String::from("mercury")]);
+        tap(&mut ui, RegionId::WordsUnderstood);
         Fb::render(&ui, w, h);
         for attempts in [Some(9u8), Some(3), Some(1), None] {
             let mut info = ui.lock_info().clone();
@@ -1755,7 +1861,7 @@ fn sample_wallets(n: u8) -> Vec<WalletRow> {
                 network: Network::Bitcoin,
                 registrations: 0,
                 stored: true,
-                passphrase: false,
+                passphrase: PassphraseState::None,
             })
         })
         .collect()
@@ -1952,6 +2058,11 @@ fn saving_on_a_device_with_no_pin_sets_one_first() {
     type_pin(&mut ui, "2468");
     tap(&mut ui, RegionId::PinConfirm);
     ui.pin_created(true);
+    // The device has just acquired the secret its anti-phishing words are derived from,
+    // which is the other moment S-04a is shown at. It sits OVER the leg the user was on
+    // rather than replacing it.
+    assert_eq!(ui.screen(), ScreenId::AboutDeviceWords);
+    tap(&mut ui, RegionId::WordsUnderstood);
     assert_eq!(ui.screen(), ScreenId::NameWallet);
 
     // The wallet survived the detour: it is still the one the fork was holding.
@@ -1992,7 +2103,10 @@ fn saving_a_wallet_names_it_and_lands_on_its_home() {
     assert_eq!(draft.name, "savings");
     assert_eq!(draft.phrase().split(' ').count(), 12, "the BIP39 phrase, as derived");
     assert_eq!(draft.fingerprint.len(), 8, "the master fingerprint, not a truncation");
-    assert!(!draft.passphrase);
+    assert!(
+        draft.passphrase.is_none(),
+        "no passphrase was typed, so the draft carries none"
+    );
 
     ui.persist_result(true);
     assert_eq!(ui.screen(), ScreenId::WalletHome);
@@ -2029,7 +2143,10 @@ fn a_passphrase_wallet_cannot_be_saved_without_acknowledging_it_is_not_stored() 
     let Some(UiRequest::PersistWallet(draft)) = tap(&mut ui, RegionId::ConfirmSave) else {
         panic!("the acknowledged save must go through");
     };
-    assert!(draft.passphrase, "the record records that a passphrase was applied");
+    assert!(
+        draft.passphrase.is_some(),
+        "the draft carries the passphrase to the embedder, which needs it to write the          record's flag truthfully and to seed the session"
+    );
 
     // ...and a wallet with no passphrase is never asked.
     let mut plain = ui_at_fork(720, 720);
@@ -2167,11 +2284,22 @@ fn deleting_a_wallet_needs_its_name_typed_back() {
     type_keys(&mut ui, "saving");
     assert_eq!(tap(&mut ui, RegionId::DangerConfirm), None, "a prefix is not the name");
     type_keys(&mut ui, "s");
-    let Some(UiRequest::DeleteWallet(slot)) = tap(&mut ui, RegionId::DangerConfirm) else {
-        panic!("the exact name must arm the delete");
+    // The exact name ARMS the erase but no longer performs it: S-47b sits between the
+    // typed confirmation and the write, offering the recovery words one last time. That
+    // step is the point - it is the last moment this wallet can be written down - so the
+    // walk below is the flow, not a detour around it.
+    assert_eq!(
+        tap(&mut ui, RegionId::DangerConfirm),
+        None,
+        "the typed name opens the last-chance step, it does not erase"
+    );
+    assert_eq!(ui.screen(), ScreenId::EraseWallet, "the typed name lands on the before-the-erase step");
+    // Both ways out exist, and the safe one is reachable.
+    region(&ui, RegionId::EraseShowWords);
+    let Some(UiRequest::DeleteWallet(slot)) = tap(&mut ui, RegionId::EraseNow) else {
+        panic!("the erase step must be what finally arms the delete");
     };
     assert_eq!(slot, 0, "the slot the wallet reported");
-    assert_eq!(ui.screen(), ScreenId::WalletList, "and the user lands back on the list");
 }
 
 /// Every m4b screen, on both panels: regions in bounds, non-overlapping, and a full render
@@ -2262,12 +2390,31 @@ fn the_m4b_screens_offer_the_same_regions_at_both_geometries() {
 // ---------------------------------------------------------------------------------------
 
 /// A device with a session open, three wallets, and a policy the editor can move.
+/// Bring settings row `i` into the window and tap it.
+///
+/// The 800x480 list shows two rows at a time, so a row below the fold has no region until
+/// the list has been scrolled to it - and the wrong-PIN policy became the third row when
+/// the device name took the top of the list (Q64, 2026-08-19). A recipe that indexed blind
+/// would have proved the route on the tall panel and nothing at all on the short one.
+fn tap_settings_row(ui: &mut Ui, w: u32, h: u32, i: u8) -> Option<UiRequest> {
+    let (x, from, to) = (w as i32 / 2, h as i32 / 2, h as i32 / 2 - 120);
+    for step in 0..12 {
+        if has(ui, RegionId::SetRow(i)) {
+            break;
+        }
+        ui.touch(TouchEvent::Down { x, y: from });
+        ui.touch(TouchEvent::Move { x, y: to });
+        ui.touch(TouchEvent::Up { x, y: to });
+        assert!(step < 11, "settings row {i} cannot be reached at {w}x{h}");
+    }
+    tap(ui, RegionId::SetRow(i))
+}
+
 fn ui_at_settings(w: u32, h: u32) -> Ui {
     let mut ui = unlocked_with(w, h, 3);
     ui.set_lock_info(LockInfo {
         status: StoreStatus::Unlocked,
-        nickname: String::from("kitchen-desk"),
-        lock_word: String::from("anvil"),
+        device_name: String::from("kitchen-desk"),
         attempts_left: Some(10),
         wipe_after: Some(10),
         pin: Some(PinShape { len: 6, alphabet: PinShape::DIGITS }),
@@ -2323,7 +2470,7 @@ fn settings_is_offered_only_with_a_session_open() {
 #[test]
 fn the_policy_editor_stages_a_threshold_and_saves_it_as_one_write() {
     let mut ui = ui_at_settings(720, 720);
-    tap(&mut ui, RegionId::SetRow(1));
+    tap_settings_row(&mut ui, 720, 720, 2);
     assert_eq!(ui.screen(), ScreenId::WipePolicy);
 
     // Nothing edited yet: there is nothing to save and no button offering to.
@@ -2368,7 +2515,7 @@ fn the_policy_editor_stages_a_threshold_and_saves_it_as_one_write() {
 #[test]
 fn turning_erasing_off_needs_the_arithmetic_read_and_the_word_typed() {
     let mut ui = ui_at_settings(720, 720);
-    tap(&mut ui, RegionId::SetRow(1));
+    tap_settings_row(&mut ui, 720, 720, 2);
 
     let before = Fb::render(&ui, 720, 720);
     tap(&mut ui, RegionId::PolicyWipe);
@@ -2413,7 +2560,7 @@ fn turning_erasing_off_needs_the_arithmetic_read_and_the_word_typed() {
 #[test]
 fn the_longer_pin_path_is_an_action_that_leaves_the_policy_alone() {
     let mut ui = ui_at_settings(720, 720);
-    tap(&mut ui, RegionId::SetRow(1));
+    tap_settings_row(&mut ui, 720, 720, 2);
     tap(&mut ui, RegionId::PolicyWipe);
     assert_eq!(tap(&mut ui, RegionId::DangerAlternative), Some(UiRequest::ChangePin));
     assert!(has(&ui, RegionId::PolicyWipe), "the sheet closes");
@@ -2426,7 +2573,7 @@ fn the_longer_pin_path_is_an_action_that_leaves_the_policy_alone() {
 fn cancelling_either_sheet_leaves_the_policy_where_it_was() {
     for steps in [0, 1] {
         let mut ui = ui_at_settings(720, 720);
-        tap(&mut ui, RegionId::SetRow(1));
+        tap_settings_row(&mut ui, 720, 720, 2);
         let before = Fb::render(&ui, 720, 720);
         tap(&mut ui, RegionId::PolicyWipe);
         for _ in 0..steps {
@@ -2499,7 +2646,7 @@ fn the_settings_screens_hold_on_both_geometries() {
         check(&ui);
 
         // The wipe-policy editor, its scroll, and both of its sheets.
-        tap(&mut ui, RegionId::SetRow(1));
+        tap_settings_row(&mut ui, w, h, 2);
         check(&ui);
         ui.touch(TouchEvent::Down { x: w as i32 / 4, y: h as i32 / 2 });
         ui.touch(TouchEvent::Move { x: w as i32 / 4, y: h as i32 / 4 });

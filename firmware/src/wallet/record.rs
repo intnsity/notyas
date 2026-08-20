@@ -40,11 +40,51 @@ use notyas_core::bitcoin::bip32::Fingerprint;
 use notyas_core::bitcoin::Network;
 use zeroize::Zeroizing;
 
-/// Wallet record, format 1. The magic IS the format version: a body that means something
-/// else will not be read as this by accident, and a future revision takes a new token
-/// rather than a flag inside an old one.
-const WALLET_MAGIC: [u8; 4] = *b"NYW1";
+/// Wallet record, format 2. The magic IS the format version: a body that means something
+/// else will not be read as this by accident, and a revision takes a new token rather than
+/// a flag inside an old one.
+///
+/// # What format 2 added, and why the header did not move
+///
+/// Format 1's byte 5 was a reserved zero. Format 2 spends it as a FLAGS byte and changes
+/// nothing else about the fixed header, so a format 1 body and a format 2 body with no
+/// flags set are byte-for-byte the same record. Optional fields follow the phrase, in
+/// FLAG BIT ORDER, each present exactly when its bit is set:
+///
+/// ```text
+/// "NYW2" | network | flags | fingerprint | label_len | phrase_len | label | phrase
+///        | bit1: passphrase_len u16le, passphrase bytes (NFKD)
+/// ```
+///
+/// That ordering is the extension rule for every later field: a new optional field takes
+/// the lowest free bit and is appended AFTER the fields of the bits below it. Bits 0 and 1
+/// are claimed here and nothing else is; a reader refuses any body whose flags carry a bit
+/// this build does not implement, which is the same `ReservedNotZero` discipline format 1
+/// applied to the whole byte.
+const WALLET_MAGIC: [u8; 4] = *b"NYW2";
+/// Format 1, still read and never written. A device that has been through a 0.2.0
+/// pre-release holds these, and refusing them would make the wallet in the slot
+/// unopenable - which is the failure a format bump exists to avoid, not to cause.
+const WALLET_MAGIC_V1: [u8; 4] = *b"NYW1";
 const WALLET_HEADER: usize = 14;
+
+/// A BIP-39 passphrase was applied to this wallet's seed.
+pub const FLAG_PASSPHRASE_APPLIED: u8 = 1 << 0;
+/// That passphrase is stored IN this record - the per-wallet opt-in of the 2026-08-19
+/// Q22 amendment. Implies [`FLAG_PASSPHRASE_APPLIED`]; a body that sets it alone is
+/// refused rather than guessed at.
+pub const FLAG_PASSPHRASE_STORED: u8 = 1 << 1;
+/// Every bit this build understands. A body carrying any other bit is a record written by
+/// a firmware that knows something this one does not, and it is refused.
+const KNOWN_FLAGS: u8 = FLAG_PASSPHRASE_APPLIED | FLAG_PASSPHRASE_STORED;
+
+/// Longest passphrase this record will store, in NFKD bytes.
+///
+/// The same bound the entry screen enforces (`notyas_ui::PASS_MAX`), restated here rather
+/// than imported because this module deliberately depends on no UI: the record is the
+/// device's format whether or not a touchscreen typed the value. The hostcheck suite
+/// asserts the two numbers are equal, so they cannot drift apart in silence.
+pub const MAX_PASSPHRASE_BYTES: usize = 256;
 
 /// Multisig registration record, format 2.
 ///
@@ -112,6 +152,18 @@ pub enum RecordError {
     /// encoder, before anything is written, and carrying both numbers so the message can
     /// state the shortfall rather than only that there was one.
     TooLarge { bytes: usize, max: usize },
+    /// The stored passphrase is longer than this format carries. Refused at the encoder,
+    /// so the toggle that would have stored it says so instead of writing a record the
+    /// next reader would refuse.
+    PassphraseTooLong { bytes: usize, max: usize },
+    /// The record claims to store a passphrase and stores an empty one. There is no
+    /// wallet this could describe: an empty passphrase is the absence of one, and a
+    /// record asserting both at once is not a record this build will read or write.
+    StoredPassphraseEmpty,
+    /// The flags claim a passphrase is STORED without claiming one was APPLIED. The two
+    /// are not independent, so the pair is refused rather than resolved in favour of
+    /// either reading.
+    FlagsInconsistent { flags: u8 },
 }
 
 impl fmt::Display for RecordError {
@@ -146,11 +198,100 @@ impl fmt::Display for RecordError {
             RecordError::TooLarge { bytes, max } => {
                 write!(f, "the record is {bytes} bytes and the slot holds {max}")
             }
+            RecordError::PassphraseTooLong { bytes, max } => write!(
+                f,
+                "the passphrase is {bytes} bytes and this device stores at most {max}"
+            ),
+            RecordError::StoredPassphraseEmpty => write!(
+                f,
+                "the record says it stores a passphrase and stores nothing"
+            ),
+            RecordError::FlagsInconsistent { flags } => write!(
+                f,
+                "the record's flags ({flags:#04x}) store a passphrase it does not say was applied"
+            ),
         }
     }
 }
 
 impl std::error::Error for RecordError {}
+
+/// What a record says about the BIP-39 passphrase behind its wallet.
+///
+/// Three states and not two booleans: `Stored` without `Applied` is not a wallet anything
+/// could open, and a pair of flags would let a call site write it. The enum makes that
+/// state unrepresentable in memory, and [`WalletRecord::decode`] refuses it on flash.
+///
+/// Secret-bearing in exactly one variant, which is why `Debug` is hand written: a `{:?}`
+/// of a stored passphrase in a log line or a panic payload is the whole secret, in a
+/// buffer nothing wipes.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub enum StoredPassphrase {
+    /// No passphrase was applied. The words alone derive this wallet's fingerprint, and
+    /// the record's own self-check proves it (see [`SealedWallet::confirmed`]).
+    #[default]
+    None,
+    /// A passphrase was applied and this device does not keep it. Opening asks for it.
+    Applied,
+    /// A passphrase was applied and the owner opted into this device remembering it
+    /// (Q22 amendment, 2026-08-19).
+    ///
+    /// Stored EXACTLY as it was typed, byte for byte, and deliberately not normalized:
+    /// [`bip39::seed`] NFKD-normalizes the CONCATENATION of its salt prefix and the
+    /// passphrase, which for a passphrase beginning with a combining mark is not the same
+    /// string as the prefix followed by the normalized passphrase. Keeping the typed bytes
+    /// makes the reopened seed identical to the sealed one by construction rather than by
+    /// an argument about Unicode.
+    Stored(Zeroizing<String>),
+}
+
+impl StoredPassphrase {
+    /// Whether a passphrase is part of this wallet's identity at all.
+    pub fn applied(&self) -> bool {
+        !matches!(self, StoredPassphrase::None)
+    }
+
+    /// The passphrase this record carries, for the one caller that opens with it.
+    pub fn stored(&self) -> Option<&str> {
+        match self {
+            StoredPassphrase::Stored(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// The flags byte this state writes.
+    fn flags(&self) -> u8 {
+        match self {
+            StoredPassphrase::None => 0,
+            StoredPassphrase::Applied => FLAG_PASSPHRASE_APPLIED,
+            StoredPassphrase::Stored(_) => FLAG_PASSPHRASE_APPLIED | FLAG_PASSPHRASE_STORED,
+        }
+    }
+
+    /// The same wallet with the passphrase forgotten: what the storage opt-in writes when
+    /// it is turned OFF.
+    ///
+    /// The wallet still HAS a passphrase - that is a fact about which keys the words
+    /// derive and no toggle can change it - so this drops to `Applied` and never to
+    /// `None`. Dropping to `None` would tell the next open to try an empty passphrase and
+    /// report a mismatch for a wallet that is exactly as it always was.
+    pub fn forgotten(&self) -> StoredPassphrase {
+        match self {
+            StoredPassphrase::None => StoredPassphrase::None,
+            _ => StoredPassphrase::Applied,
+        }
+    }
+}
+
+impl fmt::Debug for StoredPassphrase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            StoredPassphrase::None => "None",
+            StoredPassphrase::Applied => "Applied",
+            StoredPassphrase::Stored(_) => "Stored(<redacted>)",
+        })
+    }
+}
 
 /// One stored wallet: what it is called, which network it is on, the words it is made of,
 /// and the fingerprint that proves those words plus the typed passphrase are the pair that
@@ -169,6 +310,11 @@ pub struct WalletRecord {
     /// Normalized by [`notyas_core::bip39::normalize_phrase`] before it was sealed, so the
     /// bytes that come back are the exact PBKDF2 password (SPEC step 8).
     pub phrase: Zeroizing<String>,
+    /// What this record says about the passphrase. Format 1 bodies decode as
+    /// [`StoredPassphrase::None`], which is a statement about the RECORD and not about the
+    /// wallet: a format 1 record was written before the flag existed, so a passphrase
+    /// wallet among them is indistinguishable from one without until an open tries.
+    pub passphrase: StoredPassphrase,
 }
 
 impl fmt::Debug for WalletRecord {
@@ -178,6 +324,7 @@ impl fmt::Debug for WalletRecord {
             .field("fingerprint", &self.fingerprint)
             .field("label", &self.label)
             .field("phrase", &"<redacted>")
+            .field("passphrase", &self.passphrase)
             .finish()
     }
 }
@@ -201,9 +348,26 @@ impl WalletRecord {
         if phrase.is_empty() {
             return Err(RecordError::EmptyPhrase);
         }
+        // The stored passphrase is measured before anything is allocated, so the two ways
+        // it can be refused - too long for the format, or empty while the flag says it is
+        // there - are answered before the buffer that would hold it exists.
+        let stored = self.passphrase.stored().map(str::as_bytes);
+        if let Some(bytes) = stored {
+            if bytes.is_empty() {
+                return Err(RecordError::StoredPassphraseEmpty);
+            }
+            if bytes.len() > MAX_PASSPHRASE_BYTES {
+                return Err(RecordError::PassphraseTooLong {
+                    bytes: bytes.len(),
+                    max: MAX_PASSPHRASE_BYTES,
+                });
+            }
+        }
+        let tail = stored.map_or(0, |b| b.len().saturating_add(2));
         let len = WALLET_HEADER
             .saturating_add(label.len())
-            .saturating_add(phrase.len());
+            .saturating_add(phrase.len())
+            .saturating_add(tail);
         if len > capacity {
             return Err(RecordError::TooLarge {
                 bytes: len,
@@ -216,12 +380,19 @@ impl WalletRecord {
         let mut out = Zeroizing::new(Vec::with_capacity(len));
         out.extend_from_slice(&WALLET_MAGIC);
         out.push(code);
-        out.push(0); // reserved
+        // Byte 5: format 1 reserved it as a zero, and format 2 spends it as the flags
+        // byte. Derived from the passphrase state rather than passed in, so the two cannot
+        // disagree and the stored-without-applied pair cannot be written at all.
+        out.push(self.passphrase.flags());
         out.extend_from_slice(&self.fingerprint.to_bytes());
         out.extend_from_slice(&len16(label.len()).to_le_bytes());
         out.extend_from_slice(&len16(phrase.len()).to_le_bytes());
         out.extend_from_slice(label);
         out.extend_from_slice(phrase);
+        if let Some(bytes) = stored {
+            out.extend_from_slice(&len16(bytes.len()).to_le_bytes());
+            out.extend_from_slice(bytes);
+        }
         Ok(out)
     }
 
@@ -232,13 +403,28 @@ impl WalletRecord {
     /// which matters because this runs on bytes that survived an AEAD but not necessarily a
     /// firmware version change.
     pub fn decode(body: &[u8]) -> Result<WalletRecord, RecordError> {
-        if take(body, 0, WALLET_MAGIC.len()).ok_or(RecordError::Truncated)? != WALLET_MAGIC {
+        // Both magics, and the version decides one thing only: whether byte 5 is a
+        // reserved zero or a flags byte. Everything the two formats share is parsed once.
+        let magic = take(body, 0, WALLET_MAGIC.len()).ok_or(RecordError::Truncated)?;
+        let v2 = if magic == WALLET_MAGIC {
+            true
+        } else if magic == WALLET_MAGIC_V1 {
+            false
+        } else {
             return Err(RecordError::NotThisKind);
-        }
+        };
         let code = *body.get(4).ok_or(RecordError::Truncated)?;
         let network = network_of(code).ok_or(RecordError::UnknownNetwork { code })?;
-        if *body.get(5).ok_or(RecordError::Truncated)? != 0 {
+        let flags = *body.get(5).ok_or(RecordError::Truncated)?;
+        // A format 1 body reserved this byte and it must still be zero; a format 2 body
+        // may only carry bits this build implements. One refusal for both, and the same
+        // reason: a record this reader only half understands is one it must not act on.
+        let allowed = if v2 { KNOWN_FLAGS } else { 0 };
+        if flags & !allowed != 0 {
             return Err(RecordError::ReservedNotZero);
+        }
+        if flags & FLAG_PASSPHRASE_STORED != 0 && flags & FLAG_PASSPHRASE_APPLIED == 0 {
+            return Err(RecordError::FlagsInconsistent { flags });
         }
         let fingerprint =
             Fingerprint::from(arr4(take(body, 6, 4).ok_or(RecordError::Truncated)?));
@@ -247,7 +433,33 @@ impl WalletRecord {
         let label = take(body, WALLET_HEADER, label_len).ok_or(RecordError::Truncated)?;
         let phrase_at = WALLET_HEADER.saturating_add(label_len);
         let phrase = take(body, phrase_at, phrase_len).ok_or(RecordError::Truncated)?;
-        let end = phrase_at.saturating_add(phrase_len);
+        let mut end = phrase_at.saturating_add(phrase_len);
+        // The optional fields, in flag-bit order. Bit 1 is the only one this build claims;
+        // a later field takes the next free bit and is read after this one.
+        let passphrase = if flags & FLAG_PASSPHRASE_STORED != 0 {
+            let len = u16le(body, end).ok_or(RecordError::Truncated)? as usize;
+            let at = end.saturating_add(2);
+            let bytes = take(body, at, len).ok_or(RecordError::Truncated)?;
+            end = at.saturating_add(len);
+            if bytes.is_empty() {
+                return Err(RecordError::StoredPassphraseEmpty);
+            }
+            if bytes.len() > MAX_PASSPHRASE_BYTES {
+                return Err(RecordError::PassphraseTooLong {
+                    bytes: bytes.len(),
+                    max: MAX_PASSPHRASE_BYTES,
+                });
+            }
+            StoredPassphrase::Stored(Zeroizing::new(
+                core::str::from_utf8(bytes)
+                    .map_err(|_| RecordError::NotUtf8)?
+                    .to_string(),
+            ))
+        } else if flags & FLAG_PASSPHRASE_APPLIED != 0 {
+            StoredPassphrase::Applied
+        } else {
+            StoredPassphrase::None
+        };
         if body.len() > end {
             return Err(RecordError::TrailingBytes {
                 extra: body.len().saturating_sub(end),
@@ -270,6 +482,7 @@ impl WalletRecord {
                 .map_err(|_| RecordError::NotUtf8)?
                 .to_string(),
             phrase,
+            passphrase,
         })
     }
 }
@@ -277,11 +490,8 @@ impl WalletRecord {
 /// A wallet whose identity was established somewhere else, on its way into a slot.
 ///
 /// `NewWallet` is the other way in, and it DERIVES the fingerprint from a passphrase. The
-/// create flow on the touchscreen cannot use that door. A BIP-39 passphrase is typed per
-/// session and is never a field of anything that outlives the screen that took it (Q22),
-/// so the draft that arrives from those screens carries no passphrase - it carries the
-/// fingerprint the user read off the panel and approved, which was computed with the
-/// passphrase applied.
+/// create flow on the touchscreen cannot use that door: it carries the fingerprint the
+/// user read off the panel and approved, which was computed with the passphrase applied.
 ///
 /// So the identity travels as DATA here. Re-deriving it with the only passphrase this path
 /// could supply - an empty one - would seal the empty-passphrase wallet under the name of
@@ -298,6 +508,12 @@ pub struct SealedWallet<'a> {
     /// The master fingerprint these words produce under the passphrase that was applied
     /// when they were derived. A public value, and the one that was on the screen.
     pub fingerprint: Fingerprint,
+    /// What the record will say about the passphrase: none, applied, or applied and
+    /// remembered here because the owner asked for that (Q22 amendment, 2026-08-19).
+    ///
+    /// The DEFAULT is [`StoredPassphrase::None`] and the opt-in is per wallet: nothing on
+    /// any path stores a passphrase that the owner has not turned storage on for.
+    pub passphrase: StoredPassphrase,
 }
 
 impl fmt::Debug for SealedWallet<'_> {
@@ -307,6 +523,7 @@ impl fmt::Debug for SealedWallet<'_> {
             .field("network", &self.network)
             .field("fingerprint", &self.fingerprint)
             .field("phrase", &"<redacted>")
+            .field("passphrase", &self.passphrase)
             .finish()
     }
 }
@@ -325,31 +542,88 @@ impl<'a> SealedWallet<'a> {
         network: Network,
         phrase: &'a str,
         fingerprint: &str,
-        passphrase_applied: bool,
+        passphrase: StoredPassphrase,
     ) -> Result<SealedWallet<'a>, RecordError> {
         let fingerprint =
             Fingerprint::from_str(fingerprint).map_err(|_| RecordError::UnreadableFingerprint)?;
 
-        // The identity is GIVEN here rather than derived, because the only place the
-        // passphrase ever existed is the screen that took it (Q22 keeps it out of storage
-        // and out of `WalletDraft`). That is a real constraint, but it must not become a
-        // licence to seal an identity nothing can reproduce: the record's fingerprint is
-        // the value `Wallet::open` will later re-derive and compare against, so a record
-        // whose fingerprint does not belong to its phrase is a wallet that is refused
-        // forever, with a mismatch that reads exactly like a forgotten passphrase.
+        // The identity is GIVEN here rather than derived, because the passphrase is the
+        // create screen's and this call may not have it. That is a real constraint, but it
+        // must not become a licence to seal an identity nothing can reproduce: the
+        // record's fingerprint is the value `Wallet::open` will later re-derive and compare
+        // against, so a record whose fingerprint does not belong to its phrase is a wallet
+        // that is refused forever, with a mismatch that reads exactly like a forgotten
+        // passphrase.
         //
-        // Whenever no passphrase was applied the check costs one PBKDF2 and is EXACT, so
-        // it is taken. It cannot be taken for a passphrase wallet without the passphrase,
-        // and the honest thing is to say so here rather than to pretend the two cases are
-        // equally trusted.
-        if !passphrase_applied {
-            let seed = bip39::seed(&bip39::normalize_phrase(phrase), "");
-            if derive::master_fingerprint(&seed, network) != fingerprint {
-                return Err(RecordError::FingerprintNotFromPhrase);
-            }
+        // The check is EXACT wherever the passphrase this record will be opened with is in
+        // hand: with no passphrase it is the empty one, and with a STORED passphrase it is
+        // the one being stored - which is the whole value of storing it, since a record
+        // that remembers a passphrase can prove at seal time that the pair opens. Only the
+        // applied-but-not-stored case cannot be checked, and this says so here rather than
+        // pretending the three cases are equally trusted.
+        match &passphrase {
+            StoredPassphrase::Applied => {}
+            other => Self::certify(phrase, network, fingerprint, other.stored().unwrap_or(""))?,
         }
 
-        Ok(SealedWallet { label, network, phrase, fingerprint })
+        Ok(SealedWallet { label, network, phrase, fingerprint, passphrase })
+    }
+
+    /// That these words, under the passphrase the record will be OPENED with, derive the
+    /// fingerprint it carries.
+    ///
+    /// One function rather than one per constructor, because it is the whole of the
+    /// invariant this type exists to hold: a record whose fingerprint does not belong to
+    /// its phrase is a wallet that is refused forever, and every path that can establish
+    /// that pair has to be the same path. `Applied` is the one state it cannot be asked
+    /// about - the passphrase is not here - so this takes the passphrase itself rather than
+    /// a [`StoredPassphrase`], and the judgement of which states are checkable at all stays
+    /// with the two callers that know.
+    fn certify(
+        phrase: &str,
+        network: Network,
+        fingerprint: Fingerprint,
+        with: &str,
+    ) -> Result<(), RecordError> {
+        let seed = bip39::seed(&bip39::normalize_phrase(phrase), with);
+        if derive::master_fingerprint(&seed, network) != fingerprint {
+            return Err(RecordError::FingerprintNotFromPhrase);
+        }
+        Ok(())
+    }
+
+    /// The same wallet with `passphrase` remembered on it: what the storage opt-in seals
+    /// when it is turned ON.
+    ///
+    /// Fallible, and that is the point. Storing a passphrase is the one case where this
+    /// device can prove BEFORE it writes anything that the pair it is about to seal really
+    /// does open the identity the record claims, and an infallible setter would be a second
+    /// door into [`SealedWallet::confirmed`]'s invariant with the check missing from it.
+    /// What comes through that door is not a visible error: the wallet is refused at every
+    /// future open, with a mismatch that reads exactly like a forgotten passphrase.
+    ///
+    /// The passphrase is stored EXACTLY as it was passed, for the reason
+    /// [`StoredPassphrase::Stored`] gives - the seed normalizes the concatenation, not the
+    /// parts - so the bytes certified here are byte-for-byte the bytes sealed.
+    pub fn remembering(self, passphrase: &str) -> Result<SealedWallet<'a>, RecordError> {
+        Self::certify(self.phrase, self.network, self.fingerprint, passphrase)?;
+        Ok(SealedWallet {
+            passphrase: StoredPassphrase::Stored(Zeroizing::new(passphrase.to_string())),
+            ..self
+        })
+    }
+
+    /// The same wallet with the passphrase forgotten: what the storage opt-in seals when
+    /// it is turned OFF.
+    ///
+    /// Infallible where [`SealedWallet::remembering`] is not, for a reason rather than for
+    /// convenience: forgetting only ever moves `Stored` to `Applied`, and `Applied` is the
+    /// state whose fingerprint this type never certified in the first place. Dropping a
+    /// passphrase cannot invalidate an identity that was not being held up by it. See
+    /// [`StoredPassphrase::forgotten`] for why this stops at `Applied` and never reaches
+    /// `None`.
+    pub fn forgetting(self) -> SealedWallet<'a> {
+        SealedWallet { passphrase: self.passphrase.forgotten(), ..self }
     }
 
     /// The body to seal, refusing if it would not fit `capacity`.
@@ -364,6 +638,7 @@ impl<'a> SealedWallet<'a> {
             fingerprint: self.fingerprint,
             label: self.label.to_string(),
             phrase: bip39::normalize_phrase(self.phrase),
+            passphrase: self.passphrase.clone(),
         }
         .encode(capacity)
     }

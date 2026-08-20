@@ -11,6 +11,19 @@
 //! The UI never COMPUTES a QR (the encoder needs std): a tap returns [`UiRequest::Qr`]
 //! naming the payload, the embedder encodes it, and the finished matrix comes back
 //! through [`SchemesState::open_qr`].
+//!
+//! # Two journeys end here, and Back is a different promise on each
+//!
+//! This screen is the end of a wallet's Export card AND the end of a fresh derivation, and
+//! the two disagree about what leaving COSTS. From a wallet, nothing is lost by leaving:
+//! the wallet still exists, so Back is a step back into it - and it carries the derivation
+//! back with it, because the wallet is the only screen that can offer Export again. From a
+//! fresh derivation there is nothing behind this screen but the work that produced it, and
+//! leaving discards what the user cannot recover, so Back asks first.
+//!
+//! A screen that behaved the same on both would be wrong for one of them, so the journey is
+//! not inferred from the state - it is [`Origin`], named by the caller, and there is no
+//! constructor that lets a caller decline to name it.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -23,12 +36,13 @@ use crate::canvas::{
 };
 use crate::components::{back_rect, draw_bar, LINE, SMALL_LINE};
 use crate::layout::{Metrics, Rect};
-use crate::screens::{Ctx, Env, Nav, Outcome, Screen};
+use crate::screens::wallet::WalletState;
+use crate::screens::{Ctx, Env, Nav, Outcome, Screen, State};
 use crate::theme::*;
-use crate::{NullTarget, QrData, QrTarget, Region, RegionId, UiRequest};
+use crate::{NullTarget, QrData, QrTarget, Region, RegionId, UiRequest, WalletInfo};
 use notyas_core::bitcoin::Network;
 use notyas_core::derive::Scheme;
-use notyas_core::report::Report;
+use notyas_core::report::{Report, SchemeReport};
 
 /// The QR modal, open over this screen: a finished symbol plus its title.
 pub(crate) struct QrModal {
@@ -36,9 +50,50 @@ pub(crate) struct QrModal {
     data: QrData,
 }
 
+/// Which journey ended on this screen, and therefore what Back promises here.
+///
+/// A variant per journey rather than a flag beside the report: [`SchemesState::new`] cannot
+/// be called without naming one, so a third caller has to DECIDE what Back means from there
+/// before the crate will compile. That is the whole design. What it replaced was an
+/// unconditional `Nav::ConfirmExit` written for the journey the screen no longer had, which
+/// asked the user to confirm discarding work that was not at risk and then landed them past
+/// the wallet they had come from.
+pub(crate) enum Origin {
+    /// From a wallet's Export card (S-21). Carries that wallet's identity so Back can put
+    /// the user back on it.
+    ///
+    /// A [`WalletInfo`] is entirely public - a name, a slot, a fingerprint, a path - so
+    /// this is a copy of facts, never of keys. The keys stay in `report`, in one copy, and
+    /// travel back with the user.
+    Wallet(WalletInfo),
+    /// The end of a fresh derivation: dice or seed words, straight through to the keys.
+    ///
+    /// There is no wallet behind this one to return to and the work is unrecoverable, so
+    /// Back is the exit question - which is what the exit modal's copy already says ("You
+    /// can re-enter your dice rolls or seed words to start again").
+    ///
+    /// Not constructed outside the tests yet: the create flow reaches the fork rather than
+    /// this screen, and S-26's second entrance (the end of a verify-existing-seed run,
+    /// docs/plan-0.2.0/UX-SCREENS.md S-26) is a 0.2.0 requirement that has not landed. It
+    /// is stated here rather than when that route arrives, because deciding Back one route
+    /// at a time is how the first origin got it wrong.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Fresh,
+}
+
 pub(crate) struct SchemesState {
     /// The full pipeline output; its own Drop wipes the secrets it holds.
-    pub report: Report,
+    ///
+    /// `Option` for the same reason [`WalletState::report`] is one, one screen over: the
+    /// wallet origin's Back MOVES it back into the wallet it came from, out of a
+    /// `&mut self` that has no second `Report` to leave in its place. It is empty only
+    /// inside the call that also names the state replacing this screen, and `Ui::apply`
+    /// drops this one on that call - so no frame is ever built from an empty screen. The
+    /// draw path still reads it as an `Option` rather than unwrapping: a panic there would
+    /// take the device down to save four lines.
+    pub report: Option<Report>,
+    /// How the user got here. Decides Back, and nothing else - see [`Origin`].
+    origin: Origin,
     tab: usize,
     scroll: i32,
     /// `Some` while the QR modal is open. Filled only through [`SchemesState::open_qr`]
@@ -47,8 +102,10 @@ pub(crate) struct SchemesState {
 }
 
 impl SchemesState {
-    pub fn new(report: Report) -> SchemesState {
-        SchemesState { report, tab: 0, scroll: 0, qr: None }
+    /// The derivation, and where the user came from to see it. Both, always: an export
+    /// view that does not know its own way back is the defect this signature prevents.
+    pub fn new(report: Report, origin: Origin) -> SchemesState {
+        SchemesState { report: Some(report), origin, tab: 0, scroll: 0, qr: None }
     }
 
     /// Answer to [`UiRequest::Qr`]: install the finished symbol and open the modal.
@@ -56,11 +113,13 @@ impl SchemesState {
         self.qr = Some(QrModal { label, data });
     }
 
-    /// The scheme the active tab shows. Clamped rather than indexed blindly: the tab is
-    /// user state and the scheme list is the core's, and a panic in the draw path would
-    /// take the device down over a cosmetic disagreement.
-    fn active(&self) -> &notyas_core::report::SchemeReport {
-        &self.report.schemes[self.tab.min(self.report.schemes.len() - 1)]
+    /// The scheme the active tab shows. Clamped and then fetched rather than indexed
+    /// blindly: the tab is user state and the scheme list is the core's, and a panic in the
+    /// draw path would take the device down over a cosmetic disagreement. `None` also
+    /// covers the instant the report is on its way back to the wallet (see the field).
+    fn active(&self) -> Option<&SchemeReport> {
+        let report = self.report.as_ref()?;
+        report.schemes.get(self.tab.min(report.schemes.len().saturating_sub(1)))
     }
 }
 
@@ -125,6 +184,10 @@ impl Screen for SchemesState {
 
     fn draw<D: DrawTarget<Color = Rgb565>>(&self, t: &mut D, ctx: &Ctx) -> Result<(), D::Error> {
         let m = &ctx.m;
+        // The report is absent only inside the Back that is handing it to the wallet, and
+        // that call replaces this screen before a frame is asked for. Paper and nothing
+        // else beats a panic if that ever stops being true.
+        let Some(report) = self.report.as_ref() else { return Ok(()) };
         draw_bar(t, m, "Wallet")?;
         let l = self.layout(ctx);
         let body = m.body();
@@ -140,9 +203,9 @@ impl Screen for SchemesState {
         // mainnet wallet at a glance.
         let info = format!(
             "fingerprint {} - passphrase {}{}",
-            self.report.root_fingerprint,
-            if self.report.has_passphrase { "ON" } else { "off" },
-            if self.report.network == Network::Bitcoin { "" } else { " - TESTNET" }
+            report.root_fingerprint,
+            if report.has_passphrase { "ON" } else { "off" },
+            if report.network == Network::Bitcoin { "" } else { " - TESTNET" }
         );
         text(t, &info, body.x, l.info_y, MONO_SMALL, INK_SECONDARY, PAPER_1)?;
 
@@ -168,14 +231,15 @@ impl Screen for SchemesState {
             // request carries the exact string the screen shows - encoding happens on the
             // embedder's std side, the modal opens via `open_qr`.
             RegionId::QrXpub => {
-                let acct = &self.active().derived.account;
+                let Some(sr) = self.active() else { return Outcome::stay() };
+                let acct = &sr.derived.account;
                 Outcome::ask(UiRequest::Qr(QrTarget {
                     label: format!("Account xpub {}", acct.path),
                     payload: acct.xpub.clone(),
                 }))
             }
             RegionId::QrSlip132 => {
-                let sr = self.active();
+                let Some(sr) = self.active() else { return Outcome::stay() };
                 match (sr.derived.account.slip132_pub.as_ref(), sr.scheme.slip132_labels()) {
                     (Some(slip), Some((_, label))) => Outcome::ask(UiRequest::Qr(QrTarget {
                         label: format!("{label} {}", sr.derived.account.path),
@@ -184,7 +248,10 @@ impl Screen for SchemesState {
                     _ => Outcome::stay(),
                 }
             }
-            RegionId::QrAddress(i) => match self.active().derived.rows.get(i as usize) {
+            RegionId::QrAddress(i) => match self
+                .active()
+                .and_then(|sr| sr.derived.rows.get(i as usize))
+            {
                 Some(row) => Outcome::ask(UiRequest::Qr(QrTarget {
                     label: row.path.clone(),
                     payload: row.address.clone(),
@@ -199,9 +266,29 @@ impl Screen for SchemesState {
         }
     }
 
-    /// Derived keys are on this screen: Back asks first.
-    fn back(&self) -> Nav {
-        Nav::ConfirmExit
+    /// Back, and it is a different promise per [`Origin`].
+    ///
+    /// From a wallet it is a step back into a wallet that still exists, so it moves rather
+    /// than asks - and the derivation goes back with the user, because the wallet gates its
+    /// Export and Sign cards on holding one, and a wallet returned to without its keys is a
+    /// wallet that has lost the ability to sign. The move is an ENTER and not a pop: the
+    /// wallet home is a pure function of its identity and its keys, both of which are in
+    /// hand here, so rebuilding it is lossless and leaves the stack the depth it was -
+    /// while a push at the Export card would have left a keyless copy of this same wallet
+    /// buried under the new one for as long as the session lasts.
+    ///
+    /// From a fresh derivation there is nothing behind this screen but work that cannot be
+    /// recovered, and the exit modal is the question that fits.
+    ///
+    /// This is [`Screen::back_moving`] and not [`Screen::back`] because the handoff is a
+    /// MOVE: a `&self` receiver could only copy the keys or defer the return to a second
+    /// tap.
+    fn back_moving(&mut self) -> Nav {
+        let info = match &self.origin {
+            Origin::Wallet(info) => info.clone(),
+            Origin::Fresh => return Nav::ConfirmExit,
+        };
+        Nav::Enter(State::Wallet(WalletState::new(info, self.report.take())))
     }
 
     /// The sheet under an open QR modal is inert, scrolling included.
@@ -233,7 +320,9 @@ impl SchemesState {
     ) -> Result<i32, D::Error> {
         let body = m.body();
         let g = m.gap;
-        let sr = self.active();
+        // Nothing to measure or draw while the report is on its way back to the wallet (see
+        // the field); the caller reads this as "the content ended where it began".
+        let Some(sr) = self.active() else { return Ok(y0) };
         let acct = &sr.derived.account;
         let mut y = y0;
 
@@ -398,6 +487,84 @@ fn draw_qr_modal<D: DrawTarget<Color = Rgb565>>(
 mod tests {
     use super::*;
     use crate::screens::testing::GEOMETRIES;
+    use crate::{BackupState, PassphraseState, WalletKind};
+
+    /// The 12-word all-`abandon` vector: a real derivation with nothing in it, so a test
+    /// can hold keys without inventing a wallet worth stealing.
+    const TEST_PHRASE: &str =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+         abandon about";
+
+    fn report() -> Report {
+        use notyas_core::bip39::MnemonicMode;
+        use notyas_core::derive::{ChildIndex, Scheme};
+        use notyas_core::report::Parameters;
+        Report::from_phrase(
+            TEST_PHRASE,
+            &Parameters {
+                mode: MnemonicMode::Raw,
+                passphrase: "",
+                network: Network::Bitcoin,
+                schemes: &Scheme::ALL,
+                account: ChildIndex::ZERO,
+                change: ChildIndex::ZERO,
+                count: crate::ADDRESS_ROWS,
+                script_type: 2,
+            },
+        )
+        .expect("a phrase with words in it derives")
+    }
+
+    fn info() -> WalletInfo {
+        WalletInfo {
+            slot: 3,
+            name: String::from("kitchen"),
+            fingerprint: String::from("73c5da0a"),
+            path: String::from("m/84'/0'/0'"),
+            script_type: String::from("native segwit"),
+            kind: WalletKind::SingleSig,
+            backup: BackupState::Verified(String::new()),
+            network: Network::Bitcoin,
+            registrations: 0,
+            stored: true,
+            passphrase: PassphraseState::None,
+        }
+    }
+
+    /// Back off the export view of a WALLET returns to that wallet, and returns its keys
+    /// with it.
+    ///
+    /// Both halves are the bug. Landing anywhere else is what the owner sees as "it takes
+    /// me to the home screen"; landing there without the derivation is what a naive
+    /// enter-to-push swap produces, and it is worse - the wallet gates Export AND Sign on
+    /// holding one, so the device silently loses the ability to sign until the user backs
+    /// out to the list and re-opens the wallet.
+    #[test]
+    fn back_from_a_wallet_export_returns_the_wallet_with_its_keys() {
+        let mut s = SchemesState::new(report(), Origin::Wallet(info()));
+        let nav = s.back_moving();
+        let State::Wallet(wallet) = (match nav {
+            Nav::Enter(next) => next,
+            _ => panic!("Back from a wallet export must land on that wallet"),
+        }) else {
+            panic!("Back from a wallet export must land on a WALLET");
+        };
+        assert_eq!(wallet.info.slot, 3, "and on the wallet it was exported from");
+        assert!(wallet.report.is_some(), "the wallet came back without its keys");
+        assert!(s.report.is_none(), "the keys were copied rather than handed over");
+    }
+
+    /// ...and the other journey keeps the question, because there the work IS at risk.
+    ///
+    /// One screen, two origins, two answers: this is the pair that makes the origin worth
+    /// storing. A screen that answered either of these the other way would be wrong for
+    /// exactly one of its two callers.
+    #[test]
+    fn back_from_a_fresh_derivation_still_asks_before_discarding_it() {
+        let mut s = SchemesState::new(report(), Origin::Fresh);
+        assert!(matches!(s.back_moving(), Nav::ConfirmExit));
+        assert!(s.report.is_some(), "the question is not the move: nothing may leave yet");
+    }
 
     /// The QR modal at every real symbol size the 0.1.0 targets produce (v3 addresses
     /// through v7 zpubs) plus the format extremes: integer scale, largest fit, symbol

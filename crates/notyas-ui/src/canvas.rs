@@ -25,6 +25,21 @@ pub static TITLE: &Atlas = &notyas_fonts::SANS_SEMIBOLD_44;
 pub static HEADING: &Atlas = &notyas_fonts::SANS_SEMIBOLD_32;
 /// Body copy and hints (hints differ by ink, not size - the panel is 229 PPI).
 pub static BODY: &Atlas = &notyas_fonts::SANS_REGULAR_32;
+/// The second line of a control that cannot grow, and the control's own title beside it.
+///
+/// NOT a smaller body size, and NOT a licence to fit more words onto a screen: when copy
+/// does not fit, the copy is too long and shortening it is the fix. This face exists for
+/// the one shape the page cannot solve by giving something more room - a TARGET whose
+/// height is set by the finger and the panel rather than by its copy. A wallet action card
+/// on the 800x480 panel is 88 px tall because four of them have to fit under the identity
+/// card and stay tappable, which leaves 62 px inside it, and a 32 px title over a 32 px
+/// hint needs 84. Both of a card's lines come down to this size together and separate by
+/// INK, which is the rule the rest of the scale already uses for hints.
+///
+/// Never for anything a user compares against another device. Fingerprints, addresses,
+/// xpubs, derivation paths and the device words stay [`MONO`]/[`MONO_SMALL`] at their own
+/// size, where a misread character costs money.
+pub static CAPTION: &Atlas = &notyas_fonts::SANS_REGULAR_24;
 /// Mnemonic words, roll counts, keypad digits.
 pub static MONO: &Atlas = &notyas_fonts::MONO_REGULAR_32;
 /// Addresses, xpubs, hex - dense machine-checkable strings.

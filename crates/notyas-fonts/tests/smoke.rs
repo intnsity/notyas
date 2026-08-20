@@ -6,7 +6,9 @@ use embedded_graphics_core::draw_target::DrawTarget;
 use embedded_graphics_core::geometry::{OriginDimensions, Point, Size};
 use embedded_graphics_core::pixelcolor::Rgb565;
 use embedded_graphics_core::Pixel;
-use notyas_fonts::{draw_text, TextStyle, ALL, GLYPH_COUNT, MONO_REGULAR_32, SANS_REGULAR_32};
+use notyas_fonts::{
+    draw_text, TextStyle, ALL, GLYPH_COUNT, MONO_REGULAR_32, SANS_REGULAR_24, SANS_REGULAR_32,
+};
 
 /// Minimal Rgb565 framebuffer. Out-of-bounds pixels are dropped, per the DrawTarget
 /// contract, which also exercises the renderer's clipping assumption.
@@ -54,7 +56,7 @@ const PAPER: Rgb565 = Rgb565::new(29, 59, 27);
 #[test]
 fn atlas_invariants() {
     assert_eq!(GLYPH_COUNT, 97);
-    assert_eq!(ALL.len(), 5);
+    assert_eq!(ALL.len(), 6);
     for atlas in ALL {
         assert!(atlas.ascent > 0 && atlas.descent < 0, "{} {}", atlas.family, atlas.px);
         assert!(atlas.line_height >= atlas.px, "{} {}", atlas.family, atlas.px);
@@ -75,6 +77,12 @@ fn renders_notyas_version_string() {
     let text = "notyas 0.1.0";
     assert_eq!(SANS_REGULAR_32.text_width(text), 179);
     assert_eq!(MONO_REGULAR_32.text_width(text), 228);
+    // The CAPTION face. Its line box is the reason it exists - a wallet action card has
+    // 62 px inside it on the 800x480 panel and has to hold two of these - so the height
+    // is pinned here beside the width, and a regeneration that moves either fails loudly.
+    assert_eq!(SANS_REGULAR_24.text_width(text), 134);
+    assert_eq!(SANS_REGULAR_24.line_height, 31);
+    assert_eq!((SANS_REGULAR_24.ascent, SANS_REGULAR_24.descent), (25, -7));
     // Monospace really is monospaced: every advance identical.
     let mono_adv = MONO_REGULAR_32.glyphs[0].advance;
     assert!(MONO_REGULAR_32.glyphs.iter().all(|g| g.advance == mono_adv));

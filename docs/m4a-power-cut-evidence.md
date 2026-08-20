@@ -15,11 +15,11 @@ return, so the operator only pulls and reseats.
 
 | Mode | What it cuts | State | Evidence |
 |---|---|---|---|
-| `seal` | a record seal inside `soak` | recorded 2026-08-18, 20 valid cuts | `C:\nb\hil\powercut-seal-*` |
-| `pin` | change-PIN, the operation with the most steps | recorded 2026-08-19, 20 valid cuts | `C:\nb\hil\powercut-pin-20260819-144312` |
-| `attempt` | a wrong-PIN unlock, at the attempt cell | recorded 2026-08-19, 20 valid cuts | `C:\nb\hil\powercut-attempt-20260819-145849` |
+| `seal` | a record seal inside `soak` | recorded 2026-08-18, 20 valid cuts | `powercut-seal-*` |
+| `pin` | change-PIN, the operation with the most steps | recorded 2026-08-19, 20 valid cuts | `powercut-pin-20260819-144312` |
+| `attempt` | a wrong-PIN unlock, at the attempt cell | recorded 2026-08-19, 20 valid cuts | `powercut-attempt-20260819-145849` |
 | `policy` | SET-POLICY, at each of its seven steps | blocked on firmware, nothing cut | `BLOCKED.txt` if attempted |
-| overflow soak | nothing is cut; 128+ wrong PINs with the wipe off | blocked on the same firmware gap | `C:\nb\hil\overflow-*` |
+| overflow soak | nothing is cut; 128+ wrong PINs with the wipe off | blocked on the same firmware gap | `overflow-*` |
 
 The harness never prints PASS. It records observations and flags anomalies, and a human
 reads the result against the m4a exit criteria. `summarize-cuts.ps1` distinguishes a check
@@ -85,10 +85,10 @@ aborting the run.
 ### Evidence
 
 ```
-C:\nb\hil\powercut-seal-20260818-122655\   1 cut  (validation run)
-C:\nb\hil\powercut-seal-20260818-180333\   2 cuts
-C:\nb\hil\powercut-seal-20260818-180618\   3 cuts + 2 harness errors
-C:\nb\hil\powercut-seal-20260818-181142\  14 cuts
+powercut-seal-20260818-122655\   1 cut  (validation run)
+powercut-seal-20260818-180333\   2 cuts
+powercut-seal-20260818-180618\   3 cuts + 2 harness errors
+powercut-seal-20260818-181142\  14 cuts
 ```
 
 ---
@@ -96,7 +96,7 @@ C:\nb\hil\powercut-seal-20260818-181142\  14 cuts
 ## Mode `pin` - cut during change-PIN
 
 Run: `.\tools\hil\power-cut-gate.ps1 -Port COM6 -Mode pin`
-Evidence: `C:\nb\hil\powercut-pin-20260819-144312\`
+Evidence: `powercut-pin-20260819-144312\`
 Date: 2026-08-19, 14:43 to 14:56.  Cuts requested: 20.  Delay window: 40 to 6000 ms.
 
 **Result: 20 valid cuts, exactly one PIN opened the device after every one of them - never
@@ -188,7 +188,7 @@ as well as in `pin_after`, and none did.
 ### The summary, pasted verbatim
 
 ```
-m4a power-cut gate, mode 'pin' - C:/nb/hil/powercut-pin-20260819-144312
+m4a power-cut gate, mode 'pin' - powercut-pin-20260819-144312
 ========================================================================
 
 Cuts requested        : 20
@@ -226,7 +226,7 @@ Stated weakness, which belongs in the milestone note verbatim:
   commit window is therefore a sample whose distribution nobody controlled, and
   a rare torn-write window could sit entirely between the sampled points.
 
-Evidence: C:\nb\hil\powercut-pin-20260819-144312\cuts.csv
+Evidence: powercut-pin-20260819-144312\cuts.csv
 
 VERDICT: EVERY CRITERION CHECKED, NONE BLOCKING, exit 0
          That is a statement about the data, not about the gate. Read the numbers
@@ -270,7 +270,7 @@ spread is the weakest of the three modes - see the stated weakness at the foot o
 ## Mode `attempt` - cut during a wrong-PIN unlock
 
 Run: `.\tools\hil\power-cut-gate.ps1 -Port COM6 -Mode attempt`
-Evidence: `C:\nb\hil\powercut-attempt-20260819-145849\`
+Evidence: `powercut-attempt-20260819-145849\`
 Date: 2026-08-19, 14:58 to 15:13.  Cuts requested: 20.  Delay window: 0 to 700 ms after the
 beep, which is the pause before the wrong PIN is sent rather than a delay into it.
 
@@ -429,7 +429,7 @@ which reads both runs together. The ledger half belongs here:
 ### The summary, pasted verbatim
 
 ```
-m4a power-cut gate, mode 'attempt' - C:/nb/hil/powercut-attempt-20260819-145849
+m4a power-cut gate, mode 'attempt' - powercut-attempt-20260819-145849
 ========================================================================
 
 Cuts requested        : 20
@@ -474,7 +474,7 @@ Stated weakness, which belongs in the milestone note verbatim:
   commit window is therefore a sample whose distribution nobody controlled, and
   a rare torn-write window could sit entirely between the sampled points.
 
-Evidence: C:\nb\hil\powercut-attempt-20260819-145849\cuts.csv
+Evidence: powercut-attempt-20260819-145849\cuts.csv
 
 VERDICT: EVERY CRITERION CHECKED, NONE BLOCKING, exit 0
          That is a statement about the data, not about the gate. Read the numbers

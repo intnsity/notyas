@@ -105,6 +105,7 @@ mod ui;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::convert::Infallible;
+use core::fmt;
 
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::{Dimensions, Point, Size};
@@ -154,7 +155,12 @@ pub const ADDRESS_ROWS: u32 = 5;
 /// strand an unwiped copy of a partial secret outside the `Zeroizing` wrapper's reach -
 /// the same discipline desktop BigDice applies to its passphrase buffers.
 pub(crate) const PHRASE_MAX: usize = 1024;
-pub(crate) const PASS_MAX: usize = 256;
+/// Public because it is not only this crate's: a passphrase the owner asks the device to
+/// remember is stored in the sealed wallet record, and the record format caps it at the
+/// same number (`firmware/src/wallet/record.rs`, `MAX_PASSPHRASE_BYTES`). The firmware's
+/// host cover asserts the two are equal, so a change here that is not made there fails a
+/// test rather than a save.
+pub const PASS_MAX: usize = 256;
 /// PIN length cap in bytes, matching `notyas_wallet::Pin::MAX_BYTES` (ratified Q5). At
 /// the cap further keys are ignored and the hint says so, rather than a `Pin` the
 /// sealing layer would refuse after the user finished typing it.
@@ -277,6 +283,14 @@ pub enum ScreenId {
     MnemonicDisplay,
     PhraseEntry,
     PassphraseEntry,
+    /// S-21b. The passphrase of a STORED wallet, asked for at open time.
+    ///
+    /// Its own id and not a mode of [`ScreenId::PassphraseEntry`]: that screen is part of
+    /// creating a wallet and has an opt-in toggle, two fields and a Continue; this one
+    /// belongs to a record that already exists, has one field and an Unlock, and its Back
+    /// goes to the wallet list. They also differ in what a mistake costs - a typo here is
+    /// caught by the fingerprint in the record, which is why there is no confirm field.
+    PassphraseUnlock,
     /// Interstitial while the seed/derivation pipeline runs (see [`Ui::tick`]). No
     /// tappable regions: the compute is synchronous and cannot be cancelled.
     Deriving,
@@ -314,11 +328,38 @@ pub enum ScreenId {
     NameWallet,
     /// S-21. The per-wallet hub: identity first, then what can be done with it.
     WalletHome,
+    /// S-47b. The last moment a stored wallet's recovery words exist on this device: the
+    /// offer to read them once more, or to erase knowing the backup is already checked.
+    ///
+    /// Its own screen and not a fourth danger sheet, because consent has already been
+    /// given - the C4b consequence was read and the wallet's own name was typed back - and
+    /// what is on the panel now is an OFFER between two legitimate answers. It also reports
+    /// [`ScreenId::Working`] while the erase runs.
+    EraseWallet,
     /// S-44. Device settings. Reachable only with a session open, because every row it
     /// carries today configures stored wallets.
     Settings,
+    /// S-44a. The device name: the one string this device shows before a PIN is typed.
+    ///
+    /// Its own id rather than a mode of [`ScreenId::Settings`], on the
+    /// [`ScreenId::FormatCard`] reasoning: a different bar, a keyboard, and a Back that
+    /// returns to the list. It is also the surface an embedder most needs to recognise,
+    /// because it is the only one whose commit writes a string that is later shown to
+    /// someone who has not authenticated.
+    DeviceName,
+    /// S-04a. What the anti-phishing words are, and when to look at them.
+    ///
+    /// Shown at the two moments the user can act on it - the PIN has just been set, and
+    /// the words are about to be shown for the first time - and never again. It is an
+    /// explainer with one button, so it reports its own id rather than borrowing the
+    /// screen underneath: an embedder logging screens should be able to see that the
+    /// panel stopped being PIN entry.
+    AboutDeviceWords,
     /// S-44's wrong-PIN policy sub-screen: a live editor over the sealed policy, and the
     /// surface the wipe-off trade and the PIN-removal entry point live on.
+    ///
+    /// (The card-format screen is `FormatCard`, below, with the card screens it belongs
+    /// beside rather than here with the settings screen it is opened from.)
     WipePolicy,
 
     // --- 0.2.0: the card, the transaction and the registry (UX-SCREENS.md 2.4, 2.5) ---
@@ -327,6 +368,15 @@ pub enum ScreenId {
     SignSource,
     /// S-28. The card's files, when auto-detect is not enough.
     FilePicker,
+    /// S-49. The one destructive thing this device does to a card: look at a card it
+    /// cannot read, say what is on it, and - only where a format would repair the fault -
+    /// offer to write an empty filesystem into the partition that is already there.
+    ///
+    /// Its own id rather than a mode of [`ScreenId::Settings`], because it is a different
+    /// screen in every sense an embedder cares about: a different bar, a different back,
+    /// and the only surface in the product outside S-38 whose whole subject is a write to
+    /// something the device does not own.
+    FormatCard,
     /// The C3 Busy frame, whenever a screen has asked the std side for work that blocks
     /// the input loop: reading a card, checking a transaction, writing a file, sealing a
     /// registration.
@@ -378,7 +428,7 @@ impl ScreenId {
     /// the unit test below maps every variant to its index through an exhaustive `match`,
     /// so a new variant breaks compilation twice - at the array length and at the match -
     /// and cannot be added without saying where it belongs.
-    pub const ALL: [ScreenId; 29] = [
+    pub const ALL: [ScreenId; 34] = [
         ScreenId::Home,
         ScreenId::DiceEntry,
         ScreenId::MnemonicDisplay,
@@ -396,7 +446,10 @@ impl ScreenId {
         ScreenId::KeepOrSave,
         ScreenId::NameWallet,
         ScreenId::WalletHome,
+        ScreenId::EraseWallet,
         ScreenId::Settings,
+        ScreenId::DeviceName,
+        ScreenId::AboutDeviceWords,
         ScreenId::WipePolicy,
         ScreenId::SignSource,
         ScreenId::FilePicker,
@@ -408,6 +461,8 @@ impl ScreenId {
         ScreenId::MultisigList,
         ScreenId::MultisigImport,
         ScreenId::MultisigDetail,
+        ScreenId::FormatCard,
+        ScreenId::PassphraseUnlock,
     ];
 }
 
@@ -436,18 +491,23 @@ mod screen_id_tests {
             ScreenId::KeepOrSave => 14,
             ScreenId::NameWallet => 15,
             ScreenId::WalletHome => 16,
-            ScreenId::Settings => 17,
-            ScreenId::WipePolicy => 18,
-            ScreenId::SignSource => 19,
-            ScreenId::FilePicker => 20,
-            ScreenId::Working => 21,
-            ScreenId::Refusal => 22,
-            ScreenId::ReviewTransaction => 23,
-            ScreenId::Signing => 24,
-            ScreenId::Deliver => 25,
-            ScreenId::MultisigList => 26,
-            ScreenId::MultisigImport => 27,
-            ScreenId::MultisigDetail => 28,
+            ScreenId::EraseWallet => 17,
+            ScreenId::Settings => 18,
+            ScreenId::DeviceName => 19,
+            ScreenId::AboutDeviceWords => 20,
+            ScreenId::WipePolicy => 21,
+            ScreenId::SignSource => 22,
+            ScreenId::FilePicker => 23,
+            ScreenId::Working => 24,
+            ScreenId::Refusal => 25,
+            ScreenId::ReviewTransaction => 26,
+            ScreenId::Signing => 27,
+            ScreenId::Deliver => 28,
+            ScreenId::MultisigList => 29,
+            ScreenId::MultisigImport => 30,
+            ScreenId::MultisigDetail => 31,
+            ScreenId::FormatCard => 32,
+            ScreenId::PassphraseUnlock => 33,
         };
         for (i, s) in ScreenId::ALL.into_iter().enumerate() {
             assert_eq!(index(s), i, "{s:?} is at the wrong index of ScreenId::ALL");
@@ -487,6 +547,10 @@ pub enum RegionId {
     PassEntry,
     /// Focus the repeat-passphrase field.
     PassConfirm,
+    /// Open the wallet the unlock screen is asking for, with the passphrase typed into it.
+    /// Raises [`UiRequest::UnlockWallet`]. Drawn disabled - and not emitted at all - while
+    /// the retry gate is holding, so a tap during the wait does nothing.
+    PassUnlock,
     /// On-screen keyboard character key.
     Key(char),
     Shift,
@@ -595,10 +659,31 @@ pub enum RegionId {
     /// The one-time acknowledgement that the passphrase is not stored (Q22). Gates the
     /// first save of a passphrase wallet, so the warning cannot be skipped by habit.
     PassNotStoredAck,
+    /// Remember passphrase on this device (offered on the save screen alongside
+    /// the not-stored acknowledgement).
+    RememberPassphraseAck,
     /// "Export public keys" on the wallet home.
     ActExport,
+    /// "Remember passphrase on this device" / "Forget the passphrase" on the wallet home
+    /// of an open passphrase wallet. ONE region for the two directions, because it is one
+    /// row whose state decides which sheet opens - a second region could be drawn in the
+    /// state the first one is in.
+    ActPassphraseStore,
+    /// "Derive a passphrase wallet from these words" on the wallet home of an open wallet
+    /// with no passphrase. Creates a SECOND wallet; it changes nothing about this one.
+    ActPassphraseDerive,
     /// "Delete this wallet" on the wallet home: opens the C4d typed-name sheet.
     WalletDelete,
+    /// S-47b's two answers, offered together after the typed-name consent and before the
+    /// write.
+    ///
+    /// Named for what each DOES and not for which is the way on: they are the same size, in
+    /// the same row, and neither is the sheet's "confirm". `EraseShowWords` raises
+    /// [`UiRequest::RecoveryWords`] and comes back to this screen with the choice still
+    /// open - reading the words is not consent to anything - while `EraseNow` raises
+    /// [`UiRequest::DeleteWallet`].
+    EraseShowWords,
+    EraseNow,
     /// The C4 danger sheet's two answers. Every grade offers Cancel; the Confirm and
     /// typed-name grades offer this confirm, the hold grade offers
     /// [`RegionId::HoldConfirm`] instead.
@@ -632,6 +717,17 @@ pub enum RegionId {
     /// "Remove PIN and stored wallets": opens the C4d sheet for the revert-to-stateless
     /// operation (Q5.5).
     RemoveThePin,
+    /// Focus the device-name field (S-44a), raising the keyboard. Distinct from
+    /// [`RegionId::NameField`], which names a WALLET: the two screens accept different
+    /// characters, refuse for different reasons and write to different places, and one id
+    /// for both would let a mis-wired screen route a device name into a wallet record.
+    DeviceNameField,
+    /// Commit the typed device name, raising [`UiRequest::SetDeviceName`]. Offered only
+    /// while the typed name is acceptable - see `screens/devicename.rs`.
+    DeviceNameSave,
+    /// Dismiss the anti-phishing explainer (S-04a). One region, because the screen has one
+    /// answer: it is read once and then never asked for again.
+    WordsUnderstood,
 
     // --- 0.2.0: the card, the transaction and the registry (UX-SCREENS.md 2.4, 2.5) ---
     /// S-21's two remaining action cards, which exist now that the screens behind them
@@ -673,12 +769,32 @@ pub enum RegionId {
     DeliverDone,
     DeliverRetry,
     DeliverDiscard,
-    /// "Show as QR" (S-38) and the registry's two QR exports (S-43). DECLARED and NOT
-    /// EMITTED, on the [`RegionId::PinAlpha`] rule: the C11 player animates a fountain-
-    /// coded sequence, no encoder in this workspace produces one, and a drawn button that
-    /// no screen hit-tests is a button that lies. The vocabulary is frozen with the screen
-    /// spec so that the day the encoder lands, the region it needs already means this.
+    /// "Show as QR" (S-38): opens S-39 over the delivery screen, with the signed
+    /// transaction as one static symbol.
+    ///
+    /// EMITTED. The reason this id spent two milestones declared and unemitted was that
+    /// C11's player animates a fountain-coded sequence and nothing in this workspace
+    /// produced one; `notyas_core::psbt_qr` now encodes a signed transaction as base64 in
+    /// a SINGLE symbol, which is the one form every wallet this device targets reads from
+    /// a camera, so there is no sequence to animate and no button drawn that nothing
+    /// hit-tests. It is still emitted DISABLED - with the size and the limit in the
+    /// sentence beside it - whenever `psbt_qr::fits` says the transaction is larger than a
+    /// symbol the shortest shipped panel can draw scannably, because a control that
+    /// refuses on tap teaches nothing and the card is the remedy for that case.
     DeliverQr,
+    /// S-39's two answers, which are answers S-38 records.
+    ///
+    /// `DeliverQrDelivered` is a claim the USER makes: the panel cannot see the camera, so
+    /// nothing on this device can know a scan landed, and this is the only thing that
+    /// ungates `DeliverDone` on the QR path - exactly as a successful card write does on
+    /// the other one. `DeliverQrClose` dismisses the symbol and records nothing.
+    ///
+    /// Separate ids from the delivery screen's own exits because the overlay is hit-tested
+    /// INSTEAD of the screen beneath it: one id shared between the two layers would let a
+    /// tap land on whichever of them answered first, which is the class of bug the whole
+    /// region vocabulary exists to make unrepresentable.
+    DeliverQrDelivered,
+    DeliverQrClose,
     /// S-41: import a descriptor or a Coldcard multisig file from the card.
     MsImport,
     /// S-41's "Export our xpub (BIP48)", S-43's "Export to card" and "Export as QR".
@@ -701,6 +817,15 @@ pub enum RegionId {
     MsFirstAddress,
     /// S-43's "Delete registration": opens the C4d typed-name sheet.
     MsDelete,
+
+    /// S-49's one destructive control: opens the C4b sheet that leads to the typed one.
+    ///
+    /// Emitted only while the probe came back [`FormatOffer::Ready`], so there is no
+    /// region to tap on a card the device refused - the button a user cannot press is the
+    /// button that is not drawn. "Check again" on that screen is [`RegionId::FileRefresh`],
+    /// which is the same affordance with the same label everywhere a card might not be
+    /// there.
+    CardFormat,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -782,10 +907,63 @@ pub enum UiRequest {
     /// Unseal the wallet in this slot and answer with [`Ui::wallet_opened`]. The slot
     /// comes from the [`WalletInfo`] the embedder itself installed, so the UI never
     /// invents one.
+    ///
+    /// Carries no passphrase and never will. A wallet that needs one is answered with
+    /// [`Ui::wallet_needs_passphrase`], which puts the entry screen up; the passphrase
+    /// then comes back through [`UiRequest::UnlockWallet`]. Splitting it that way is what
+    /// keeps the common case - a wallet with no passphrase, or one this session already
+    /// holds the passphrase for - a single tap with no prompt.
     OpenWallet(u8),
-    /// Erase this slot's record, then install the list as it now reads with
-    /// [`Ui::set_wallets`]. Raised only behind the C4d typed-name sheet.
+    /// Open the wallet in this slot with the passphrase the user has just typed, and
+    /// answer with [`Ui::wallet_opened_with_keys`] or [`Ui::passphrase_refused`].
+    ///
+    /// Raised only by the unlock screen [`Ui::wallet_needs_passphrase`] put up, and only
+    /// for the slot that screen was opened for. The passphrase travels as [`Secret`], for
+    /// the reason `SetPin` and `UnsealWallet` do: this enum derives `Debug`, and `Secret`
+    /// is what makes that safe.
+    ///
+    /// Blocking, for seconds: one BIP-39 stretch and four account derivations, the same
+    /// work the create interstitial spends. The screen is already showing its Busy frame
+    /// when this is returned, and the embedder publishes it before doing the work.
+    UnlockWallet {
+        slot: u8,
+        passphrase: Secret,
+    },
+    /// Re-seal this wallet's record so that it CARRIES the passphrase the session is
+    /// holding, and answer with [`Ui::passphrase_storage_result`] carrying the state read
+    /// back from flash afterwards.
+    ///
+    /// Raised only from the wallet home of an OPEN passphrase wallet, behind the C4b
+    /// consequence sheet. It carries no passphrase: the embedder is holding the one that
+    /// just opened this wallet, and the value it stores is therefore byte-for-byte the one
+    /// that derived the fingerprint in the record rather than something retyped.
+    StorePassphrase(u8),
+    /// Re-seal this wallet's record WITHOUT the passphrase it currently stores, and answer
+    /// with [`Ui::passphrase_storage_result`].
+    ///
+    /// Destructive: the device can never show the passphrase back, so what it forgets it
+    /// forgets for good. Raised only behind the C4c hold sheet, which says so.
+    ForgetPassphrase(u8),
+    /// Erase this slot's record and every multisig registration that names it, then answer
+    /// with [`Ui::wallet_deleted`] AND install the list as it now reads with
+    /// [`Ui::set_wallets`]. Both halves: the answer says what happened to this wallet, the
+    /// list says what the device now holds, and the screen renders the two together.
+    ///
+    /// Raised only from S-47b, which is reachable only through the C4b consequence sheet
+    /// and the C4d typed-name sheet before it. Three surfaces stand between a tap on
+    /// "Delete this wallet" and this request, and the last of them is not a confirm button
+    /// at the coordinates the one before it used.
     DeleteWallet(u8),
+    /// Read back the recovery words stored in this slot and answer with
+    /// [`Ui::recovery_words`]. Raised only from S-47b, and only by a tap on the card that
+    /// says so.
+    ///
+    /// The UI holds no flash and no key ladder, so it cannot open a record; what comes back
+    /// is the normalized phrase the record stores, which the words screen shows behind
+    /// S-13's reveal gate exactly as it shows a freshly derived one. Nothing here derives a
+    /// seed and nothing needs a BIP-39 passphrase: the record stores the WORDS, which is
+    /// what makes re-showing them possible at all.
+    RecoveryWords(u8),
     /// Re-seal the store under a new wrong-PIN policy; `None` disables the wipe.
     ///
     /// A change-PIN-class operation rather than a settings write: the policy is
@@ -810,6 +988,17 @@ pub enum UiRequest {
     /// exists in which the records survive its removal, and a name that implied otherwise
     /// would be the one place this enum could mislead about what the button does.
     RemovePin,
+    /// Persist the device name the user typed on S-44a, and answer with
+    /// [`Ui::device_name_result`].
+    ///
+    /// The string is PUBLIC and carries no [`Secret`] wrapper, deliberately: it is shown
+    /// on the lock screen, before any authentication, to whoever is holding the device.
+    /// See [`LockInfo::device_name`] for what that means and what it does not mean.
+    ///
+    /// Validated by the screen before it is raised - ASCII, short enough for the narrower
+    /// panel, and not a PIN or a BIP-39 word - so an embedder receives a string it can
+    /// store as it stands. An empty string is legal and means the device has no name.
+    SetDeviceName(String),
 
     // --- 0.2.0: the card, the transaction and the registry ----------------------------
     //
@@ -847,6 +1036,25 @@ pub enum UiRequest {
     /// `overwrite` is true only on the second raise, behind the C4a confirm that a
     /// [`WriteOutcome::Collision`] opens. Answer with [`Ui::write_result`].
     WriteSigned { overwrite: bool },
+    /// Encode the signed transaction the std side is holding as a QR symbol and answer
+    /// with [`Ui::show_signed_qr`]. S-38's second exit, which opens S-39 over it.
+    ///
+    /// Carries nothing, exactly like [`UiRequest::SignTx`] and
+    /// [`UiRequest::WriteSigned`]: the bytes live on the std side with the seed that made
+    /// them, and a request that carried them would put a second copy of a signed
+    /// transaction in this crate for the length of a function call. The embedder frames
+    /// what it is already holding.
+    ///
+    /// Distinct from [`UiRequest::Qr`], which carries its own payload and is answered by
+    /// [`Ui::show_qr`] onto the schemes screen. Two requests rather than one because the
+    /// two payloads are owned by different sides of the boundary and land on different
+    /// screens; sharing either half would mean a QR answer that could be installed over
+    /// whichever of them happened to be showing.
+    ///
+    /// The screen raises this only when `notyas_core::psbt_qr::fits` says the transaction
+    /// can be drawn scannably, so the refusal in the answer is for a disagreement between
+    /// the two sides - not for the ordinary too-large case, which never gets this far.
+    ShowSignedQr,
     /// Destroy the signed transaction the std side is holding without delivering it - the
     /// C4b override S-38 offers after two failed writes. Answer with
     /// [`Ui::discard_result`].
@@ -869,6 +1077,35 @@ pub enum UiRequest {
     /// [`Ui::set_registrations`]. Raised only behind the C4d typed-name sheet. Answer with
     /// [`Ui::registration_deleted`].
     DeleteRegistration(u8),
+
+    // --- 0.2.0: repairing a card the device cannot read (S-49) -------------------------
+    //
+    // Two requests and never one. A probe reads and a format destroys, they are separated
+    // by a typed consent the user gives IN BETWEEN them, and a single request that did
+    // both would mean the decision to write was taken on the std side out of a state no
+    // screen had shown anybody.
+    /// Look at the card at BLOCK level and decide whether writing a filesystem into its
+    /// existing partition could make it readable. Answer with [`Ui::format_offer`].
+    ///
+    /// Reads. Writes nothing, ever, on any path - which is what lets it run the moment the
+    /// screen opens, with no consent behind it.
+    ProbeCardFormat,
+    /// Write an empty FAT filesystem into partition `partition` of the card whose capacity
+    /// renders as `card`. Answer with [`Ui::format_result`].
+    ///
+    /// The most destructive request in this vocabulary: it erases a card whose contents
+    /// this device never held and cannot describe. It is raised from exactly one place -
+    /// behind the C4d typed sheet on S-49 - and it carries the two facts consent was given
+    /// AGAINST rather than a bare "do it", so the embedder can re-read the card and refuse
+    /// if what is in the slot is no longer what was on the panel. A card swapped between
+    /// the sheet and the tap is the failure this shape exists to make impossible.
+    FormatCard {
+        /// The MBR partition index, 1..=4, that the offer named.
+        partition: u8,
+        /// The card's capacity as [`FormatTarget::word`] rendered it - which is also the
+        /// word the user typed back.
+        card: String,
+    },
 }
 
 /// A secret on its way from a screen to the embedder: a PIN, or the prefix of one.
@@ -881,7 +1118,21 @@ pub struct Secret(Zeroizing<String>);
 
 impl Secret {
     fn new(value: &str) -> Secret {
-        let mut buf = secret_buf(PIN_MAX);
+        Secret::sized(value, PIN_MAX)
+    }
+
+    /// A secret sized for a BIP-39 passphrase rather than a PIN.
+    ///
+    /// The capacity is the whole point of the type (see [`secret_buf`]): a buffer built at
+    /// `PIN_MAX` and filled with 200 bytes of passphrase reallocates four times on the way,
+    /// and every abandoned allocation is a prefix of the passphrase that no `Zeroizing`
+    /// reaches. One constructor per bound, and each call site says which bound it means.
+    pub(crate) fn passphrase(value: &str) -> Secret {
+        Secret::sized(value, PASS_MAX)
+    }
+
+    fn sized(value: &str, cap: usize) -> Secret {
+        let mut buf = secret_buf(cap);
         buf.push_str(value);
         Secret(buf)
     }
@@ -922,10 +1173,21 @@ pub struct WalletDraft {
     pub name: String,
     pub fingerprint: String,
     pub network: bitcoin::Network,
-    /// Whether a BIP-39 passphrase was applied. The passphrase ITSELF is never handed
-    /// over and never stored (ratified Q22); this is the flag the record carries so the
-    /// wallet home can say the wallet has one.
-    pub passphrase: bool,
+    /// The BIP-39 passphrase this wallet was derived with, or `None` where none was
+    /// applied.
+    ///
+    /// It travels ONCE, here, at the save - which is the moment the embedder has to write
+    /// the record's flag truthfully and to seed the session so that the wallet the user
+    /// just created does not immediately ask for the passphrase back. What the embedder
+    /// STORES is a separate decision the owner makes per wallet (Q22 amendment,
+    /// 2026-08-19); the default is that it is held for the session and written nowhere.
+    ///
+    /// [`Secret`], not `String`, for the reason the PIN is: the redacting `Debug` is what
+    /// lets this ride inside a `Debug`-deriving enum at all.
+    pub passphrase: Option<Secret>,
+    /// Whether to store the passphrase in the sealed record at creation time.
+    /// When true, the firmware calls set_passphrase_storage after sealing.
+    pub store_passphrase: bool,
 }
 
 impl WalletDraft {
@@ -940,6 +1202,7 @@ impl core::fmt::Debug for WalletDraft {
             .field("name", &self.name)
             .field("fingerprint", &self.fingerprint)
             .field("phrase", &"<redacted>")
+            .field("passphrase", &self.passphrase.as_ref().map(|_| "<redacted>"))
             .finish()
     }
 }
@@ -1020,8 +1283,48 @@ pub struct WalletInfo {
     /// False for a "Use once, keep nothing" session: nothing was written, and the wallet
     /// home says so rather than letting the user assume it survives a power cut.
     pub stored: bool,
-    /// A BIP-39 passphrase was applied. Never the passphrase itself (Q22).
-    pub passphrase: bool,
+    /// What a BIP-39 passphrase has to do with this wallet. Never the passphrase itself.
+    pub passphrase: PassphraseState,
+}
+
+/// What a passphrase has to do with a wallet, as the identity card states it.
+///
+/// Three states and not a bool, and the reason is a lie this product shipped: the card
+/// rendered `passphrase off` for a wallet that demonstrably had one, because the embedder
+/// had no way to say otherwise and `false` was the closest the vocabulary came to "not
+/// measured". A value that cannot express what is true is a value that will be wrong.
+///
+/// The words ON and off are banned from this row and the copy gate enforces it. A
+/// passphrase is not a setting of a wallet that could be switched: it is part of WHICH
+/// wallet this is - the same words under a different passphrase are a different wallet with
+/// a different fingerprint. What IS a setting is whether this device remembers it, and
+/// that is what [`PassphraseState::Stored`] names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassphraseState {
+    /// The words alone derive this wallet.
+    None,
+    /// A passphrase is part of this wallet, and this device does not keep it. Opening asks
+    /// for it once per session.
+    Required,
+    /// A passphrase is part of this wallet and this device remembers it, because the owner
+    /// turned that on for this wallet (Q22 amendment, 2026-08-19).
+    Stored,
+}
+
+impl PassphraseState {
+    /// The identity-card row, and the only three strings that row may ever contain.
+    pub fn row(self) -> &'static str {
+        match self {
+            PassphraseState::None => "no passphrase",
+            PassphraseState::Required => "passphrase required",
+            PassphraseState::Stored => "passphrase stored",
+        }
+    }
+
+    /// Whether a passphrase is part of this wallet's identity at all.
+    pub fn applied(self) -> bool {
+        !matches!(self, PassphraseState::None)
+    }
 }
 
 /// A row of the wallet list.
@@ -1177,11 +1480,28 @@ impl PinShape {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockInfo {
     pub status: StoreStatus,
-    /// User-chosen device nickname (Settings). Empty when unset, which the lock screen
-    /// renders as its own edge state rather than as a blank line.
-    pub nickname: String,
-    /// User-chosen lock word (Settings). Empty when unset.
-    pub lock_word: String,
+    /// The one user-chosen string this device shows before a PIN is typed (S-44's
+    /// device-name row). Empty when unset, which the lock screen renders as its own edge
+    /// state rather than as a blank line.
+    ///
+    /// # What an attacker learns from it, stated because it is readable without a PIN
+    ///
+    /// The name, in full, by picking the device up. That is the whole of it, and it is
+    /// not an oversight to be sealed later: a pre-PIN surface is readable by anyone
+    /// holding the device, so ANY string shown there is public to whoever has it. A name
+    /// is not a secret and this field is not protected - it is deliberately outside the
+    /// sealed store, because a string that could only be read after unlocking could not
+    /// be shown on the screen that asks for the PIN.
+    ///
+    /// It follows that the name proves NOTHING about which device this is. A counterfeit
+    /// built by someone who has held this one shows the same name. The device's actual
+    /// anti-swap evidence is the word pair S-04 derives from the typed PIN prefix and a
+    /// device-held secret, which a counterfeit cannot compute; the copy rule that follows
+    /// is enforced in `screens/lock.rs`. Until 2026-08-19 this struct carried a SECOND
+    /// pre-PIN string - a "lock word" whose panel claimed it let the user tell this
+    /// device from a fake - and that claim was false for exactly the reason above. One
+    /// string, and no claim on it.
+    pub device_name: String,
     /// Attempts left before the wipe; `None` when the wipe policy is off.
     pub attempts_left: Option<u8>,
     /// The configured threshold, so every number on screen is a format string over the
@@ -1220,8 +1540,7 @@ impl Default for LockInfo {
     fn default() -> Self {
         LockInfo {
             status: StoreStatus::NotProvisioned,
-            nickname: String::new(),
-            lock_word: String::new(),
+            device_name: String::new(),
             attempts_left: None,
             wipe_after: None,
             min_pin_len: PIN_MIN_DEFAULT,
@@ -1232,17 +1551,359 @@ impl Default for LockInfo {
 }
 
 /// The Q22 warning, in the plain words the ratified answer requires, at every one of its
-/// three placements.
+/// placements.
 ///
-/// ONE constant rather than three paraphrases: the acceptance criterion is that the same
-/// four facts reach the user wherever a passphrase is involved - it is not stored here,
-/// restoring needs both halves, a seed backup alone is not enough, and the device cannot
-/// help if it is forgotten - and three copies of a sentence drift until one of them says
-/// something weaker. The placements are passphrase entry (create AND restore), the
-/// post-check backup screen, and the save that would otherwise imply the device kept it.
-pub(crate) const PASSPHRASE_NOT_STORED: [&str; 1] = [
-    "This passphrase is not stored here. Restoring needs BOTH your seed words AND \n     it. A seed backup alone will not do. A forgotten one is lost.",
+/// ONE constant rather than four paraphrases: the acceptance criterion is that the same
+/// facts reach the user wherever a passphrase is involved, and four copies of a sentence
+/// drift until one of them says something weaker. The placements are passphrase entry
+/// (create AND restore), the post-check backup screen, the save that would otherwise imply
+/// the device kept it, and - since the 2026-08-19 amendment - the sheet that offers to
+/// store it.
+///
+/// # What the amendment changed, and what it did not
+///
+/// "Not stored" is still the DEFAULT and still the only state a user can reach without
+/// deliberately turning storage on for one wallet, so the claim is qualified rather than
+/// dropped. The rest is the fact that actually loses coins, and it holds whichever way the
+/// toggle goes: the seed words alone restore a DIFFERENT wallet, so the passphrase has to
+/// be written down and kept apart from them - remembered HERE is not backed up here. It
+/// says in one clause what the ratified wording said in two ("restoring needs both halves"
+/// and "a seed backup alone will not do"), because the space is measured rather than
+/// editorial: three BODY lines is what the 800x480 fork screen has under two equal cards,
+/// and a fourth line would push the block off the panel with no scroll behind it.
+pub const PASSPHRASE_NOT_STORED: [&str; 1] = [
+    "Not stored here unless you choose to store it. Your seed words alone restore a \
+     DIFFERENT wallet - write this passphrase down and keep it apart.",
 ];
+
+/// The refusal an unlock attempt gets when the passphrase derives a different wallet.
+///
+/// The device never says "wrong", "incorrect" or "invalid" about a passphrase, and the
+/// copy gate asserts those words appear in no frame of this screen. BIP-39 has no invalid
+/// passphrases: every one of them opens SOME wallet, so the only true statement is which
+/// wallet the typed one opens and which wallet this record is. Both fingerprints are public
+/// values - one is in the record, and the other is a function of what the user just typed -
+/// so stating them discloses nothing they do not already hold.
+///
+/// What is never shown, here or anywhere: the fingerprint these words derive with an EMPTY
+/// passphrase. That value is an existence proof for a hidden wallet, and the open path
+/// discards it rather than rendering it.
+pub struct PassphraseRefusal {
+    /// The wallet the record names. Eight lowercase hex.
+    pub expected: String,
+    /// The wallet the typed passphrase opens. Eight lowercase hex.
+    pub derived: String,
+}
+
+impl PassphraseRefusal {
+    /// The sentence the unlock screen renders. One place, so the rule about what this may
+    /// say cannot be broken by a second caller wording it again.
+    pub fn sentence(&self) -> String {
+        format!(
+            "Every passphrase opens some wallet. That one opens wallet {}. This record is \
+             wallet {}, so nothing was opened. Spelling, capitals and spaces all count - \
+             check them and try again.",
+            self.derived, self.expected
+        )
+    }
+}
+
+impl core::fmt::Debug for PassphraseRefusal {
+    /// Public values, both of them, and the error type in the firmware says so too. Safe
+    /// to print, unlike everything else on the screen that renders it.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PassphraseRefusal")
+            .field("expected", &self.expected)
+            .field("derived", &self.derived)
+            .finish()
+    }
+}
+
+/// What became of a change to whether this device remembers a wallet's passphrase.
+///
+/// The state is READ BACK from the record after the write and reported here, never
+/// inferred from the intent: a toggle that rendered what the user asked for rather than
+/// what the flash says would be a switch that lies about the one thing it controls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StorageOutcome {
+    /// The record now says this, as it read back after the re-seal.
+    Now(PassphraseState),
+    /// Nothing was written, and this is why. The wallet is exactly as it was.
+    Refused(String),
+}
+
+/// The retry gate on passphrase unlock attempts, per wallet slot, for this power-up.
+///
+/// # Why there is one at all
+///
+/// A stored record carries the fingerprint its seed must produce, so the device can tell a
+/// right passphrase from a wrong one - which makes the unlock screen an ORACLE: without a
+/// gate, somebody holding the device and the PIN could grind passphrase guesses against it
+/// at whatever rate the panel accepts. The gate is what makes that rate the device's
+/// decision rather than the attacker's.
+///
+/// It is honest about what it does not fix: the same grinding runs OFF the device, at
+/// PBKDF2 speed, against a flash dump plus the PIN, and no on-panel delay reaches that.
+/// Only passphrase strength does. What this closes is the cheap attack - the one that
+/// needs no equipment beyond the device in the hand.
+///
+/// # The schedule
+///
+/// The first two attempts are immediate, because the common case is a typo and a person
+/// who has just mistyped their own passphrase should not be punished for it. From the
+/// third, the wait doubles from five seconds and is capped at five minutes. A power cycle
+/// clears it - and costs more than the early delays are worth, which is why the early
+/// delays are small.
+///
+/// # Where it lives, and why not on the screen
+///
+/// On the [`Ui`], not on the unlock screen: a counter the screen owned would reset every
+/// time the user backed out to the wallet list and tapped the row again, which is one tap
+/// and would make the gate decorative. It survives a lock for the same reason. It does NOT
+/// survive a power cycle, because it is RAM, and that is stated rather than worked around.
+#[derive(Debug, Default)]
+pub(crate) struct UnlockGate {
+    /// One entry per slot that has been refused at least once this power-up.
+    ///
+    /// A list rather than a table sized for the store, because the entries are failures
+    /// and not wallets: on a device in normal use it is empty, and on a device somebody is
+    /// guessing at it holds the one slot they are guessing at.
+    slots: Vec<GateSlot>,
+}
+
+/// What the gate remembers about ONE wallet slot: how many consecutive refusals it has
+/// taken, and how much of its wait is left.
+///
+/// The wait lives HERE, and that is the whole reason this type exists. It used to be a
+/// single `Option<(slot, ms)>` on the gate, which meant only one slot could be waiting at
+/// a time and a refusal on any other slot overwrote it - so a five-minute countdown on
+/// slot 0 was cleared by one deliberate wrong guess against slot 1, and the schedule could
+/// be held at zero indefinitely for the cost of one extra tap per attempt. That is the
+/// entire attack the gate exists to stop, so it is made unrepresentable rather than merely
+/// tested for: there is no shared field left to overwrite.
+#[derive(Debug)]
+struct GateSlot {
+    slot: u8,
+    /// Consecutive refusals. Cleared by a successful open, or by the wallet ceasing to
+    /// exist; NOT by the wait running out, because the schedule is cumulative for the
+    /// power-up and a gate that forgot on expiry would cap the delay at five seconds.
+    attempts: u32,
+    /// How much of this slot's wait is left, in milliseconds. Zero means it may try now.
+    wait_ms: u32,
+}
+
+impl UnlockGate {
+    /// Ceiling on the wait, in milliseconds. Five minutes: long enough that grinding on
+    /// the panel is pointless, short enough that a legitimate owner who is looking for a
+    /// piece of paper does not have to power cycle.
+    const MAX_WAIT_MS: u32 = 300_000;
+
+    /// Record a refusal for `slot` and return the wait it now carries, in milliseconds.
+    ///
+    /// Only this slot moves. A wrong passphrase for one wallet is not evidence about any
+    /// other one, in either direction: it neither delays another wallet nor releases one.
+    pub(crate) fn refused(&mut self, slot: u8) -> u32 {
+        let i = match self.slots.iter().position(|e| e.slot == slot) {
+            Some(i) => i,
+            None => {
+                self.slots.push(GateSlot { slot, attempts: 0, wait_ms: 0 });
+                self.slots.len() - 1
+            }
+        };
+        let entry = &mut self.slots[i];
+        entry.attempts = entry.attempts.saturating_add(1);
+        // 1, 2: immediate. 3: 5s. 4: 10s. 5: 20s... capped.
+        //
+        // The `.min(20)` is a shift guard and not a second ceiling: `1u32 << 32` panics in
+        // a debug build and wraps in a release one, and `attempts` is a count a finger
+        // resting on the glass can push past thirty-two. Twenty already saturates
+        // `MAX_WAIT_MS` a thousand times over, so the guard costs nothing real.
+        entry.wait_ms = match entry.attempts {
+            0..=2 => 0,
+            n => 5_000u32.saturating_mul(1u32 << (n - 3).min(20)).min(Self::MAX_WAIT_MS),
+        };
+        entry.wait_ms
+    }
+
+    /// This slot opened, or stopped existing. The gate forgets it - the count and the wait
+    /// together, and neither for any other slot.
+    ///
+    /// The "stopped existing" half is what the wallet-deleted answer calls. Slots are
+    /// reused, so a new wallet saved into a deleted one's slot would otherwise inherit a
+    /// dead wallet's five-minute wait for the rest of the power-up.
+    pub(crate) fn cleared(&mut self, slot: u8) {
+        self.slots.retain(|e| e.slot != slot);
+    }
+
+    /// How much longer this slot has to wait, in milliseconds. Zero for a slot the gate
+    /// has never refused, and zero for one whose wait has run out.
+    pub(crate) fn wait_ms(&self, slot: u8) -> u32 {
+        self.slots.iter().find(|e| e.slot == slot).map_or(0, |e| e.wait_ms)
+    }
+
+    /// How many consecutive refusals this slot has taken. For the tests and for a caller
+    /// that wants to say so; nothing on screen prints it, because a count in front of a
+    /// person guessing is a progress bar for them.
+    #[cfg(test)]
+    pub(crate) fn attempts(&self, slot: u8) -> u32 {
+        self.slots.iter().find(|e| e.slot == slot).map_or(0, |e| e.attempts)
+    }
+
+    /// Age EVERY pending wait by `elapsed_ms`, and report whether the countdown that is on
+    /// the glass changed the second it prints.
+    ///
+    /// Every wait ages, because a wait that only ran down while its own screen was open
+    /// would be a wait a user could pause by backing out to the wallet list - which is one
+    /// tap, and would make the whole schedule decorative.
+    ///
+    /// Only `showing` decides the return value. It is the slot the unlock screen is up
+    /// for, or `None` when no unlock screen is showing, and it is the only countdown a
+    /// repaint could change: redrawing the panel for a number nobody can see is forty
+    /// frames a second of an unchanged screen.
+    pub(crate) fn tick(&mut self, elapsed_ms: u32, showing: Option<u8>) -> bool {
+        let mut changed = false;
+        for entry in &mut self.slots {
+            if entry.wait_ms == 0 {
+                continue;
+            }
+            let before = entry.wait_ms.div_ceil(1000);
+            entry.wait_ms = entry.wait_ms.saturating_sub(elapsed_ms);
+            if showing == Some(entry.slot) && before != entry.wait_ms.div_ceil(1000) {
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
+#[cfg(test)]
+mod unlock_gate_tests {
+    use super::UnlockGate;
+
+    /// The published schedule, in one place: two free attempts, then five seconds
+    /// doubling, and the refusal count is what drives it.
+    ///
+    /// Broken version: reset `attempts` when a wait expires. The third row below still
+    /// passes and every one after it collapses to 5000.
+    #[test]
+    fn the_schedule_is_two_free_attempts_then_five_seconds_doubling() {
+        let mut gate = UnlockGate::default();
+        let schedule = [(1u32, 0u32), (2, 0), (3, 5_000), (4, 10_000), (5, 20_000), (6, 40_000)];
+        for (n, expected) in schedule {
+            assert_eq!(gate.refused(0), expected, "refusal {n}");
+            assert_eq!(gate.attempts(0), n, "the count behind refusal {n}");
+            assert_eq!(gate.wait_ms(0), expected, "what the screen would read after {n}");
+        }
+    }
+
+    /// The wait stops at five minutes and stays there, and the arithmetic that produces it
+    /// survives a count large enough to shift a u32 off its own width.
+    ///
+    /// The `.min(20)` in `refused` is the only thing standing between this test and a
+    /// panic in the input path: at the thirty-fifth refusal the shift would be `1 << 32`.
+    /// A device left face-down with something resting on the glass is not a hypothesis.
+    ///
+    /// Broken version: drop the `.min(20)`. This panics in a debug build and silently
+    /// wraps the wait back down to five seconds in a release one.
+    #[test]
+    fn the_wait_caps_at_five_minutes_and_the_shift_cannot_overflow() {
+        let mut gate = UnlockGate::default();
+        let mut last = 0;
+        for _ in 0..200 {
+            last = gate.refused(3);
+        }
+        assert_eq!(last, 300_000, "the cap");
+        assert_eq!(gate.wait_ms(3), 300_000);
+        assert_eq!(gate.attempts(3), 200, "the count keeps rising underneath the cap");
+    }
+
+    /// THE security property: the gate is per wallet, so a refusal on one slot cannot
+    /// release another slot's wait.
+    ///
+    /// With a single shared wait this was a one-tap reset - guess slot 0 until it costs
+    /// five minutes, then deliberately fail once against slot 1, and slot 0 is open for
+    /// business again - which made the entire schedule cost one extra tap per attempt.
+    ///
+    /// Broken version: put the wait back on the gate as `Option<(u8, u32)>`. The last two
+    /// assertions trip.
+    #[test]
+    fn a_wait_on_one_wallet_survives_a_refusal_on_another() {
+        let mut gate = UnlockGate::default();
+        for _ in 0..3 {
+            gate.refused(0);
+        }
+        assert_eq!(gate.wait_ms(0), 5_000, "slot 0 is serving its first real wait");
+
+        // One deliberate wrong guess against a different wallet.
+        assert_eq!(gate.refused(1), 0, "slot 1 has spent one of its two free attempts");
+        assert_eq!(gate.wait_ms(1), 0, "and is not itself waiting");
+        assert_eq!(gate.wait_ms(0), 5_000, "slot 0's wait is untouched");
+        assert_eq!(gate.attempts(0), 3, "and so is its count");
+    }
+
+    /// A successful open forgets ONE slot. The others keep both halves of their state,
+    /// which is what makes opening one wallet a statement about that wallet only.
+    #[test]
+    fn cleared_forgets_one_slot_and_leaves_the_rest() {
+        let mut gate = UnlockGate::default();
+        for _ in 0..4 {
+            gate.refused(0);
+            gate.refused(1);
+        }
+        assert_eq!(gate.wait_ms(0), 10_000);
+        assert_eq!(gate.wait_ms(1), 10_000);
+
+        gate.cleared(0);
+        assert_eq!(gate.attempts(0), 0, "the count is gone");
+        assert_eq!(gate.wait_ms(0), 0, "and so is the wait");
+        assert_eq!(gate.attempts(1), 4, "the other slot is untouched");
+        assert_eq!(gate.wait_ms(1), 10_000);
+
+        // And the cleared slot starts again from the top of the schedule rather than from
+        // where it left off: the two free attempts belong to an unlock session, not to a
+        // lifetime.
+        assert_eq!(gate.refused(0), 0);
+    }
+
+    /// `tick` repaints on the SECOND boundary and on nothing else, for the slot on screen
+    /// and for no other.
+    ///
+    /// The countdown beside a disabled Try again is the only thing on this device that has
+    /// to repaint while nobody is touching it, so this contract is what stands between a
+    /// live number and forty redundant frames a second.
+    ///
+    /// Broken version: return `changed` for every slot rather than only for `showing`. The
+    /// hidden-countdown assertion trips.
+    #[test]
+    fn tick_repaints_only_when_the_shown_second_changes() {
+        let mut gate = UnlockGate::default();
+        for _ in 0..3 {
+            gate.refused(0);
+        }
+        assert_eq!(gate.wait_ms(0), 5_000);
+
+        // 5000 -> 4900 still prints "5s", because the screen rounds up.
+        assert!(!gate.tick(100, Some(0)), "no boundary crossed");
+        assert_eq!(gate.wait_ms(0), 4_900);
+        // 4900 -> 3900 prints "4s".
+        assert!(gate.tick(1_000, Some(0)), "the printed second changed");
+
+        // The same crossing, for a slot nobody is looking at, is not a repaint - but the
+        // wait still ages, because a countdown a user can pause by navigating away is not
+        // a countdown.
+        let before = gate.wait_ms(0);
+        assert!(!gate.tick(1_000, Some(1)), "a hidden countdown does not dirty the panel");
+        assert!(!gate.tick(1_000, None), "and neither does one with no screen up");
+        assert_eq!(gate.wait_ms(0), before - 2_000, "it aged anyway");
+
+        // It runs out at zero and stays there rather than wrapping, and an expired wait
+        // reports no further change however long the loop keeps calling.
+        gate.tick(300_000, Some(0));
+        assert_eq!(gate.wait_ms(0), 0);
+        assert!(!gate.tick(1_000, Some(0)), "an expired wait has nothing left to repaint");
+        assert_eq!(gate.attempts(0), 3, "and expiry does not forgive the attempts");
+    }
+}
 
 /// What one [`Ui::tick`] did.
 ///
@@ -1693,6 +2354,257 @@ pub enum CardOutcome {
 }
 
 // ---------------------------------------------------------------------------------------
+// Repairing a card the device cannot read (S-49)
+// ---------------------------------------------------------------------------------------
+
+/// A card that can be repaired by writing a filesystem into the partition it already has.
+///
+/// Every field is a FACT the embedder read off the hardware, already rendered, because
+/// this crate has neither a driver nor a partition-table parser and must not grow either.
+/// The fixed copy - what a format destroys, what it cannot undo, what it does not touch -
+/// belongs to the screen and is frozen there, which is the same split
+/// [`RefusalNotice`] draws between a code's ratified sentences and what happened to one
+/// file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatTarget {
+    /// The MBR partition entry that will be written into, 1..=4.
+    ///
+    /// On the panel and in [`UiRequest::FormatCard`], so the partition the user consented
+    /// to is the partition the embedder writes. Never chosen by this crate.
+    pub partition: u8,
+    /// The whole card, in the units printed on its own label ("32 GB").
+    pub capacity: String,
+    /// The word typed back to consent: the capacity with the space taken out ("32GB").
+    ///
+    /// The card's own identity, on the precedent that a wallet deletion types the wallet's
+    /// name. A card has no volume label to read back - an unmountable one especially - so
+    /// its size is the only thing about it a user can check against the card in their
+    /// hand, and checking THAT is the mistake this gate exists to catch: the wrong card in
+    /// the slot.
+    pub word: String,
+    /// What the partition's type byte says it holds, in words. A claim somebody else
+    /// wrote, rendered so the user recognises their own card, and never treated as a fact
+    /// about the contents.
+    pub holds: String,
+    /// The partition's own size, which is not the card's when the table leaves slack.
+    pub volume: String,
+}
+
+/// Why a format is not offered.
+///
+/// A CODE with frozen copy, on [`RefusalCode`]'s reasoning and for the same reason: what
+/// this device says about somebody's card is product copy - stable across releases,
+/// asserted with its exact text by CI, and measured against both panels before it ships -
+/// so it belongs in this crate beside every other frozen string. What the embedder
+/// contributes is the machine detail in `FormatOffer::Refused`'s `note`, which is the one
+/// part it knows and this crate cannot.
+///
+/// The refusals are the point of the feature as much as the offer is. Formatting repairs
+/// exactly one fault - a partition holding a filesystem this device cannot read - and
+/// every other reason a card will not work is here, with the remedy that does apply.
+/// Three sentences each, never fewer: a refusal with no way forward is an obstacle, not
+/// an answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatRefusal {
+    /// The board has no microSD wiring this build trusts.
+    NoSlot,
+    /// The firmware, not the card, is why nothing can be read. Formatting here would erase
+    /// a card that may be perfectly good in order to work around a build setting, which is
+    /// the single worst outcome this feature has.
+    FirmwareCannotRead,
+    /// The card mounted and listed. There is nothing to repair, and this device does not
+    /// offer to erase a working card.
+    CardAlreadyReadable,
+    /// Nothing answered in the slot.
+    NoCard,
+    /// Something else is using the card. Not reachable from the shipped screens - a format
+    /// is not offered from inside a card flow - and given its own sentence anyway, because
+    /// the alternative is a branch that reports one of the others and lies.
+    Busy,
+    /// The card answered and then would not return its first sector. Formatting writes to
+    /// that same region, so it would fail too - after destroying whatever could still have
+    /// been recovered.
+    Hardware,
+    /// The filesystem starts at LBA 0 with no table above it. Formatting would mean
+    /// INVENTING a partition layout, which is a partition change and therefore refused.
+    NoPartitionTable,
+    /// A GPT-partitioned card, which this build's FatFs cannot address at all.
+    Gpt,
+    /// A table with no partitions in it. This device formats an existing partition and
+    /// never creates one.
+    NoPartitions,
+    /// More than one partition. Carries the count, because "there are three" is the whole
+    /// sentence: the device will not pick one of somebody's volumes to destroy.
+    SeveralPartitions(u8),
+    /// One partition entry, and it is an extended container - a chain of further volumes
+    /// this device does not read. Separate from [`FormatRefusal::SeveralPartitions`]
+    /// because that one states a COUNT and this is precisely the case where the count is
+    /// unknown.
+    ExtendedPartition,
+    /// The table describes a partition that does not fit on the card.
+    TableDamaged,
+    /// The partition is too small to hold a filesystem.
+    TooSmall,
+}
+
+impl FormatRefusal {
+    /// What is true of the card. One sentence, and nothing in it to look up.
+    pub fn headline(&self) -> &'static str {
+        match self {
+            FormatRefusal::NoSlot => "This device has no card slot.",
+            FormatRefusal::FirmwareCannotRead => "This firmware cannot read cards.",
+            FormatRefusal::CardAlreadyReadable => "This card is already readable.",
+            FormatRefusal::NoCard => "No card answered in the slot.",
+            FormatRefusal::Busy => "The card is in use.",
+            FormatRefusal::Hardware => "This card has a hardware fault.",
+            FormatRefusal::NoPartitionTable => "This card has no partition table.",
+            FormatRefusal::Gpt => "This card uses a GPT partition table.",
+            FormatRefusal::NoPartitions => "This card's partition table is empty.",
+            FormatRefusal::SeveralPartitions(_) => "This card holds more than one partition.",
+            FormatRefusal::ExtendedPartition => "This card has an extended partition.",
+            FormatRefusal::TableDamaged => "This card's partition table is damaged.",
+            FormatRefusal::TooSmall => "This card's partition is too small.",
+        }
+    }
+
+    /// Why the device stops. States the LIMIT rather than blaming the card: in most of
+    /// these the card is perfectly good for the machine that wrote it.
+    pub fn detail(&self) -> String {
+        match self {
+            FormatRefusal::NoSlot => {
+                String::from("No microSD wiring is verified for this board.")
+            }
+            FormatRefusal::FirmwareCannotRead => String::from(
+                "It was built without long file names, so it refuses every card before it \
+                 powers the slot. Formatting would erase the card and change nothing.",
+            ),
+            FormatRefusal::CardAlreadyReadable => String::from(
+                "This device mounted it without trouble, so there is nothing here to \
+                 repair. It does not offer to erase a working card.",
+            ),
+            FormatRefusal::NoCard => {
+                String::from("The slot is empty, or the card did not respond at all.")
+            }
+            FormatRefusal::Busy => {
+                String::from("Another card operation is running, so nothing can be checked.")
+            }
+            FormatRefusal::Hardware => String::from(
+                "It answered but would not return its first sector. Formatting cannot \
+                 repair that, and would overwrite data a recovery tool might still reach.",
+            ),
+            FormatRefusal::NoPartitionTable => String::from(
+                "Its filesystem starts at the very beginning of the card. Inventing a \
+                 partition layout for it is not this device's to do.",
+            ),
+            FormatRefusal::Gpt => String::from(
+                "This device reads MBR tables only, so formatting here would not make the \
+                 card readable.",
+            ),
+            FormatRefusal::NoPartitions => String::from(
+                "This device formats a partition that already exists, and never creates \
+                 one.",
+            ),
+            FormatRefusal::SeveralPartitions(n) => format!(
+                "The table describes {n} partitions. This device will not choose which of \
+                 them to erase.",
+            ),
+            FormatRefusal::ExtendedPartition => String::from(
+                "It contains further partitions this device does not read, so it cannot \
+                 even say how many volumes are on the card.",
+            ),
+            FormatRefusal::TableDamaged => String::from(
+                "The partition it describes does not fit on the card. Writing on the \
+                 strength of it would destroy data that is still recoverable.",
+            ),
+            FormatRefusal::TooSmall => {
+                String::from("Nothing this device can build would fit in it.")
+            }
+        }
+    }
+
+    /// What to do instead. Ratified R-23's shape: the remedy for a card this device cannot
+    /// serve is a computer that can.
+    pub fn remedy(&self) -> &'static str {
+        match self {
+            FormatRefusal::NoSlot => "Nothing on any card is at risk.",
+            FormatRefusal::FirmwareCannotRead => {
+                "Install a firmware build with long file names."
+            }
+            FormatRefusal::CardAlreadyReadable => "Use a computer if you want to erase it.",
+            FormatRefusal::NoCard => "Insert a card and check again.",
+            FormatRefusal::Busy => "Wait for it to finish, then check again.",
+            FormatRefusal::Hardware => {
+                "Copy what you can off it on a computer, then replace it."
+            }
+            FormatRefusal::NoPartitionTable
+            | FormatRefusal::Gpt
+            | FormatRefusal::NoPartitions
+            | FormatRefusal::TableDamaged => "Format it on a computer as one FAT32 partition.",
+            FormatRefusal::SeveralPartitions(_) | FormatRefusal::ExtendedPartition => {
+                "Use a card with a single partition."
+            }
+            FormatRefusal::TooSmall => "Use a larger card.",
+        }
+    }
+
+    /// Every refusal, so the test that measures copy against both panels measures ALL of
+    /// it rather than the one somebody remembered to add.
+    pub const ALL: [FormatRefusal; 13] = [
+        FormatRefusal::NoSlot,
+        FormatRefusal::FirmwareCannotRead,
+        FormatRefusal::CardAlreadyReadable,
+        FormatRefusal::NoCard,
+        FormatRefusal::Busy,
+        FormatRefusal::Hardware,
+        FormatRefusal::NoPartitionTable,
+        FormatRefusal::Gpt,
+        FormatRefusal::NoPartitions,
+        // The largest count a four-entry MBR can produce.
+        FormatRefusal::SeveralPartitions(4),
+        FormatRefusal::ExtendedPartition,
+        FormatRefusal::TableDamaged,
+        FormatRefusal::TooSmall,
+    ];
+}
+
+/// What the embedder found when it looked at the card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormatOffer {
+    Ready(FormatTarget),
+    Refused {
+        why: FormatRefusal,
+        /// The machine detail behind the refusal - a driver error code, the sdkconfig line
+        /// a build is missing - or empty where there is none.
+        ///
+        /// The embedder's, and the LAST thing drawn, so that a panel with no room for it
+        /// loses a hex code rather than the sentence the user has to act on. Bounded and
+        /// checked for printability before it is drawn, on the rule this crate applies to
+        /// every string it did not write.
+        note: String,
+    },
+}
+
+/// What became of a format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormatOutcome {
+    /// The card now holds an empty filesystem. The sentence is the embedder's: it names
+    /// the card and the partition it actually wrote.
+    Done(String),
+    /// It did not finish.
+    Failed {
+        why: String,
+        /// Whether any part of the card may already have been overwritten.
+        ///
+        /// The whole reason this is a field and not a shade of the sentence: a user whose
+        /// card was left untouched and a user whose card was left half-written need
+        /// different things from the next minute of their life, and the second one has to
+        /// be told to stop trusting the card. A write-protected card fails exactly here,
+        /// because this firmware cannot see the switch (the wp line is not routed).
+        wrote: bool,
+    },
+}
+
+// ---------------------------------------------------------------------------------------
 // Refusals (S-29 / C7)
 // ---------------------------------------------------------------------------------------
 
@@ -2109,6 +3021,25 @@ pub enum SignOutcome {
     Refused(RefusalNotice),
 }
 
+/// What the std side made of a [`UiRequest::ShowSignedQr`].
+///
+/// Two variants, and the second is not a formality. S-38 decides whether to OFFER the
+/// exit from a length rule it shares with the encoder, but the encoder is the thing that
+/// actually runs, and it refuses bytes that are not a BIP-174 file as well as bytes that
+/// are too many. A device that reached that arm has a bug in it; what this variant buys is
+/// that the bug arrives as a sentence on the panel instead of as a button that does
+/// nothing, which is the failure the whole request/answer vocabulary exists to prevent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignedQrOutcome {
+    /// The finished symbol, ready to draw. Public data: a signed transaction is about to
+    /// be broadcast, so the objection to putting one on a screen is legibility and not
+    /// confidentiality.
+    Symbol(QrData),
+    /// Nothing is going on the glass, and this is the sentence that says why. The
+    /// transaction is untouched and still deliverable by card.
+    Refused(String),
+}
+
 /// What the std side made of a [`UiRequest::WriteSigned`].
 ///
 /// Four answers because S-38 does four different things with them, and three of the four
@@ -2224,6 +3155,73 @@ pub enum ImportOutcome {
 pub enum RegistrationOutcome {
     Saved(RegistrationInfo),
     Refused(RefusalNotice),
+}
+
+/// What the std side made of a [`UiRequest::DeleteWallet`].
+///
+/// Three variants and not `Result<(), String>`, because "it failed" is two different
+/// situations for the owner of a wallet and the device has to say which. The split is by
+/// WHAT THE USER MUST DO NEXT, which is the only distinction a screen can render:
+///
+/// - [`DeleteOutcome::Gone`] - it is done, and the list is the evidence.
+/// - [`DeleteOutcome::Refused`] - nothing was destroyed and the device is as it was. Try
+///   again, or do not.
+/// - [`DeleteOutcome::Damaged`] - something WAS destroyed, or the device cannot say
+///   whether the words are gone. Never a refusal, because a refusal reads as "nothing
+///   happened" and something did.
+///
+/// The embedder writes the sentence; this crate renders it. A delete has too many ways to
+/// go wrong for a fixed catalogue of copy, and the one thing that must not happen is a
+/// failure with nothing to show for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    /// The record and its `registrations` registry records are gone, and the slot was read
+    /// back afterwards to prove it. The count is the one that actually happened, which is
+    /// not necessarily the one the consequence sheet named a minute earlier.
+    Gone { registrations: u8 },
+    /// Nothing was destroyed.
+    Refused(String),
+    /// Something was destroyed, or the outcome cannot be established. Either way the user
+    /// must not walk away believing the wallet is safely gone or safely intact.
+    Damaged(String),
+}
+
+/// What the std side made of a [`UiRequest::RecoveryWords`].
+///
+/// The words themselves, or the reason there are none to show. `Zeroizing`, and the screen
+/// that receives it never copies out of it: the display borrows into this buffer and the
+/// buffer is wiped when the screen is dropped, which `Ui::lock` does to the whole
+/// navigation stack on the auto-lock.
+pub enum WordsOutcome {
+    /// The normalized phrase: BIP-39 words separated by single ASCII spaces.
+    Words(Zeroizing<String>),
+    /// Why the record could not be read. Kept SHORT by the embedder: it is drawn in the
+    /// space Q22's sentence would have taken on a screen with no room to spare.
+    Refused(String),
+}
+
+impl WordsOutcome {
+    /// The words, taken into a self-wiping buffer at exactly the length they need.
+    ///
+    /// For callers that hold a `&str` - the simulator, the tests. The firmware uses the
+    /// variant directly, because the record decoder already hands it a `Zeroizing<String>`
+    /// and MOVING that is one copy fewer than making another.
+    pub fn words(phrase: &str) -> WordsOutcome {
+        let mut buf = String::with_capacity(phrase.len());
+        buf.push_str(phrase);
+        WordsOutcome::Words(Zeroizing::new(buf))
+    }
+}
+
+impl fmt::Debug for WordsOutcome {
+    /// Hand written for the reason every secret-bearing type in this workspace has one: a
+    /// `{:?}` in a log line or a panic payload copies the words somewhere nothing wipes.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WordsOutcome::Words(_) => f.write_str("WordsOutcome::Words(<redacted>)"),
+            WordsOutcome::Refused(why) => write!(f, "WordsOutcome::Refused({why:?})"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------

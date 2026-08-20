@@ -1133,8 +1133,10 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
         // which one opened. Under `Occupancy::AlwaysFilled`, the mode notyas ships for
         // every user (Q2), no such slot exists: F6 `fill_unoccupied` writes device-derived
         // filler into every canary slot that has no identity behind it, so all four are
-        // read and rejected by the same code over the same number of bytes. The early
-        // return is reachable only under `Occupancy::Sparse`.
+        // read and rejected by the same code over the same number of bytes. C7 re-runs the
+        // same fill after a PIN change, which is what keeps that true for the life of the
+        // store rather than only until identity 0 changes its PIN. The early return is
+        // reachable only under `Occupancy::Sparse`.
         //
         // CORRECTION, because this comment used to say otherwise. It excused the leak on
         // the grounds that the identity count "is already visible to anyone holding a
@@ -1510,6 +1512,29 @@ impl<F: Flash, M: DeviceMac> Vault<F, M> {
         // same code path mount uses to finish an interrupted change.
         self.refresh()?;
         self.cleanup()?;
+
+        // C7. Refill, exactly as F6 does, and for the same reason.
+        //
+        // C3 re-seals the filler it can reach, but it walks `user_slots` and the canary
+        // slots are not in it: filler in the canary slot of an identity that does not
+        // exist carries identity 0's generation, so identity 0 changing its PIN strands it
+        // at a generation the election above no longer accepts and `cleanup` erases it.
+        // That would leave one occupied canary slot beside three erased ones - the
+        // identity count, in plain sight in a flash dump, and measurable through the
+        // early return in `open_canary` on a locked device. It is the whole of the
+        // AlwaysFilled indistinguishability claim (SECURITY.md invariant 5) and duress
+        // deniability rests on it.
+        //
+        // `fill_unoccupied` is the right tool rather than a canary-specific loop because
+        // it fills against the table this refresh just built, so it writes exactly the
+        // slots the erase above emptied and skips every slot still holding a record - a
+        // real identity's canary included. It seals under `pin_gen(Identity(0))`, which
+        // the commit has already moved to the new generation. Cosmetic in the sense F6 is:
+        // a cut here leaves the store correct and one identity's filler missing until the
+        // next completed change, and no secret is at risk either way. The trailing
+        // `refresh` is what puts the new filler in the table.
+        self.fill_unoccupied()?;
+        self.refresh()?;
 
         Ok(Session::new(
             bound_new,
@@ -2318,19 +2343,78 @@ mod side_channel {
     fn canary_slots_are_all_occupied_under_always_filled() {
         let (mut v, cfg) = formatted();
         assert_eq!(cfg.occupancy, Occupancy::AlwaysFilled, "the shipped mode");
+        assert_one_identity_behind_four_records(&mut v, &cfg, "after format");
+    }
+
+    /// The same gate, one PIN change later.
+    ///
+    /// A PIN change re-seals every record under a fresh generation and then erases every
+    /// side the new generation does not elect. Filler carries identity 0's generation, so
+    /// unless the change re-seals the filler in the canary slots too, those are the slots
+    /// that erase - and a store that came out of `format` indistinguishable ends up with
+    /// one occupied canary slot and three erased ones, which is the identity count in
+    /// plain sight. Checked in place and again after a remount, because a refill that only
+    /// mount performs would not save a device seized between the two.
+    #[test]
+    fn canary_slots_stay_occupied_after_change_pin() {
+        let (mut v, cfg) = formatted();
+        let mut s = VecScratch::for_params(&cfg.kdf);
+        let session = v
+            .unlock(&Pin::from_normalized_utf8("135790").expect("pin"), s.scratch())
+            .expect("unlock with the format PIN");
+        let session = v
+            .change_pin(
+                session,
+                &Pin::from_normalized_utf8("246800").expect("pin"),
+                s.scratch(),
+            )
+            .expect("change_pin");
+        drop(session);
+        assert_one_identity_behind_four_records(&mut v, &cfg, "after change_pin");
+
+        let mut v = Vault::mount(v.flash.clone(), SoftMac::new(), &cfg).expect("remount");
+        assert_one_identity_behind_four_records(&mut v, &cfg, "after change_pin and remount");
+        let mut s = VecScratch::for_params(&cfg.kdf);
+        v.unlock(&Pin::from_normalized_utf8("246800").expect("pin"), s.scratch())
+            .expect("the new PIN still unlocks");
+    }
+
+    /// Every canary slot holds a record - on flash, not merely in the table - and exactly
+    /// one of them is a real identity.
+    ///
+    /// The table check is what removes the early return from `open_canary`; the erased-side
+    /// check is the flash-dump half of the same claim, and it is separate because the two
+    /// fail independently.
+    fn assert_one_identity_behind_four_records(
+        v: &mut Vault<SimFlash, SoftMac>,
+        cfg: &Config,
+        when: &str,
+    ) {
         let mut real = 0u8;
         for i in 0..cfg.layout.identities {
             let slot = SlotId::new(SlotClass::Canary, i, &cfg.layout).expect("canary slot");
             assert!(
-                v.table.get(slot, &cfg).is_some(),
-                "canary {i} holds no record, so open_canary would skip it and the unlock \
-                 would time the identity count"
+                v.table.get(slot, cfg).is_some(),
+                "{when}: canary {i} holds no record, so open_canary would skip it and the \
+                 unlock would time the identity count"
+            );
+            let a = records::side_is_erased::<SimFlash, SoftMac>(&mut v.flash, cfg, slot, Side::A)
+                .expect("side A");
+            let b = records::side_is_erased::<SimFlash, SoftMac>(&mut v.flash, cfg, slot, Side::B)
+                .expect("side B");
+            assert!(
+                !(a && b),
+                "{when}: canary {i} is erased flash on both sides, which a dump reads as \
+                 an unenrolled identity"
             );
             if v.slot_state_unkeyed(slot).expect("slot state") {
-                real += 1;
+                real = real.saturating_add(1);
             }
         }
-        assert_eq!(real, 1, "one identity was enrolled; the other three are filler");
+        assert_eq!(
+            real, 1,
+            "{when}: one identity was enrolled; the other three must be filler"
+        );
     }
 
     /// Do a filler canary and a real canary take the same time to reject a wrong PIN?

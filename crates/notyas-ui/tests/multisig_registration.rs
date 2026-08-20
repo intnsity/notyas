@@ -21,6 +21,7 @@ use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::Pixel;
 
 use notyas_ui::{
+    PassphraseState,
     BackupState, CardListing, CardOutcome, CosignerRow, FileFilter, FileKind, FileRow,
     ImportOutcome, LockInfo, Network, RefusalCode, RefusalNotice, Region, RegionId,
     RegistrationInfo, RegistrationOutcome, RegistrationReview, ScreenId, StoreStatus, TouchEvent,
@@ -187,7 +188,7 @@ fn wallet_info(registrations: u8) -> WalletInfo {
         network: Network::Bitcoin,
         registrations,
         stored: true,
-        passphrase: false,
+        passphrase: PassphraseState::None,
     }
 }
 
@@ -260,7 +261,7 @@ fn unlocked(w: u32, h: u32, registrations: u8) -> Ui {
     ui.set_verify_info(VerifyInfo::default());
     ui.set_lock_info(LockInfo {
         status: StoreStatus::Locked,
-        nickname: String::from("bench"),
+        device_name: String::from("bench"),
         attempts_left: Some(9),
         wipe_after: Some(10),
         ..LockInfo::default()

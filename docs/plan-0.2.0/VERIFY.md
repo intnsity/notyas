@@ -399,29 +399,38 @@ smaller 16 MB part (`docs/BOARDS.md`); the Waveshare's extra 16 MB is unmapped b
   0x002000 .. 0x008000      24 KiB   second-stage bootloader image, then padding
   0x008000 .. 0x009000       4 KiB   partition table (<= 0xC00 used), then padding
   0x009000 .. 0x010000      28 KiB   gap - no partition covers this
-  0x010000 .. 0xE00000   13.94 MiB   factory app: image, then padding
-  0xE00000 .. 0xE40000     256 KiB   wallets   (encrypted)
-  0xE40000 .. 0xE44000      16 KiB   counters  (plaintext)
-  0xE44000 .. flash_end             unmapped tail: 1.73 MiB (16 MB) / 17.73 MiB (32 MB)
+  0x010000 .. 0x410000       4 MiB   factory app: image, then padding
+  0x410000 .. 0x450000     256 KiB   wallets   (encrypted)
+  0x450000 .. 0x454000      16 KiB   counters  (plaintext)
+  0x454000 .. 0x460000      48 KiB   gap - alignment reserve, no partition covers it
+  0x460000 .. 0x470000      64 KiB   settings  (plaintext, public, pre-PIN)
+  0x470000 .. flash_end             unmapped tail: 11.56 MiB (16 MB) / 27.56 MiB (32 MB)
 ```
 
-**This document was drafted against the superseded 4 MiB-app layout (`wallets` at
-`0x410000`, `counters` at `0x450000`, an 11.7 MiB tail) and is corrected in place
-2026-08-17.** The correction is not cosmetic for section 3, because it moves where the
-blank space *is*: the app partition is declared at its collision bound, so almost all of
-the must-be-blank space is now the **app tail** rather than the unmapped tail, and on
-board B the unmapped tail shrinks from 11.7 MiB to 1.73 MiB. That matters because the app
-tail is exactly the region the merged-image caveat below covers, and the tail is the
-region it does not. The honest consequence is stated where the argument is made, at the
-end of 3.3.
+**Corrected in place 2026-08-19 to the table that actually ships.** This document was
+drafted against the Q7 draft geometry (a 13.94 MiB app declared at its collision bound,
+`wallets` at `0xE00000`); `firmware/partitions.csv` was never changed to it and is
+normative. The consequence for section 3 is the reverse of what the 2026-08-17 note
+predicted: with a 4 MiB app the must-be-blank space is dominated by the **unmapped tail**
+(11.56 MiB on the smaller board) rather than by the app tail, so the region the
+merged-image caveat below cannot vouch for is the smaller half, not the larger one. The
+honest consequence is stated where the argument is made, at the end of 3.3.
+
+0.2.0 also appended `settings`, the plaintext region holding the values the device reads
+before a PIN (device name, network choice). It is **mutable by design**, like `counters`
+and for the same kind of reason - the user changes it on purpose - so it belongs in that
+class and not in the must-be-blank one. Its 14 reserved sectors (`0x462000-0x470000`) are
+never written by this firmware, but they are inside a mutable partition and the scan must
+not report them as evidence of anything. The 48 KiB gap at `0x454000` IS must-be-blank: no
+partition covers it and nothing may ever write there.
 
 Three classes, and the class decides the treatment:
 
 | Class | Regions | Expected value | Comparable against |
 |---|---|---|---|
 | **Immutable code** | bootloader image, partition table, app image | fixed per release+board | the published manifest (7.3) |
-| **Must be blank** | `0x000000-0x002000`, bootloader tail, partition-table tail, `0x009000-0x010000`, app tail, `0xE44000-end` | erased flash, raw `0xff` | a **universal constant**, no manifest needed |
-| **Mutable by design** | `wallets`, `counters` | changes as the device is used | nothing; reported as-is |
+| **Must be blank** | `0x000000-0x002000`, bootloader tail, partition-table tail, `0x009000-0x010000`, app tail, `0x454000-0x460000`, `0x470000-end` | erased flash, raw `0xff` | a **universal constant**, no manifest needed |
+| **Mutable by design** | `wallets`, `counters`, `settings` | changes as the device is used | nothing; reported as-is |
 
 ### 3.2 Why one whole-flash digest cannot work
 
@@ -516,16 +525,14 @@ from anywhere.
   not**: esptool encrypts what it writes, so written-`0xff` becomes ciphertext and the spans
   between `0x2000` and the end of the app read as non-blank. That is a flashing-method
   artefact, not a finding. Consequence: the scan's strongest region is the **unmapped tail
-  above `0xE44000`**, which no image ever covers.
-- **The frozen geometry makes that strongest region small on board B, and this is the one
-  place the Q7 freeze costs this feature something.** The tail is 1.73 MiB on the 16 MB
-  board and 17.73 MiB on the 32 MB board; the bulk of the blank space - about 12.8 MiB on
-  a 1.8 MiB image - is now the **app tail**, inside the app partition, which is exactly the
-  span a merged-image flash writes. So on a release board B flashed from `merged.bin`, the
-  span that a payload would most plausibly occupy is also the span the scan cannot
-  distinguish from a normal flashing method, and only 1.73 MiB is scanned with full
-  confidence. Three things keep this honest rather than fatal, and all three go in
-  `VERIFYING.md`: flashing the artifacts separately rather than as `merged.bin` leaves the
+  above `0x470000`**, which no image ever covers.
+- **The shipped geometry leaves that strongest region large, which is the one place the
+  4 MiB app pays off.** The tail is 11.56 MiB on the 16 MB board and 27.56 MiB on the 32 MB
+  board; the app tail - about 2.2 MiB on a 1.8 MiB image - is the only blank span a
+  merged-image flash writes over, so the great majority of the must-be-blank space is
+  scanned with full confidence on either board and by either flashing method. The caveat
+  still stands for the app tail itself, and the three things that keep it honest rather
+  than fatal all go in `VERIFYING.md`: flashing the artifacts separately rather than as `merged.bin` leaves the
   app tail genuinely erased and restores the scan's reach; on an UNencrypted unit the
   written padding is still raw `0xff`, so the scan is unaffected regardless of method; and
   the per-span report makes which case the owner is in visible rather than hidden inside an
@@ -1044,7 +1051,7 @@ ever available.
 
 ### 6.1 Where it lives, and what that implies
 
-`counters` is a 16 KiB plaintext partition at `0xE40000` (the frozen geometry of the ratified
+`counters` is a 16 KiB plaintext partition at `0x450000` (the geometry of the shipped
 Q7; `ARCHITECTURE.md` 2.7), holding the
 `ESP-SEAL.md` 3.7 ledger: two A/B rotation sectors plus two reserved, one live sector at a
 time, a 128-byte head with a `rotation_ctr` and a `head_mac` keyed by the device guard key,
@@ -1131,7 +1138,7 @@ Three events, and the documentation names all three:
    and S-48b already says the device is blank.
 2. **A full-flash restore.** Undetectable and unpreventable, per 6.1 and `SECURITY.md` tier 3.
 3. **Re-flashing the firmware.** `espflash`/`esptool` writing the whole flash, or an erase
-   that covers `0xE40000`, resets it. A user who reflashes their own device and finds the
+   that covers `0x450000`, resets it. A user who reflashes their own device and finds the
    count back at 1 has not been attacked; they have flashed their device. This is the most
    likely real-world encounter with the reset and it is the first line of the
    `VERIFYING.md` paragraph.
@@ -1545,8 +1552,8 @@ numbers, no invented values".
 | Flash unique ID | `esp_flash_read_unique_chip_id(NULL, &u64)`; `ESP_ERR_NOT_SUPPORTED` if absent | boot | us | a factory serial number for the flash part - a swapped chip changes it | anything if the part does not implement `4Bh`; and it is the top 64 of 128 bits on GD parts (section 4.6) |
 | Partitions (map) | `esp_partition_find` / iterator | boot | us | the live table, row by row, comparable to `firmware/partitions.csv` | that a partition's contents match its declared purpose |
 | Reserved space | raw read of the must-be-blank spans, section 3.3 | **on demand** | *(V2)*, seconds | no bytes are present outside the partitions and images | that a payload is absent from a *mutable* partition, or that the scan itself is honest |
-| `wallets` digest (raw) | raw read of `0xE00000..0xE40000` | on demand | ~ms | whether the sealed region changed since the owner last looked | anything about content - it is a digest of ciphertext |
-| `counters` digest (raw) | raw read of `0xE40000..0xE44000` | on demand | ~ms | the ledger changed (it changes every boot) | anything - it is expected to change |
+| `wallets` digest (raw) | raw read of `0x410000..0x450000` | on demand | ~ms | whether the sealed region changed since the owner last looked | anything about content - it is a digest of ciphertext |
+| `counters` digest (raw) | raw read of `0x450000..0x454000` | on demand | ~ms | the ledger changed (it changes every boot) | anything - it is expected to change |
 
 ### 10.4 efuse
 
@@ -1667,8 +1674,9 @@ Three tables ship, and their budgets are fixed here rather than left to the impl
 
 ```
     factory   app/fact  0x010000  14272K
-    wallets   data/0x40 0xE00000    256K  enc
-    counters  data/0x41 0xE40000     16K
+    wallets   data/undef 0x410000   256K  enc
+    counters  data/undef 0x450000    16K
+    settings  data/undef 0x460000    64K
 ```
 
 (`14272K` is `0xDF0000`, the app declared at its collision bound by the ratified Q7. The
@@ -1785,8 +1793,9 @@ Later viewports, same shapes:
 |  Flash unique ID (64 of 128)     4d81 2f60 aa39 07c5                  |
 |  Partitions                                                           |
 |    factory   app/fact  0x010000  14272K                               |
-|    wallets   data/0x40 0xE00000    256K  enc                          |
-|    counters  data/0x41 0xE40000     16K                               |
+|    wallets   data/undef 0x410000   256K  enc                         |
+|    counters  data/undef 0x450000    16K                              |
+|    settings  data/undef 0x460000    64K                              |
 |  Reserved space                  not scanned      [ Scan ]            |
 |                                                                       |
 |  efuse                                                                |

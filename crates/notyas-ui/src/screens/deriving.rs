@@ -72,6 +72,24 @@ pub(crate) struct DerivingState {
 }
 
 impl DerivingState {
+    /// A self-wiping copy of the passphrase, for the screen this derivation lands on.
+    ///
+    /// Not a `Clone` on the state and not a move out of `&self`: [`DerivingState::run`]
+    /// takes `&self` because the `Ui` calls it through a borrow of the live screen, and
+    /// the copy is written out at each site that needs one for the reason
+    /// [`SeedSource::duplicate`] is - duplicating secret material is a decision, not a
+    /// convenience. Exact capacity, so the copy cannot grow and strand a partial
+    /// passphrase outside the `Zeroizing` wrapper.
+    ///
+    /// It travels because the save at the end of this flow has to state the passphrase
+    /// truthfully in the record and to seed the session cache, so that the wallet the user
+    /// has just created does not ask for the passphrase back a second later.
+    fn carry(&self) -> Zeroizing<String> {
+        let mut out = crate::secret_buf(crate::PASS_MAX);
+        out.push_str(&self.passphrase);
+        out
+    }
+
     /// Run the whole pipeline: the seed stretch and every scheme. Seconds of PBKDF2 on
     /// this silicon, which is why it is called from `Ui::tick` and never from a touch.
     ///
@@ -108,9 +126,13 @@ impl DerivingState {
         match &self.source {
             SeedSource::Dice { dice, .. } => Report::build(dice, &params)
                 .ok()
-                .map(|r| State::Quiz(QuizState::new(r))),
+                .map(|r| State::Quiz(QuizState::new(r, self.carry()))),
             SeedSource::Phrase(text) => Report::from_phrase(text, &params).map(|r| {
-                State::Fork(ForkState::new(r, BackupState::Verified(String::new())))
+                State::Fork(ForkState::new(
+                    r,
+                    BackupState::Verified(String::new()),
+                    self.carry(),
+                ))
             }),
         }
     }

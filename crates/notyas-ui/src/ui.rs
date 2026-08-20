@@ -24,14 +24,19 @@ use crate::components::{draw_modal, modal_regions, ModalSpec};
 use crate::layout::Metrics;
 use crate::screens::home::HomeState;
 use crate::screens::lock::LockState;
+use crate::screens::passphrase::PassUnlockState;
 use crate::screens::wallet::WalletState;
 use crate::screens::wallets::WalletsState;
+use crate::screens::words::WordsInfoState;
 use crate::screens::{self, Answer, Ctx, Env, Nav, Outcome, State};
 use crate::{QuizView, Report, WalletInfo, WalletRow};
 use crate::{
-    CardOutcome, ImportOutcome, LockInfo, Press, PsbtOutcome, QrData, QrTarget, Region, RegionId,
-    RegistrationInfo, RegistrationOutcome, ReservedSpace, ScreenId, SignOutcome, StoreStatus,
-    Ticked, TouchEvent, UiRequest, UnsealOutcome, VerifyInfo, WriteOutcome, HOLD_MS,
+    CardOutcome, DeleteOutcome, FormatOffer, FormatOutcome, ImportOutcome, LockInfo,
+    PassphraseRefusal, Press, PsbtOutcome, QrData, QrTarget, Region, RegionId,
+    RegistrationInfo, RegistrationOutcome, ReservedSpace, ScreenId, SignOutcome,
+    SignedQrOutcome, StorageOutcome, StoreStatus, Ticked, TouchEvent, UiRequest, UnlockGate,
+    UnsealOutcome, VerifyInfo,
+    WordsOutcome, WriteOutcome, HOLD_MS,
 };
 use notyas_core::bitcoin;
 
@@ -101,8 +106,13 @@ pub struct Ui {
     exit_modal: bool,
     /// Network every derivation runs on. Toggled on Home (desktop parity: the desktop
     /// pipeline takes the network as an input too); lives on the `Ui` rather than in a
-    /// screen state so the choice survives screen changes within a session. Power-off
-    /// resets it to mainnet like everything else - the device is stateless.
+    /// screen state so the choice survives screen changes within a session.
+    ///
+    /// Across a power cycle it survives only if the EMBEDDER keeps it: this crate reads it
+    /// back through [`Ui::set_network`] at boot and knows nothing about where it was kept.
+    /// It is a preference, not a claim - every wallet record carries its own network and
+    /// every signing surface states the network in force - so nothing downstream is
+    /// weakened by the value having come from somewhere unauthenticated.
     network: bitcoin::Network,
     /// What the embedder told us about the sealed store. The lock and PIN screens read
     /// it; every other screen ignores it.
@@ -123,6 +133,24 @@ pub struct Ui {
     /// "Released - nothing was signed" without a modal and without scolding. Cleared by
     /// the next press.
     hold_released: bool,
+    /// How many passphrase attempts each wallet slot has refused, and how long the one
+    /// that is waiting has left.
+    ///
+    /// On the `Ui` rather than on the unlock screen because its lifetime is deliberately
+    /// longer than that screen's: a counter the screen owned would be reset by one tap on
+    /// Back, and a gate that a tap resets is decoration. It survives a lock for the same
+    /// reason - a lock is not evidence about a passphrase - and dies with the power, which
+    /// is RAM rather than a policy.
+    gate: UnlockGate,
+    /// The anti-phishing explainer (S-04a) has been shown on this power-up.
+    ///
+    /// On the `Ui` because it outlives both screens that raise it - the PIN-create screen
+    /// is popped by the very transition that shows the explainer, and PIN entry is a fresh
+    /// state on every visit - so neither of them can remember it. Reset by power-off,
+    /// which is the right lifetime for a screen whose value is entirely in the first read:
+    /// a user who has seen it twice in one session has learned nothing the second time,
+    /// and a user coming back to a device days later is exactly who should see it again.
+    words_explained: bool,
 }
 
 impl core::fmt::Debug for Ui {
@@ -148,12 +176,25 @@ impl Ui {
             wallets: Vec::new(),
             registrations: Vec::new(),
             hold_released: false,
+            gate: UnlockGate::default(),
+            words_explained: false,
         }
     }
 
     /// The network the next derivation will run on (Home-screen toggle).
     pub fn network(&self) -> bitcoin::Network {
         self.network
+    }
+
+    /// Install the network the embedder read back from the device.
+    ///
+    /// Called once at boot, before the first frame, so that a user who chose testnet finds
+    /// testnet after a power cycle instead of a device silently back on mainnet. It is a
+    /// preference and not a claim: every wallet record carries its own network and every
+    /// signing surface states the network in force, so nothing downstream trusts this value
+    /// to be anything more than what the toggle last said.
+    pub fn set_network(&mut self, network: bitcoin::Network) {
+        self.network = network;
     }
 
     pub fn screen(&self) -> ScreenId {
@@ -320,6 +361,21 @@ impl Ui {
         if fire {
             out.request = self.activate(RegionId::HoldConfirm);
         }
+        // The countdown beside a disabled Unlock is the one thing on this device that has
+        // to repaint while nobody is touching it. Only when the SECOND changes: a repaint
+        // per poll would be forty frames a second of an unchanged number.
+        //
+        // The gate is told which slot is on the glass rather than being asked whether
+        // anything moved, because every slot's wait ages on every tick - a countdown that
+        // only ran while its own screen was open would be one a user could pause by
+        // backing out - and only the shown one can produce a visible change.
+        let showing = match &self.state {
+            State::PassUnlock(s) => Some(s.slot()),
+            _ => None,
+        };
+        if self.gate.tick(elapsed_ms, showing) {
+            out.dirty = true;
+        }
         let derived = match &self.state {
             State::Deriving(d) => d.run(self.network),
             _ => return out,
@@ -420,16 +476,88 @@ impl Ui {
         }
     }
 
-    /// Dropped unless the wallet list is showing: an answer arriving after the user has
-    /// navigated away belongs to a tap they have moved on from, and opening a wallet over
-    /// whatever they are looking at now would be a screen change nobody asked for.
+    /// Dropped unless the screen that asked is still showing: an answer arriving after
+    /// the user has navigated away belongs to a tap they have moved on from, and opening a
+    /// wallet over whatever they are looking at now would be a screen change nobody asked
+    /// for. An embedder that gets a drop is holding a seed no screen can use, and the
+    /// firmware closes it on the same pass.
+    ///
+    /// Two screens can be waiting for this, and they are left differently. The wallet list
+    /// is PUSHED from, so Back returns to it. The unlock screen is REPLACED - Back must
+    /// never return to a passphrase field, which is a screen that would ask for a secret
+    /// the device is already holding, on a wallet that is already open.
     fn open_wallet(&mut self, info: WalletInfo, report: Option<Report>) {
+        let slot = info.slot;
+        let next = State::Wallet(WalletState::new(info, report));
+        match &self.state {
+            State::Wallets(_) => {
+                self.apply(Outcome { nav: Nav::Push(next), request: None });
+            }
+            // Only the unlock screen for THIS slot, and only while it is waiting: an
+            // answer for another wallet is a late answer whoever raised it.
+            State::PassUnlock(u) if u.busy() && u.slot() == slot => {
+                // It opened, so the refusals before it are not evidence about anything.
+                self.gate.cleared(slot);
+                self.enter(next);
+            }
+            _ => {}
+        }
+    }
+
+    /// The wallet in `slot` cannot be opened without its BIP-39 passphrase: put the entry
+    /// screen up and let the user type one.
+    ///
+    /// The OTHER answer to [`UiRequest::OpenWallet`], beside opening it and beside failing.
+    /// It is not a failure and must not be rendered as one: nothing went wrong, the record
+    /// is exactly what it always was, and the device is asking for the half of the seed it
+    /// does not hold. The build before this one had no way to say that, so a passphrase
+    /// wallet answered a tap with a refusal band naming two fingerprints - which is how the
+    /// owner's own wallet became unopenable on his own device.
+    ///
+    /// `name` is what the list calls that slot, so every sentence on the screen names the
+    /// wallet rather than a number.
+    ///
+    /// Dropped unless the wallet list is showing, like every other answer here: a prompt
+    /// for a passphrase appearing over another screen is a request for a secret that
+    /// nothing on the panel explains.
+    pub fn wallet_needs_passphrase(&mut self, slot: u8, name: String) {
         if matches!(self.state, State::Wallets(_)) {
             self.apply(Outcome {
-                nav: Nav::Push(State::Wallet(WalletState::new(info, report))),
+                nav: Nav::Push(State::PassUnlock(PassUnlockState::new(slot, &name))),
                 request: None,
             });
         }
+    }
+
+    /// The passphrase that was typed opens a different wallet, so nothing was opened.
+    ///
+    /// Answers [`UiRequest::UnlockWallet`] and leaves the Busy frame - which is the half a
+    /// failure path has to get right: an answer that only logged would leave the panel on a
+    /// frame that says the device is working, forever.
+    ///
+    /// Both fingerprints are public values, and what the screen may say about them is
+    /// [`PassphraseRefusal`]'s to decide. The retry gate is stepped HERE rather than on the
+    /// screen, because it outlives the screen on purpose.
+    ///
+    /// Dropped unless that wallet's unlock screen is the one showing.
+    pub fn passphrase_refused(&mut self, refusal: PassphraseRefusal) {
+        let State::PassUnlock(u) = &mut self.state else { return };
+        if !u.busy() {
+            return;
+        }
+        let slot = u.slot();
+        u.refused(refusal.sentence());
+        self.gate.refused(slot);
+    }
+
+    /// Whether this device now remembers a wallet's passphrase, as the record reads AFTER
+    /// the write. Answers [`UiRequest::StorePassphrase`] and
+    /// [`UiRequest::ForgetPassphrase`].
+    ///
+    /// Routed through the screen's own `answered`, like every other 0.2.0 answer, so the
+    /// row that renders it and the request that asked for it live in one module.
+    pub fn passphrase_storage_result(&mut self, outcome: StorageOutcome) -> Option<UiRequest> {
+        self.answer(Answer::PassphraseStorage(outcome))
     }
 
     /// What the backup check is asking, for a host driver that has no other way to read
@@ -472,9 +600,52 @@ impl Ui {
     /// Dropped unless PIN entry is showing: words arriving after the user navigated away
     /// belong to a prefix that is no longer typed.
     pub fn show_device_words(&mut self, words: [String; 2]) {
-        if let State::Pin(s) = &mut self.state {
-            s.install_words(words);
+        let State::Pin(s) = &mut self.state else { return };
+        s.install_words(words);
+        // The words are installed FIRST and the explainer goes over the top, so dismissing
+        // it lands on a PIN screen with the pair already on it. That ordering is the whole
+        // instruction: the user reads what the words are for, taps once, and is looking at
+        // them with the rest of the PIN still untyped - which is the moment the explainer
+        // exists to reach.
+        self.explain_device_words();
+    }
+
+    /// Show S-04a over whatever is on the panel, at most once per power-up.
+    ///
+    /// One function for both moments the owner named - a PIN has just been set, and the
+    /// words are about to be shown for the first time - so the "at most once" is one flag
+    /// checked in one place rather than a rule two call sites each half-implement.
+    ///
+    /// Pushed, never entered: the screen underneath is mid-flow (a PIN prefix typed, or a
+    /// save the new PIN interrupted) and dismissing the explainer has to give it back
+    /// exactly as it was.
+    fn explain_device_words(&mut self) {
+        if self.words_explained {
+            return;
         }
+        self.words_explained = true;
+        let _ = self.apply(Outcome::push(State::WordsInfo(WordsInfoState)));
+    }
+
+    /// Install the verdict on a [`UiRequest::SetDeviceName`].
+    ///
+    /// On success the name is installed HERE as well as being written by the embedder, for
+    /// the reason [`Ui::pin_created`] sets the status here: the lock screen may be drawn
+    /// before the embedder gets back to [`Ui::set_lock_info`], and a device that has just
+    /// been named must not draw itself as unnamed. The embedder still answers with the
+    /// lock info it reads back - this is the transition, that is the truth.
+    ///
+    /// A refusal is REPORTED on the screen that asked rather than swallowed, and the name
+    /// is left untouched: a user who was told nothing would go on believing their device
+    /// is named until the next time they locked it.
+    pub fn device_name_result(&mut self, saved: bool) {
+        let State::DeviceName(s) = &mut self.state else { return };
+        if !saved {
+            s.report_failure();
+            return;
+        }
+        self.lock.device_name = s.committed();
+        self.pop();
     }
 
     /// Install the verdict on a [`UiRequest::UnsealWallet`].
@@ -524,6 +695,11 @@ impl Ui {
     /// it was, so a retry does not cost the user their typing.
     pub fn persist_result(&mut self, sealed: bool) {
         if !sealed {
+            // K14: a refused save is reported on the panel, not swallowed.
+            // The Name screen keeps the user's input and shows the failure.
+            if let State::Name(n) = &mut self.state {
+                n.save_failed = true;
+            }
             return;
         }
         self.lock.status = StoreStatus::Unlocked;
@@ -570,6 +746,15 @@ impl Ui {
         if let Some(next) = next {
             let _ = self.apply(Outcome::push(next));
         }
+        // The first of the two moments S-04a is shown at, and it is placed AFTER the flow
+        // has advanced rather than instead of advancing it: the user set a PIN to get
+        // somewhere, and an explainer that swallowed the transition would be a screen that
+        // took the destination away. Dismissing it lands on the screen the PIN was for.
+        //
+        // This is also the only moment in the device's life when the words are new. The
+        // user has just created the secret they are derived from, and has not yet typed a
+        // PIN into a lock screen even once.
+        self.explain_device_words();
     }
 
     /// Install the verdict on a [`UiRequest::SetWipePolicy`].
@@ -674,6 +859,45 @@ impl Ui {
         self.answer(Answer::Discard(discarded))
     }
 
+    /// Install the answer to a [`UiRequest::ProbeCardFormat`]: whether formatting the card
+    /// in the slot could repair it, or the reason it could not.
+    ///
+    /// Nothing has been written when this arrives, on any path, and the screen it lands on
+    /// says so. The offer is the ONLY thing that puts a destructive control on S-49; a
+    /// refusal leaves the screen with a sentence and a way out and no button that erases
+    /// anything.
+    pub fn format_offer(&mut self, offer: FormatOffer) -> Option<UiRequest> {
+        self.answer(Answer::FormatOffer(offer))
+    }
+
+    /// Install the answer to a [`UiRequest::FormatCard`].
+    ///
+    /// `Failed` is not a formality here and it is not a shade of `Done`. It is the one
+    /// answer in this whole vocabulary that can mean the user's card is in a WORSE state
+    /// than before they touched the device, and the screen states that difference rather
+    /// than reporting a generic failure over it.
+    pub fn format_result(&mut self, outcome: FormatOutcome) -> Option<UiRequest> {
+        self.answer(Answer::Formatted(outcome))
+    }
+
+    /// Install the answer to a [`UiRequest::ShowSignedQr`]: the signed transaction as a
+    /// symbol S-39 can draw, or the sentence saying why it is not going on the glass.
+    ///
+    /// Deliberately NOT [`Ui::show_qr`]. That one installs onto the schemes screen and
+    /// drops its answer anywhere else, which is right for the payloads it carries - an
+    /// xpub, a receive address - and would silently swallow this one, because the delivery
+    /// screen is not the schemes screen. Routed through the screen's own `answered` like
+    /// every other 0.2.0 answer instead, so a late symbol is dropped by the screen the
+    /// user has moved on to rather than opening a QR of a transaction over whatever they
+    /// are now looking at.
+    ///
+    /// The symbol lands in the delivery screen's state and dies with it, which is what
+    /// keeps "the only copy is on the std side, plus one rendering while S-39 is open"
+    /// true.
+    pub fn show_signed_qr(&mut self, outcome: SignedQrOutcome) -> Option<UiRequest> {
+        self.answer(Answer::SignedQr(outcome))
+    }
+
     /// Install the answer to a [`UiRequest::ImportRegistration`].
     pub fn import_result(&mut self, outcome: ImportOutcome) -> Option<UiRequest> {
         self.answer(Answer::Import(outcome))
@@ -694,6 +918,48 @@ impl Ui {
         self.answer(Answer::DeleteRegistration(deleted))
     }
 
+    /// Install the answer to a [`UiRequest::DeleteWallet`].
+    ///
+    /// The embedder answers this AND [`Ui::set_wallets`] with the list as it reads back
+    /// afterwards, in that order: this call says what happened to the one wallet, the other
+    /// says what the device now holds. Both, always, and the failure variants are not
+    /// optional - a delete that is answered on neither channel is the dead button this
+    /// release was opened to fix.
+    pub fn wallet_deleted(&mut self, outcome: DeleteOutcome) -> Option<UiRequest> {
+        // The retry gate forgets a slot that has stopped holding the wallet it was
+        // refusing, which is the second half of `UnlockGate::cleared`'s stated contract.
+        //
+        // Slots are REUSED. Without this, a user who mistyped a passphrase three times,
+        // deleted that wallet and restored a new one into the freed slot would meet a
+        // ten-second wait on their first honest attempt at the NEW wallet, and a doubling
+        // one after that, for the rest of the power-up - a delay inherited from a wallet
+        // that no longer exists, against a passphrase nobody has yet guessed at once.
+        //
+        // Only on `Gone`, and only for the slot the screen that raised the erase is
+        // holding. `Refused` and `Damaged` have not established that the record is gone,
+        // and releasing a wait for a wallet that may still be sitting in that slot would
+        // be a relaxation of the gate bought with an ambiguous answer - which is the one
+        // direction this gate must never move by accident.
+        let emptied = match (&self.state, &outcome) {
+            (State::Erase(e), DeleteOutcome::Gone { .. }) => Some(e.slot()),
+            _ => None,
+        };
+        if let Some(slot) = emptied {
+            self.gate.cleared(slot);
+        }
+        self.answer(Answer::DeleteWallet(outcome))
+    }
+
+    /// Install the answer to a [`UiRequest::RecoveryWords`]: the stored words, or why they
+    /// could not be read.
+    ///
+    /// The words are pushed onto the navigation stack inside the screen that shows them, so
+    /// [`Ui::lock`] wipes them with everything else it clears - a revealed set of words does
+    /// not survive the auto-lock.
+    pub fn recovery_words(&mut self, outcome: WordsOutcome) -> Option<UiRequest> {
+        self.answer(Answer::RecoveryWords(outcome))
+    }
+
     /// Route an answer to the screen that is showing and perform what it asks for.
     ///
     /// The ONE place an answer becomes a screen transition, mirroring [`Ui::activate`] for
@@ -705,6 +971,7 @@ impl Ui {
             network: &mut self.network,
             lock: &self.lock,
             wallets: &self.wallets,
+            gate: &mut self.gate,
         };
         let outcome = screens::answered(&mut self.state, answer, &mut env);
         self.apply(outcome)
@@ -732,6 +999,7 @@ impl Ui {
             network: self.network,
             press: self.press(),
             hold_released: self.hold_released,
+            gate: &self.gate,
         }
     }
 
@@ -757,6 +1025,7 @@ impl Ui {
             network: self.network,
             press,
             hold_released: self.hold_released,
+            gate: &self.gate,
         };
         screens::scroll(&mut self.state, dy, &ctx);
     }
@@ -778,8 +1047,10 @@ impl Ui {
         }
         let outcome = if id == RegionId::Back {
             // Back is the one region every screen may offer and each defines for itself,
-            // so it is routed to that definition rather than through `activate`.
-            Outcome { nav: screens::back(&self.state), request: None }
+            // so it is routed to that definition rather than through `activate`. `&mut`
+            // for the same reason `activate` takes one: a screen whose Back hands its own
+            // state to the screen it names has to be able to move it (`back_moving`).
+            Outcome { nav: screens::back(&mut self.state), request: None }
         } else {
             // Field by field rather than through `ctx()`: the screen needs
             // `&mut self.state` at the same time, and only disjoint field borrows are
@@ -788,6 +1059,7 @@ impl Ui {
                 network: &mut self.network,
                 lock: &self.lock,
                 wallets: &self.wallets,
+                gate: &mut self.gate,
             };
             screens::activate(&mut self.state, id, &mut env)
         };

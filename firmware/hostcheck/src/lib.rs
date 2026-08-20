@@ -28,6 +28,34 @@ pub mod record;
 #[path = "../../src/flow/model.rs"]
 pub mod model;
 
+/// `firmware/src/unseal.rs`, verbatim.
+///
+/// The guess / not-a-guess judgement on an unlock refusal. Pure for the same reason the
+/// modules above are, and worth covering for the reason they are: the compiler cannot see
+/// the difference between telling an owner their correct PIN was wrong and telling them
+/// the store could not be read, and neither can a panel photograph.
+#[path = "../../src/unseal.rs"]
+pub mod unseal;
+
+/// `firmware/src/session.rs`, verbatim.
+///
+/// What an unlocked session remembers between screens, and the one property worth proving
+/// about it: clearing it WIPES the passphrases rather than merely dropping the references.
+/// Pure by construction - no store, no logger, no ESP-IDF - and untestable on the device,
+/// because the evidence is a freed heap buffer that no panel and no log line can show.
+#[path = "../../src/session.rs"]
+pub mod session;
+
+/// `firmware/src/wallet/erase.rs`, verbatim.
+///
+/// The delete-wallet ordering rule. Pure by construction for the reason `replace.rs` is - a
+/// trait with five methods and one function that sequences them - and worth covering for a
+/// sharper reason than either: the failure it guards against is a registry record left
+/// naming a payload slot that has been freed, which the NEXT wallet stored on the device
+/// would then inherit. No compiler can see that, and neither can a panel photograph.
+#[path = "../../src/wallet/erase.rs"]
+pub mod erase;
+
 /// `firmware/src/flow/replace.rs`, verbatim.
 ///
 /// The registry-replacement ordering rule. It is storage-agnostic by construction - a trait
@@ -38,3 +66,17 @@ pub mod model;
 /// sequencing under test is the device's own.
 #[path = "../../src/flow/replace.rs"]
 pub mod replace;
+
+/// `firmware/src/sd/probe.rs`, verbatim.
+///
+/// The gate that decides whether the device offers to ERASE somebody's card. Pure by
+/// construction - 512 bytes and a capacity in, a verdict out, no driver and no allocation
+/// off anything the card said - and the single most consequential judgement in this tree
+/// that a compiler cannot check: every branch of it is a decision about data the device
+/// has never seen and cannot get back.
+///
+/// On silicon it is reachable only with a real card in a real slot, in states nobody can
+/// produce on a bench (a GPT card, a superfloppy card, a table claiming more sectors than
+/// the card has). Here every one of them is 512 bytes in an array.
+#[path = "../../src/sd/probe.rs"]
+pub mod probe;

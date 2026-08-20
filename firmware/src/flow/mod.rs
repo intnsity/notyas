@@ -62,16 +62,19 @@ mod replace;
 
 use notyas_core::multisig::RegistrationId;
 use notyas_ui::{
-    Artifact, CardListing, CardOutcome, CosignerRow, FileFilter, FileKind, FileRow, ImportOutcome,
+    Artifact, CardListing, CardOutcome, CosignerRow, FileFilter, FileKind, FileRow, FormatOffer,
+    FormatOutcome, ImportOutcome,
     PsbtOutcome, RefusalCode, RefusalNotice, RegistrationInfo, RegistrationOutcome,
-    RegistrationReview, ReviewedFee, SignOutcome, SignedTx, TxReview, Ui, UiRequest, WriteOutcome,
+    RegistrationReview, ReviewedFee, SignOutcome, SignedTx, TxReview, Ui, UiRequest,
+    WordsOutcome, WriteOutcome,
 };
 use notyas_wallet::sd::{self as card, Bounds, Catalog, Filter, Kind, Location, Name, OnCollision};
 
 use crate::sd::{self, Card, CardError, FsError};
 use crate::signing::{self, Review, Signed};
 use crate::store::Store;
-use crate::wallet::{RegisterError, Wallet};
+use crate::wallet::erase::{self, Erased};
+use crate::wallet::{RegisterError, StoredWallets, Wallet};
 use replace::{RegistrySlots, Replaced};
 
 /// Everything held between one screen and the next.
@@ -100,12 +103,17 @@ struct Loaded {
 }
 
 /// A signed transaction, its planned file, and where it goes.
-struct Delivery {
+pub(crate) struct Delivery {
     dir: Option<Name>,
     target: Name,
     signed: Signed,
 }
 
+impl Delivery {
+    pub(crate) fn signed_bytes(&self) -> &[u8] {
+        self.signed.bytes()
+    }
+}
 /// A multisig registration this device has proven it is a member of, waiting for the user.
 ///
 /// The TEXT is kept beside the proof rather than the proof alone, because `Wallet::register`
@@ -120,6 +128,9 @@ struct Proposed {
 }
 
 impl Flow {
+    pub fn signed_ref(&self) -> Option<&Delivery> {
+        self.signed.as_ref()
+    }
     /// Take the wallet the embedder just unsealed. Anything the previous wallet left behind
     /// goes with it: a review, a signed transaction and a pending registration all belong to
     /// the wallet that produced them.
@@ -274,6 +285,58 @@ fn directory(dir: &str) -> Result<Option<Name>, String> {
     Name::parse(dir)
         .map(Some)
         .map_err(|e| format!("This device cannot use that directory name: {e}."))
+}
+
+/// Answer `UiRequest::ProbeCardFormat`: look at the card and decide whether formatting it
+/// could repair it.
+///
+/// No wallet, no store, no session - which is why it is the one handler here that touches
+/// none of `Flow`. It lives beside the other card requests anyway, because the thing that
+/// makes a card request a card request is that it goes through `crate::sd`, and reading a
+/// partition table has exactly the same failure surface as listing a directory.
+///
+/// Writes nothing on any path, and the screen it answers says so before it offers
+/// anything.
+pub fn probe_card_format(ui: &mut Ui) -> Option<UiRequest> {
+    let offer = sd::probe_format();
+    match &offer {
+        FormatOffer::Ready(target) => log::warn!(
+            "card: format offered for the {} card, partition {}",
+            target.capacity,
+            target.partition
+        ),
+        FormatOffer::Refused { why, .. } => {
+            log::info!("card: format not offered: {}", why.headline())
+        }
+    }
+    ui.format_offer(offer)
+}
+
+/// Answer `UiRequest::FormatCard`: erase the card.
+///
+/// The most destructive handler in the firmware, and the shortest, which is deliberate.
+/// Every judgement it could have made has already been made somewhere it can be tested:
+/// whether this card may be formatted at all is `sd::probe`'s, in pure host-tested code;
+/// whether the user consented is S-49's, behind two sheets and a typed word; whether the
+/// card in the slot is still the one consent was given for is `sd::format_card`'s, which
+/// re-reads the partition table and compares both facts before it writes a byte.
+///
+/// What is left here is the log line and the answer - and the log line matters: this is
+/// the only entry in a device's log that records the destruction of something the device
+/// never owned.
+pub fn format_card(ui: &mut Ui, partition: u8, card: String) -> Option<UiRequest> {
+    log::warn!("card: format requested for partition {partition} of the {card} card");
+    let outcome = sd::format_card(partition, &card);
+    match &outcome {
+        FormatOutcome::Done(what) => log::warn!("card: {what}"),
+        // Both halves are logged at error level, including the one that wrote nothing: a
+        // destructive request that did not happen is as much a thing to find in a log as
+        // one that did.
+        FormatOutcome::Failed { why, wrote } => {
+            log::error!("card: format failed (wrote={wrote}): {why}")
+        }
+    }
+    ui.format_result(outcome)
 }
 
 /// Answer `UiRequest::ListCard`: one directory of the card, bounded, validated and ordered.
@@ -1003,6 +1066,76 @@ pub fn delete_registration(
     };
     install_registrations(ui, flow);
     ui.registration_deleted(erased)
+}
+
+/// Destroy the wallet in payload slot `slot`, and answer on both channels.
+///
+/// The ORDER - registrations first, then the record, then a read-back - is
+/// [`crate::wallet::erase`]'s and is not repeated here. What belongs here is the one thing
+/// that module cannot reach: the flow's own parked state.
+///
+/// # Closing the flow, not just the wallet
+///
+/// `erase` drops the open `Wallet` through its trait, which is enough for the seed. It is
+/// not enough for this struct: a loaded review, a signed transaction waiting to be
+/// delivered and a pending registration all belong to the wallet that produced them, and a
+/// signed PSBT for a wallet whose record has just been erased is the worst of the four to
+/// leave lying about. So the whole flow is closed first, and the trait's own close then
+/// finds nothing to do.
+pub fn delete_wallet(
+    ui: &mut Ui,
+    store: &mut Option<Store>,
+    flow: &mut Flow,
+    slot: u8,
+    name: &str,
+) -> Erased {
+    let Some(store) = store.as_mut() else {
+        return Erased::Refused(format!(
+            "\"{name}\" was not deleted: this device has no sealed storage \
+             it can reach. Nothing was erased."
+        ));
+    };
+    if flow.wallet.as_ref().is_some_and(|w| w.slot() == slot) {
+        flow.close();
+    }
+    let out = erase::erase(&mut StoredWallets::new(store, &mut flow.wallet), slot, name);
+    // The console gets the sentence the user gets, not a Debug dump of it: a support log
+    // and a panel that disagree about what happened are two accounts of one delete.
+    match (&out, out.reason()) {
+        (Erased::Gone { registrations }, _) => {
+            log::info!("wallet: slot {slot} erased with {registrations} registration(s)")
+        }
+        (_, Some(why)) => log::error!("wallet: slot {slot} delete did not complete: {why}"),
+        (_, None) => unreachable!("only a completed delete has nothing to say"),
+    }
+    // The registry the screens are holding described the wallet that was open. Whatever
+    // happened above, it is not what it was.
+    install_registrations(ui, flow);
+    out
+}
+
+/// The stored recovery words for `slot`, or a sentence saying why there are none to show.
+///
+/// Kept SHORT on the failure path on purpose: it is drawn in the space Q22's sentence would
+/// have taken on the 800x480 panel, which has room for two lines and no more.
+pub fn recovery_words(store: &mut Option<Store>, slot: u8) -> WordsOutcome {
+    let Some(store) = store.as_mut() else {
+        return WordsOutcome::Refused(String::from(
+            "This device could not reach its sealed storage, so the words were not read.",
+        ));
+    };
+    match crate::wallet::stored_phrase(store, slot) {
+        Ok(phrase) => {
+            // Never the words, and never a length: a word count is a fact about somebody's
+            // seed and this log line goes to a console.
+            log::info!("wallet: slot {slot} recovery words read for display");
+            WordsOutcome::Words(phrase)
+        }
+        Err(e) => {
+            log::error!("wallet: slot {slot} recovery words not read: {e}");
+            WordsOutcome::Refused(format!("Wallet slot {slot} did not open: {e}."))
+        }
+    }
 }
 
 /// [`RegistrySlots`] over the real wallet and the real store.

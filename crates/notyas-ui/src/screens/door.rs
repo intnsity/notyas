@@ -263,17 +263,18 @@ pub(crate) fn draw_card<D: DrawTarget<Color = Rgb565>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canvas::{MONO, TITLE};
+    use crate::canvas::TITLE;
     use crate::layout::TOUCH_MIN;
     use crate::screens::testing::GEOMETRIES;
 
-    /// The lock-word panel's height, restated from `screens/lock.rs` so this file's
-    /// height budget is checked against the block it actually has to leave room for.
-    const LOCK_PANEL_H: i32 = 2 * LINE + 24;
-
-    /// What the identity column has to hold: title, nickname, lock-word panel.
+    /// What the identity column has to hold: the product title and the device name.
+    ///
+    /// It used to have a third block, the lock-word panel, and this constant tracked its
+    /// height. The word went on 2026-08-19 (`screens/lock.rs`), so the budget this file
+    /// checks against is smaller by exactly that panel - which can only make the door fit
+    /// more easily, never less.
     fn identity_h(m: &Metrics) -> i32 {
-        TITLE.line_height as i32 + m.gap + LINE + m.gap + LOCK_PANEL_H
+        TITLE.line_height as i32 + m.gap + LINE
     }
 
     /// What the status block has to hold: "Locked" and the unlock hint.
@@ -384,26 +385,30 @@ mod tests {
         }
     }
 
-    /// The lock word stays tappable on the landscape panel.
+    /// The device name stays tappable on the landscape panel.
     ///
-    /// The reason the second wake rectangle exists. A user who reads the word and then
-    /// touches it to start typing must not find that half of the screen inert.
+    /// The reason the second wake rectangle exists. A user who reads the identity block and
+    /// then touches it to start typing must not find that half of the screen inert. It was
+    /// written about the lock word, which is gone; the row it protects is now the name, and
+    /// the name is the row a finger goes for on that panel for the same reason.
     #[test]
-    fn the_lock_word_wakes_the_device() {
+    fn the_device_name_wakes_the_device() {
         let m = Metrics::new(800, 480);
         let p = place(&m);
-        // Where `lock.rs` puts the word panel: below the title and the nickname, in the
-        // identity column.
-        let word_y = p.identity.y + TITLE.line_height as i32 + m.gap + LINE + m.gap + LINE / 2;
-        let word_x = p.identity.x + p.identity.w / 2;
+        // Where `lock.rs` puts the name: directly under the title, in the identity column.
+        let name_y = p.identity.y + TITLE.line_height as i32 + m.gap + LINE / 2;
+        let name_x = p.identity.x + p.identity.w / 2;
         assert!(
-            p.wake_rects().any(|r| r.contains(word_x, word_y)),
-            "the lock word sits in a dead zone on the landscape panel"
+            p.wake_rects().any(|r| r.contains(name_x, name_y)),
+            "the device name sits in a dead zone on the landscape panel"
         );
-        // ...and the panel it sits in fits the column it was moved into.
-        let pw = (m.w * 3 / 5).max(320).min(p.identity.w);
-        assert!(pw <= p.identity.w, "the lock-word panel is wider than its column");
-        assert!(MONO.text_width("ANVIL") as i32 <= pw, "the lock word does not fit its panel");
+        // NOT asserted here: that every accepted device name fits this column. The name
+        // limit is measured against the narrowest BODY any panel has
+        // (`screens/devicename.rs`), and the door's landscape identity column is half of
+        // one - so a legal name can be wider than it. That is a real constraint on wiring
+        // the door up, recorded here rather than papered over with a weaker assertion:
+        // whoever lands `place` in `lock.rs` owes either a narrower name limit or a
+        // column measured to the limit that exists.
     }
 
 

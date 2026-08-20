@@ -3,9 +3,27 @@
 
 //! S-03 Lock (UX 16): the device says which device it is, before the user gives it a PIN.
 //!
-//! Reachable only with a PIN set (`Ui::lock` refuses otherwise), which is what keeps R20
-//! true here: the device-word panel cannot appear on a device whose words do not exist,
-//! because they are derived from a key that has not been burned.
+//! Reachable only with a PIN set (`Ui::lock` refuses otherwise).
+//!
+//! # One pre-PIN string, and it makes no security claim
+//!
+//! Until 2026-08-19 this screen showed TWO user-set strings before any authentication: a
+//! nickname, and a "lock word" in a panel whose own copy told the user it let them tell
+//! this device from a fake. They were the same mechanism - a string the owner chose,
+//! displayed to the owner before the PIN - and only one of them claimed to be a security
+//! feature. The claim did not survive inspection: anything drawn here is readable by
+//! anyone who picks the device up, including whoever would build the counterfeit, so the
+//! word caught a careless swap and never a targeted one. It was a bank sitekey.
+//!
+//! So there is one string now, it is the device NAME, and nothing on this screen says it
+//! proves anything. The real anti-swap evidence on this device is elsewhere and is
+//! genuinely strong: after a PIN prefix is typed, S-04 shows two words DERIVED from that
+//! prefix and a device-held secret (`Store::anti_phishing_words`), which a counterfeit
+//! cannot compute. Any sentence in this product about telling a real device from a fake
+//! belongs to those words. The other pre-PIN affordance here, the Verify chip, is the
+//! same idea one level down: it shows a measurement, not a string somebody chose.
+//!
+//! Do not re-add a second string. The reasoning above is the whole of why it went.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -13,39 +31,31 @@ use alloc::vec::Vec;
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::pixelcolor::Rgb565;
 
-use crate::canvas::{
-    button, fill, panel, text_centered, wrap_words, ButtonKind, BODY, HEADING, MONO, TITLE,
-};
+use crate::canvas::{button, fill, text_centered, ButtonKind, BODY, HEADING, MONO, TITLE};
 use crate::components::LINE;
-use crate::layout::{Metrics, Rect};
+use crate::layout::Rect;
 use crate::screens::pin::PinState;
 use crate::screens::verify::VerifyState;
 use crate::screens::{Ctx, Env, Nav, Outcome, Screen, State};
 use crate::theme::*;
-use crate::{LockInfo, Region, RegionId, StoreStatus, VERSION};
+use crate::{Region, RegionId, StoreStatus, VERSION};
 
 /// The lock screen holds nothing: everything it shows is device state the embedder
 /// installed, and a locked device has no session to remember.
 pub(crate) struct LockState;
 
-/// The device-identity panel's internal padding. Its HEIGHT is measured from whatever it
-/// is holding (see [`word_panel`]) rather than fixed at two rows: the panel shows a
-/// caption and a word when one is set and a wrapped sentence when one is not, and a
-/// constant is right for exactly one of those two - it cut the other off at the border.
-const PANEL_PAD: i32 = 12;
-
-/// Narrowest the word panel may get. It is the element this screen exists to make
-/// readable across a room, so it keeps its floor even where that costs the column beside
-/// it some width.
-const PANEL_MIN_W: i32 = 320;
-
 /// The copy this screen owns, named rather than written inline because the LAYOUT MEASURES
-/// it: the identity column is sized to the touch hint, and the tests assert every line fits
-/// the rectangle it is centred in. A copy edit therefore moves the geometry with it instead
-/// of quietly overrunning it.
+/// it and the tests assert every line fits the rectangle it is centred in. A copy edit
+/// therefore moves the geometry with it instead of quietly overrunning it.
+///
+/// Read these as a set before adding to them: none of them says this screen proves which
+/// device you are holding, and none of them may.
 const LOCKED: &str = "Locked";
 const TOUCH_HINT: &str = "Touch anywhere to unlock";
-const NO_WORD: &str = "no word set - set one in Settings so you can tell this device from a fake.";
+/// The unnamed state. A statement of fact with no instruction attached: an unnamed device
+/// is not a degraded one, and the edge state this replaces - "set one in Settings so you
+/// can tell this device from a fake" - was an instruction wrapped around a false promise.
+const NO_NAME: &str = "no name set";
 
 /// Every rectangle this screen draws into, tappable or not.
 ///
@@ -61,11 +71,10 @@ pub(crate) struct Layout {
     /// point.
     wake: Rect,
     verify_chip: Rect,
-    /// The product name, the nickname under it, and the device-word panel: what the user
-    /// reads to decide this is their device before typing anything into it.
+    /// The product name and the device name under it: what the user reads to recognise
+    /// their own device. Recognise, not verify - see the module header.
     title: Rect,
-    nickname: Rect,
-    panel: Rect,
+    name: Rect,
     /// The state and what to do about it.
     locked: Rect,
     hint: Rect,
@@ -74,35 +83,19 @@ pub(crate) struct Layout {
     version: Rect,
 }
 
-/// The word panel's (width, height) inside a column `avail` px wide.
-///
-/// Both are measured. The width is three fifths of the display, never under
-/// [`PANEL_MIN_W`] and never wider than the column it sits in; the height is the rows its
-/// CONTENT actually takes at that width - two for a word that is set, and however many the
-/// edge-state sentence wraps to for one that is not, which at every shipped panel width is
-/// more than two.
-fn word_panel(m: &Metrics, lock: &LockInfo, avail: i32) -> (i32, i32) {
-    let w = (m.w * 3 / 5).max(PANEL_MIN_W).min(avail);
-    let rows = if lock.lock_word.is_empty() {
-        wrap_words(NO_WORD, w - 2 * PANEL_PAD, BODY).len() as i32
-    } else {
-        // The caption and the word itself.
-        2
-    };
-    (w, rows * LINE + 2 * PANEL_PAD)
-}
-
 impl Screen for LockState {
     type Layout = Layout;
 
-    /// One column on a panel with the height for it, two beside each other on one without.
+    /// One centred column, on every shipped panel.
     ///
-    /// The arrangement is chosen by whether the stack FITS, not by which board is plugged
-    /// in: the copy, the fonts and the footer decide how much room the identity needs, and
-    /// a predicate over the panel's aspect ratio would only be a guess at the same
-    /// question. The 720x720 panel takes the first branch and is laid out to the pixel as
-    /// it was in 0.1.0; the 800x480 panel takes the second, where before it ran the touch
-    /// hint straight through the footer.
+    /// It was two arrangements while the lock-word panel existed: 320 px of panel plus a
+    /// wrapped edge-state sentence did not fit above the footer at 800x480, so the panel
+    /// moved beside the identity and the screen carried a second geometry to test. With the
+    /// panel gone the column is four rows and three gaps - 221 px at 800x480, in 322 px of
+    /// room - so the branch it needed goes with it. Deleting a layout because the element
+    /// that forced it was deleted is the cheapest complexity this file will ever shed. The
+    /// fit is still ASSERTED rather than assumed: `stacked_h` bounds the leading here, and
+    /// the tests check every row on both panels.
     fn layout(&self, ctx: &Ctx) -> Layout {
         let m = &ctx.m;
         let g = m.gap;
@@ -112,66 +105,31 @@ impl Screen for LockState {
         let cw = (m.w / 3).clamp(200, 260);
         let verify_chip = Rect::new(m.w - g - cw, g / 2, cw, m.bar - g);
 
-        // The footer is placed first, against the bottom padding, in both arrangements: it
-        // is the last thing read and the one row on this screen whose position does not
-        // depend on how tall anything above it turned out to be.
+        // The footer is placed first, against the bottom padding: it is the last thing
+        // read and the one row on this screen whose position does not depend on how tall
+        // anything above it turned out to be.
         let version = Rect::new(0, m.h - m.pad - LINE, m.w, LINE);
         // What is left for the identity, and a hard boundary rather than a starting point.
         let room = Rect::new(body.x, body.y, body.w, version.y - g - body.y);
 
         let title_h = TITLE.line_height as i32;
-        let (pw, ph) = word_panel(m, ctx.lock, room.w);
-        // Title, nickname, panel, "Locked", the hint, and the four gaps between them.
-        let stacked_h = title_h + LINE + ph + 2 * LINE + 4 * g;
-
-        if stacked_h <= room.h {
-            // The leading is the panel's own proportion of itself, but never more room
-            // than is actually spare: this branch was taken BECAUSE the stack fits, so its
-            // whitespace must not be the thing that pushes it back out.
-            let mut y = room.y + (body.h / 8).min(room.h - stacked_h);
-            // Centred across the whole display, not across the body: these lines are the
-            // device's identity and they read as centred on the panel itself.
-            let row = |y: i32, h: i32| Rect::new(0, y, m.w, h);
-            let title = row(y, title_h);
-            y += title_h + g;
-            let nickname = row(y, LINE);
-            y += LINE + g;
-            let panel = Rect::new((m.w - pw) / 2, y, pw, ph);
-            y = panel.bottom() + g;
-            let locked = row(y, LINE);
-            y += LINE + g;
-            let hint = row(y, LINE);
-            Layout { wake, verify_chip, title, nickname, panel, locked, hint, version }
-        } else {
-            // Not enough height for one column, so the panel moves BESIDE the identity
-            // rather than any of it being compressed or dropped. Nothing here is optional:
-            // the word is what proves the device, and the hint is the only instruction on
-            // the screen.
-            //
-            // The identity column is sized to the touch hint, the widest fixed line it
-            // carries, and the word panel takes what is left down to its own floor. Sized
-            // to the text rather than to half the room because half of the 800x480 body is
-            // 12 px short of that sentence, and a cropped instruction on a screen whose
-            // whole job is "here is how to get in" is the worst line on it to lose. The
-            // nickname is deliberately not measured: it is user data of any length, no
-            // column can promise to hold it, and it is centred rather than load-bearing.
-            let ident_w = BODY.text_width(TOUCH_HINT) as i32;
-            let (pw, ph) = word_panel(m, ctx.lock, (room.w - g - ident_w).max(PANEL_MIN_W));
-            let col = room.w - g - pw;
-            let ident_h = title_h + 3 * LINE + 3 * g;
-            let mut y = room.y + (room.h - ident_h).max(0) / 2;
-            let left = |y: i32, h: i32| Rect::new(room.x, y, col, h);
-            let title = left(y, title_h);
-            y += title_h + g;
-            let nickname = left(y, LINE);
-            y += LINE + g;
-            let locked = left(y, LINE);
-            y += LINE + g;
-            let hint = left(y, LINE);
-            let panel =
-                Rect::new(room.right() - pw, room.y + (room.h - ph).max(0) / 2, pw, ph);
-            Layout { wake, verify_chip, title, nickname, panel, locked, hint, version }
-        }
+        // Title, name, "Locked", the hint, and the three gaps between them.
+        let stacked_h = title_h + 3 * LINE + 3 * g;
+        // The leading is the body's own proportion of itself, but never more room than is
+        // actually spare, so whitespace can never be the thing that pushes the column off
+        // the bottom.
+        let mut y = room.y + (body.h / 8).min((room.h - stacked_h).max(0));
+        // Centred across the whole display, not across the body: these lines are the
+        // device's identity and they read as centred on the panel itself.
+        let row = |y: i32, h: i32| Rect::new(0, y, m.w, h);
+        let title = row(y, title_h);
+        y += title_h + g;
+        let name = row(y, LINE);
+        y += LINE + g;
+        let locked = row(y, LINE);
+        y += LINE + g;
+        let hint = row(y, LINE);
+        Layout { wake, verify_chip, title, name, locked, hint, version }
     }
 
     fn regions(&self, ctx: &Ctx, out: &mut Vec<Region>) {
@@ -189,53 +147,26 @@ impl Screen for LockState {
         fill(t, Rect::new(0, 0, m.w, m.bar), PAPER_2)?;
         fill(t, Rect::new(0, m.bar - 1, m.w, 1), BORDER)?;
         // Pre-PIN and deliberate (commandment 4): a user who suspects a swapped device
-        // must be able to check the firmware hash without typing a digit into it.
+        // must be able to check the firmware hash without typing a digit into it. This is
+        // the affordance that answers "is this my device", and it answers with a
+        // measurement rather than with a string somebody chose.
         button(t, l.verify_chip, "Verify device", ButtonKind::Ghost, PAPER_2)?;
 
         text_centered(t, "notyas", l.title, TITLE, INK_PRIMARY, PAPER_1)?;
 
-        // The nickname is a user-chosen label, shown in quotes so it reads as a name
-        // rather than as a device claim about itself.
-        let nickname = if lock.nickname.is_empty() {
-            String::from("no name set")
+        // Quoted so it reads as a name the owner gave the device rather than as a claim
+        // the device makes about itself, and drawn in INK_SECONDARY for the same reason:
+        // it is a label, not evidence.
+        //
+        // Its length is bounded where it is TYPED (screens/devicename.rs), against the
+        // narrowest body any shipped panel has, so this row can centre it whole. That
+        // bound is the only reason it is safe to centre user data in a fixed row at all.
+        let name = if lock.device_name.is_empty() {
+            String::from(NO_NAME)
         } else {
-            format!("\"{}\"", lock.nickname)
+            format!("\"{}\"", lock.device_name)
         };
-        text_centered(t, &nickname, l.nickname, MONO, INK_SECONDARY, PAPER_1)?;
-
-        // The word panel keeps its width on the shorter panel: it is the
-        // security-relevant element, and it is the thing the user is meant to read before
-        // typing. What gives instead is the arrangement around it.
-        panel(t, l.panel, PAPER_3, BORDER_STRONG)?;
-        if lock.lock_word.is_empty() {
-            // The edge state says what to do and does not pretend a word exists. It is
-            // taller than the two-row form, which is why the panel is measured.
-            let inner = l.panel.inset(PANEL_PAD);
-            let mut ly = inner.y;
-            for line in wrap_words(NO_WORD, inner.w, BODY) {
-                let row = Rect::new(inner.x, ly, inner.w, LINE);
-                text_centered(t, &line, row, BODY, INK_MUTED, PAPER_3)?;
-                ly += LINE;
-            }
-        } else {
-            let word = lock.lock_word.to_uppercase();
-            text_centered(
-                t,
-                "your word",
-                Rect::new(l.panel.x, l.panel.y + PANEL_PAD, l.panel.w, LINE),
-                BODY,
-                INK_SECONDARY,
-                PAPER_3,
-            )?;
-            text_centered(
-                t,
-                &word,
-                Rect::new(l.panel.x, l.panel.y + PANEL_PAD + LINE, l.panel.w, LINE),
-                MONO,
-                INK_PRIMARY,
-                PAPER_3,
-            )?;
-        }
+        text_centered(t, &name, l.name, MONO, INK_SECONDARY, PAPER_1)?;
 
         text_centered(t, LOCKED, l.locked, HEADING, INK_PRIMARY, PAPER_1)?;
         text_centered(t, TOUCH_HINT, l.hint, BODY, INK_SECONDARY, PAPER_1)?;
@@ -298,44 +229,44 @@ fn storage_word(status: StoreStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canvas::BODY;
-    use crate::screens::testing::{rows_are_clear, Fixture, GEOMETRIES};
+    use crate::screens::devicename::name_refusal;
+    use crate::screens::testing::{fits, rows_are_clear_on, Fixture, GEOMETRIES};
 
-    /// The screen, laid out at `w` x `h` with `word` as the lock word.
-    fn laid_out(w: u32, h: u32, word: &str) -> (Fixture, Layout) {
+    /// The screen, laid out at `w` x `h` with `name` as the device name.
+    fn laid_out(w: u32, h: u32, name: &str) -> (Fixture, Layout) {
         let mut f = Fixture::new(w, h);
         // The lock screen only exists on a device with a PIN (R20), so that is the only
         // state worth laying it out in.
         f.lock.status = StoreStatus::Locked;
-        f.lock.nickname = String::from("kitchen drawer");
-        f.lock.lock_word = String::from(word);
+        f.lock.device_name = String::from(name);
         let l = LockState.layout(&f.ctx());
         (f, l)
     }
 
-    /// No two rows of S-03 land on each other, on either panel, with and without a word.
+    /// The two states of the one pre-PIN string: named, and not.
+    const NAMES: [&str; 2] = ["kitchen drawer", ""];
+
+    /// No two rows of S-03 land on each other, on either panel, named or not.
     ///
     /// This is the check this suite did not have. Every rectangle on this screen but two is
     /// MEASURED TEXT, the region tests only inspect regions, and so at 800x480 the unlock
     /// hint was drawn 42 px on top of the footer for a whole release with every test
-    /// passing. The no-word edge state is here for the same reason: its panel holds a
-    /// wrapped sentence, which is taller than the two rows the panel used to reserve for
-    /// it - at 720x720 by exactly one line.
+    /// passing.
     #[test]
     fn no_two_rows_of_the_lock_screen_overlap() {
         for (w, h) in GEOMETRIES {
-            for word in ["anvil", ""] {
-                let (f, l) = laid_out(w, h, word);
+            for name in NAMES {
+                let (f, l) = laid_out(w, h, name);
                 let m = &f.m;
-                rows_are_clear(
-                    &format!("{w}x{h} lock_word={word:?}"),
+                rows_are_clear_on(
+                    m,
+                    &format!("{w}x{h} device_name={name:?}"),
                     // Below the bar: the bar is painted over, and the Verify chip rides in
                     // it.
                     Rect::new(0, m.bar, m.w, m.h - m.bar),
                     &[
                         ("title", l.title),
-                        ("nickname", l.nickname),
-                        ("word panel", l.panel),
+                        ("device name", l.name),
                         ("Locked", l.locked),
                         ("unlock hint", l.hint),
                         ("version", l.version),
@@ -348,64 +279,63 @@ mod tests {
     /// Every fixed line fits the row it is centred in.
     ///
     /// `text_centered` will happily centre a string wider than its rectangle and lose both
-    /// ends of it, so a row that is too narrow does not wrap - it crops. On the shorter
-    /// panel the identity is a COLUMN, sized to the widest of these lines, which is the one
-    /// arrangement where being 12 px out would cost the user the only instruction on the
-    /// screen.
+    /// ends of it, so a row that is too narrow does not wrap - it crops, silently.
     #[test]
     fn every_fixed_line_fits_the_row_it_is_centred_in() {
         for (w, h) in GEOMETRIES {
-            for word in ["anvil", ""] {
-                let (_, l) = laid_out(w, h, word);
-                for (line, need, have) in [
-                    ("notyas", TITLE.text_width("notyas") as i32, l.title.w),
-                    (LOCKED, HEADING.text_width(LOCKED) as i32, l.locked.w),
-                    (TOUCH_HINT, BODY.text_width(TOUCH_HINT) as i32, l.hint.w),
-                    ("your word", BODY.text_width("your word") as i32, l.panel.w),
-                ] {
-                    assert!(
-                        need <= have,
-                        "{w}x{h} lock_word={word:?}: {line:?} needs {need} px in a {have} px row"
-                    );
-                }
+            for name in NAMES {
+                let (_, l) = laid_out(w, h, name);
+                let what = format!("{w}x{h} device_name={name:?}");
+                fits(&what, "notyas", TITLE.text_width("notyas") as i32, l.title);
+                fits(&what, LOCKED, HEADING.text_width(LOCKED) as i32, l.locked);
+                fits(&what, TOUCH_HINT, BODY.text_width(TOUCH_HINT) as i32, l.hint);
+                fits(&what, NO_NAME, MONO.text_width(NO_NAME) as i32, l.name);
             }
         }
     }
 
-    /// The word panel holds what is drawn inside it.
+    /// The longest name the device will ACCEPT still fits the row that shows it, quotes
+    /// and all, on every panel this file lays out for.
     ///
-    /// The panel is a box of a measured height, and the sentence inside it is wrapped
-    /// AGAIN by the drawing code: the two have to agree, or the line that tells a user
-    /// this device cannot prove itself is the one that runs out of the bottom of the box.
-    /// It did - the panel reserved two rows for a sentence that wraps to three at 720x720
-    /// and to four in the shorter panel's column.
+    /// The two halves of that sentence live in different files - the refusal is in
+    /// `screens/devicename.rs`, the row is here - and this is the joint between them. A
+    /// name is the one piece of user data drawn unwrapped in a fixed row on a screen shown
+    /// before authentication, so the entry screen is the only place a length can be
+    /// refused, and a limit that did not match this row would crop a user's device name
+    /// with no error raised anywhere.
     #[test]
-    fn the_word_panel_holds_what_is_drawn_in_it() {
-        for (w, h) in GEOMETRIES {
-            for word in ["anvil", ""] {
-                let (_, l) = laid_out(w, h, word);
-                // Exactly what `draw` does: inset by the padding, one LINE per row.
-                let inner = l.panel.inset(PANEL_PAD);
-                let rows = if word.is_empty() {
-                    wrap_words(NO_WORD, inner.w, BODY).len() as i32
-                } else {
-                    2
-                };
-                assert!(
-                    inner.y + rows * LINE <= l.panel.bottom(),
-                    "{w}x{h} lock_word={word:?}: {rows} rows do not fit a {} px panel",
-                    l.panel.h
-                );
+    fn the_longest_accepted_name_fits_the_row_that_shows_it() {
+        // Grown a character at a time and stopped at the first refusal, so the string under
+        // test is exactly the boundary the entry screen enforces rather than a number
+        // restated here. `W` is the widest glyph the mono face has in its ASCII range,
+        // which makes this the worst case rather than an average one.
+        let mut longest = String::new();
+        loop {
+            let mut next = longest.clone();
+            next.push('W');
+            if name_refusal(&next).is_some() {
+                break;
             }
+            longest = next;
+        }
+        assert!(!longest.is_empty(), "no name of any length is accepted");
+        let quoted = format!("\"{longest}\"");
+        for (w, h) in GEOMETRIES {
+            let (_, l) = laid_out(w, h, &longest);
+            fits(
+                &format!("{w}x{h} longest accepted name"),
+                &quoted,
+                MONO.text_width(&quoted) as i32,
+                l.name,
+            );
         }
     }
 
     /// The footer line fits the panel it is centred on, at both geometries.
     ///
     /// It is the pre-PIN storage statement, and it is neither wrapped nor clipped by the
-    /// code that draws it - `text_centered` will happily centre a string wider than the
-    /// panel and lose both ends of it. A copy edit that overran fails here rather than
-    /// shipping a storage word with its ends cut off.
+    /// code that draws it. A copy edit that overran fails here rather than shipping a
+    /// storage word with its ends cut off.
     #[test]
     fn the_pre_pin_footer_line_fits_the_panel() {
         for (w, h) in GEOMETRIES {
@@ -417,7 +347,7 @@ mod tests {
                 StoreStatus::Unreadable,
             ]
             .into_iter()
-            .map(|s| format!("version {VERSION} - {}", storage_word(s)))
+            .map(footer_line)
             .map(|line| BODY.text_width(&line) as i32)
             .max()
             .unwrap_or(0);
@@ -436,7 +366,7 @@ mod tests {
     /// layout would pass again the moment the sentence was drawn into one of the rows that
     /// remain. What it covers is every fixed string S-03 can paint; what it cannot cover is
     /// a literal a future edit writes inline, which is why the copy is named up top in the
-    /// first place. The nickname is excluded because it is user data, and the user may
+    /// first place. The device name is excluded because it is user data, and the user may
     /// call their device whatever they like.
     ///
     /// The last assertion is what makes this a statement about the footer's CONTENT and
@@ -444,12 +374,51 @@ mod tests {
     /// requires is checked to be there.
     #[test]
     fn nothing_this_screen_says_states_capacity_or_contents() {
+        let slots = format!("{}", crate::WALLET_SLOTS);
+        for line in &copy() {
+            let l = line.to_lowercase();
+            for banned in ["holds up to", "wallet", "slot", "capacity", slots.as_str()] {
+                assert!(
+                    !l.contains(banned),
+                    "a pre-PIN line volunteers capacity or contents ({banned:?}): {line:?}"
+                );
+            }
+        }
+        assert!(
+            copy().iter().any(|line| line.contains("internal store present")),
+            "the storage word the design still requires is gone"
+        );
+    }
+
+    /// Nothing this screen says claims the device name proves which device this is.
+    ///
+    /// The defect this replaces was one sentence: "no word set - set one in Settings so
+    /// you can tell this device from a fake." It was drawn before any authentication, about
+    /// a string anyone holding the device could read and anyone building a counterfeit
+    /// could copy. The words that carry that promise honestly are S-04's derived pair, and
+    /// this test is what stops the promise wandering back onto the screen that cannot keep
+    /// it - including onto the Verify chip's label, which is why the chip is in the list.
+    #[test]
+    fn no_pre_pin_line_claims_the_name_proves_the_device() {
+        for line in &copy() {
+            let l = line.to_lowercase();
+            for banned in ["fake", "counterfeit", "genuine", "authentic", "prove", "swap"] {
+                assert!(
+                    !l.contains(banned),
+                    "S-03 makes an anti-swap claim it cannot keep ({banned:?}): {line:?}"
+                );
+            }
+        }
+    }
+
+    /// Every fixed string S-03 can paint, in one place, so the two copy tests above cannot
+    /// drift apart or quietly stop covering a line.
+    fn copy() -> Vec<String> {
         let mut copy = alloc::vec![
             String::from("notyas"),
             String::from(LOCKED),
             String::from(TOUCH_HINT),
-            String::from(NO_WORD),
-            String::from("your word"),
+            String::from(NO_NAME),
             String::from("Verify device"),
         ];
         copy.extend(
@@ -463,19 +432,6 @@ mod tests {
             .into_iter()
             .map(footer_line),
         );
-        let slots = format!("{}", crate::WALLET_SLOTS);
-        for line in &copy {
-            let l = line.to_lowercase();
-            for banned in ["holds up to", "wallet", "slot", "capacity", slots.as_str()] {
-                assert!(
-                    !l.contains(banned),
-                    "a pre-PIN line volunteers capacity or contents ({banned:?}): {line:?}"
-                );
-            }
-        }
-        assert!(
-            copy.iter().any(|line| line.contains("internal store present")),
-            "the storage word the design still requires is gone"
-        );
+        copy
     }
 }

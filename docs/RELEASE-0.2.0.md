@@ -76,12 +76,13 @@ The eight requests that used to be answered with a refusal - `ListCard`, `LoadPs
   image accepts one key provenance, `EfuseReadProtected` (`firmware/src/store/mod.rs:67`).
   An unprovisioned board is the 0.1.0 stateless seed tool and public-key exporter, exactly
   as before.
-- **Delete a stored wallet** (`firmware/src/main.rs:725`), **commit a wipe-policy change**
-  (`:740`), **change the PIN** (`:762`) or **remove the PIN** (`:778`). Four screens exist
-  for operations the firmware refuses: erasing a record has no published route through
-  `Store`, and the other three re-seal or destroy sealed records and need a fresh PIN
-  confirmation this UI cannot collect. K15 and K16 carry the detail; only one of the four
-  refusals reaches the user in words.
+- **Commit a wipe-policy change** (firmware/src/main.rs:740), **change the PIN**
+  (:762) or **remove the PIN** (:778). Three screens exist for these operations and
+  collect the user's consent, but the firmware refuses each one because committing it
+  re-seals or destroys sealed records and needs a fresh PIN confirmation this build
+  cannot collect on a provisioned device (K16). Only the PIN-removal refusal reaches
+  the user in words; the other two log and leave the screen as it was. Deleting a
+  stored wallet IS implemented (flow::delete_wallet, K15 closed).
 - **Finalize a transaction.** `sd::plan` is called with `finalized: false` and nothing in
   this workspace finalizes a PSBT. A coordinator does that.
 - **Take a transaction in over anything but the card.** No supported board has a camera, and
@@ -601,10 +602,9 @@ These belong in the release notes verbatim, not behind a link.
    rather than sealed cannot sign, because the firmware never holds that seed. An
    unprovisioned board is a seed tool and public-key exporter, which is a legitimate way to
    own the hardware and is not what "signer" means.
-10. **Four operations have screens and no implementation**: delete a stored wallet (K15),
-    change the PIN and commit a wipe-policy change (K16), and remove the PIN. All four are
-    refused in `firmware/src/main.rs`, three of them without words on the panel. A user who
-    walks the delete flow, including its typed-name consent, watches the wallet survive.
+10. **Three operations have screens and no implementation** (K16):
+    change the PIN and commit a wipe-policy change (K16), and remove the PIN. All three are
+    refused in `firmware/src/main.rs`, two of them without words on the panel. The third (RemovePin) reports the refusal on the panel.
 11. **A PSBT cannot reach a Waveshare 4B in the enclosure this repository ships** (K6): the
     microSD slot is behind the backing plate, and the desk stand in `3dp/` does not open it.
     That board runs plate-off for 0.2.0. **The Verify screen's reserved-space scan always

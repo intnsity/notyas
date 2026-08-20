@@ -77,6 +77,7 @@ Upstream files (unmodified, tools/fonts/upstream/)
 Modified Versions (generated, crates/notyas-fonts/src/gen/)
 -----------------------------------------------------------
 
+   notyas Sans Regular 24 px     (sans_regular_24.rs)    from IBMPlexSans-Regular.ttf
    notyas Sans Regular 32 px     (sans_regular_32.rs)    from IBMPlexSans-Regular.ttf
    notyas Sans SemiBold 32 px    (sans_semibold_32.rs)   from IBMPlexSans-SemiBold.ttf
    notyas Sans SemiBold 44 px    (sans_semibold_44.rs)   from IBMPlexSans-SemiBold.ttf

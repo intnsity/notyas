@@ -599,6 +599,7 @@ fn entries_match(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::UnlockGate;
     use super::*;
     use crate::layout::TOUCH_MIN;
     use crate::screens::testing::{fits, rows_are_clear_on, Fixture, GEOMETRIES};
@@ -939,8 +940,8 @@ mod tests {
         assert!(s.ready(&f.lock), "the cap is unreachable, so the commit is dead forever");
     }
 
-    fn env<'a>(f: &'a Fixture, network: &'a mut Network) -> Env<'a> {
-        Env { network, lock: &f.lock, wallets: &f.wallets }
+    fn env<'a>(f: &'a Fixture, network: &'a mut Network, gate: &'a mut UnlockGate) -> Env<'a> {
+        Env { network, lock: &f.lock, wallets: &f.wallets, gate }
     }
 
     /// The happy path: two identical entries raise the request that carries the PIN, and the
@@ -950,13 +951,14 @@ mod tests {
         let mut f = Fixture::new(720, 720);
         blank(&mut f);
         let mut net = Network::Bitcoin;
+        let mut gate = UnlockGate::default();
         let mut s = SetPinState::new();
         typed(&mut s, 6);
-        let out = s.activate(RegionId::PinNext, &mut env(&f, &mut net));
+        let out = s.activate(RegionId::PinNext, &mut env(&f, &mut net, &mut gate));
         assert_eq!(out.request, None, "the step change asks the embedder for nothing");
         assert_eq!(s.step, Step::Confirm);
         typed(&mut s, 6);
-        let out = s.activate(RegionId::PinConfirm, &mut env(&f, &mut net));
+        let out = s.activate(RegionId::PinConfirm, &mut env(&f, &mut net, &mut gate));
         match out.request {
             Some(UiRequest::SetPin(pin)) => assert_eq!(pin.as_str(), "777777"),
             other => panic!("a matching confirm raised {other:?}"),
@@ -972,13 +974,14 @@ mod tests {
         let mut f = Fixture::new(720, 720);
         blank(&mut f);
         let mut net = Network::Bitcoin;
+        let mut gate = UnlockGate::default();
         let mut s = SetPinState::new();
         typed(&mut s, 5);
-        s.activate(RegionId::PinNext, &mut env(&f, &mut net));
+        s.activate(RegionId::PinNext, &mut env(&f, &mut net, &mut gate));
         for _ in 0..5 {
             s.active().push('1');
         }
-        let out = s.activate(RegionId::PinConfirm, &mut env(&f, &mut net));
+        let out = s.activate(RegionId::PinConfirm, &mut env(&f, &mut net, &mut gate));
         assert_eq!(out.request, None, "a mismatch must not ask the embedder for anything");
         assert!(matches!(out.nav, Nav::Stay));
         assert!(s.entry.is_empty() && s.confirm.is_empty(), "a rejected PIN was kept");
@@ -988,7 +991,7 @@ mod tests {
         assert_eq!(ink, DANGER);
         // ... and the news is cleared by the next key, so it cannot be read as a verdict on
         // what the user types next.
-        s.activate(RegionId::PinKey(0), &mut env(&f, &mut net));
+        s.activate(RegionId::PinKey(0), &mut env(&f, &mut net, &mut gate));
         assert_ne!(s.advice(&f.lock).map(|(s, _)| s), Some(String::from(MISMATCH)));
     }
 
@@ -1010,6 +1013,7 @@ mod tests {
     #[test]
     fn a_store_that_cannot_be_formatted_says_so_instead_of_doing_nothing() {
         let mut net = Network::Bitcoin;
+        let mut gate = UnlockGate::default();
         for status in ALL_STATUSES {
             let mut f = Fixture::new(720, 720);
             blank(&mut f);
@@ -1018,7 +1022,7 @@ mod tests {
             typed(&mut s, 8);
             s.step = Step::Confirm;
             typed(&mut s, 8);
-            let out = s.activate(RegionId::PinConfirm, &mut env(&f, &mut net));
+            let out = s.activate(RegionId::PinConfirm, &mut env(&f, &mut net, &mut gate));
             match refusal(status) {
                 None => assert!(
                     matches!(out.request, Some(UiRequest::SetPin(_))),
@@ -1065,9 +1069,10 @@ mod tests {
         let mut f = Fixture::new(720, 720);
         blank(&mut f);
         let mut net = Network::Bitcoin;
+        let mut gate = UnlockGate::default();
         let mut s = SetPinState::new();
         for pos in 0..10u8 {
-            s.activate(RegionId::PinKey(pos), &mut env(&f, &mut net));
+            s.activate(RegionId::PinKey(pos), &mut env(&f, &mut net, &mut gate));
         }
         assert_eq!(&*s.entry, "1234567890");
         // The slot the layout puts in the bottom-centre cell is the one that carries the
@@ -1083,9 +1088,10 @@ mod tests {
         let mut f = Fixture::new(720, 720);
         blank(&mut f);
         let mut net = Network::Bitcoin;
+        let mut gate = UnlockGate::default();
         let mut s = SetPinState::new();
         for _ in 0..PIN_MAX + 8 {
-            s.activate(RegionId::PinKey(0), &mut env(&f, &mut net));
+            s.activate(RegionId::PinKey(0), &mut env(&f, &mut net, &mut gate));
         }
         assert_eq!(s.entry.len(), PIN_MAX);
         assert_eq!(s.advice(&f.lock).map(|(t, _)| t), Some(String::from(AT_CAP)));

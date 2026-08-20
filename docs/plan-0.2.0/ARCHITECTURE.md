@@ -371,12 +371,46 @@ offsets below are the frozen ones; the original 0x410000 / 0x450000 layout is go
 because a growing app would have relocated them and destroyed every sealed record on
 upgrade.**
 
+**AND SUPERSEDED AGAIN BY WHAT SHIPPED. This block is history, not the table.**
+`firmware/partitions.csv` is normative and it is the `0x410000` layout with a 4 MiB
+app, plus the `settings` region 0.2.0 added. It is reproduced in `BOARDS.md`
+("Flash size and partition table") and in `SECUREBOOT.md` section 7; the numeric
+subtypes below never shipped either, because `esp-idf-part` 0.6 panics on a
+user-range numeric data subtype and all three regions therefore carry `undefined`
+and are told apart by LABEL. The paragraphs after the block are still the reasoning
+that holds; only the offsets and subtypes in it are dead.
+
 ```
 # Name,    Type, SubType, Offset,   Size,     Flags
 factory,   app,  factory, 0x10000,  0xDF0000
 wallets,   data, 0x40,    0xE00000, 256K,     encrypted
 counters,  data, 0x41,    0xE40000, 16K
 ```
+
+**The shipped table, and the rule for adding to it.**
+
+```
+# Name,    Type, SubType,   Offset,   Size, Flags
+factory,   app,  factory,   0x10000,  4M
+wallets,   data, undefined, 0x410000, 256K, encrypted
+counters,  data, undefined, 0x450000, 16K
+#          gap 0x454000..0x460000 - 64 KiB alignment for what comes next
+settings,  data, undefined, 0x460000, 64K
+```
+
+`settings` (0.2.0) is the one region the sealing engine does not own: two A/B slots
+of one sector holding the public, pre-PIN values - the device name the lock screen
+draws and the network choice - with a 14-sector reserve for a format revision. No
+`encrypted` flag: it must be readable before any key exists, and XTS
+write-once-per-cipher-block is the wrong physics for a region rewritten on every
+Save. Its admission rule, its exclusion list and its torn-write analysis live in
+`crates/notyas-wallet/src/settings.rs`.
+
+**Additions APPEND at the 64 KiB-aligned tail. Nothing that has shipped moves.**
+That is what the 48 KiB gap is for: the next free offset is `0x470000`, which is
+where 0.3.0's `otadata`/`ota_1` go (SECUREBOOT.md 7 and 8.2). An offset that has
+ever been on a user's device is never re-derived, because every superblock records
+the geometry it was formatted against and a mismatch is a hard mount refusal.
 
 - The app is declared at its collision bound (0xE00000 - 0x10000 = 0xDF0000 =
   13.94 MiB) rather than at a nominal size, so the frozen table never needs a later

@@ -329,7 +329,22 @@ EOF
             BANNED='^(esp_wifi|wifi_|esp_now|espnow|ieee802154|esp_ieee802154|esp_bt_|bluedroid|btdm_|r_ble|ble_hs|nimble|esp_openthread|esp_zb)'
             BANNED="$BANNED|^(lwip_|tcpip_|esp_netif|netif_|dhcps_|dhcp_|sntp_|esp_eth_|emac_)"
             BANNED="$BANNED|^(esp_hosted|hosted_|slave_bt|sdio_slave)"
-            BANNED="$BANNED|^(sdmmc_host|sdmmc_card|sdspi_host)"
+            # sdmmc_host / sdmmc_card were banned here until 2026-08-19, when the SD
+            # card became PRODUCT CODE: firmware/src/sd drives the slot over the SDMMC
+            # host peripheral, which is how a PSBT reaches the device and how a signed
+            # transaction leaves it (K18). Banning the driver that implements the
+            # shipped feature would fail this gate on every build from that day on, and
+            # a gate that always fails is a gate somebody deletes.
+            #
+            # What the ban was really guarding is still guarded. The hazard was never
+            # "an SD peripheral exists" - it is the ESP32-C6 radio coprocessor, which
+            # talks to the P4 over SDIO as a SLAVE and is reached through esp_hosted.
+            # Those symbols stay in the list on line 331 above and are asserted
+            # positively per image below, so the coprocessor path is watched by name
+            # rather than by proxy. sdspi_host stays banned because this product never
+            # drives the card over SPI: it would be a second, unused route to the same
+            # pins, and an unused route is one nobody is watching.
+            BANNED="$BANNED|^(sdspi_host)"
             BANNED="$BANNED|^(tusb_|tud_|tinyusb|usb_host_)"
             BANNED="$BANNED|^(esp_gdbstub|esp_apptrace)"
             # USB paths that would make the port a data port. usb_serial_jtag_* is
@@ -355,7 +370,7 @@ EOF
                     bad "  radio / network / debug-server code IS LINKED INTO THIS IMAGE:"
                     printf '%s\n' "$radio_hits" | head -20 | sed 's/^/            /'
                 else
-                    ok "  no radio, network, esp-hosted, SDIO-host or gdbstub symbol"
+                    ok "  no radio, network, esp-hosted, SDIO-slave or gdbstub symbol"
                 fi
                 usb_hits=$(printf '%s\n' "$syms" | grep -E "$USB_DATA" || true)
                 if [ -n "$usb_hits" ]; then
@@ -372,6 +387,21 @@ EOF
                 # exits at the first match, which SIGPIPEs the printf feeding it
                 # and makes the whole pipeline report 141. A positive assertion
                 # that silently inverts is the worst bug a gate can have.
+                # The radio coprocessor, asserted by name rather than inferred from the
+                # absence of a whole regex. Since 2026-08-19 the SDMMC host driver is
+                # legitimately in this image (the card is the delivery path), so "no
+                # SDIO symbols at all" is no longer a true statement about a passing
+                # build - and the one that matters, the C6's slave side, has to be
+                # stated on its own or it disappears into a driver everybody expects to
+                # see. grep -c and not grep -q, for the pipefail reason spelled out
+                # below.
+                slave=$(printf '%s\n' "$syms" | grep -c -E '^(sdio_slave|esp_hosted|hosted_)' || true)
+                if [ "$slave" -eq 0 ]; then
+                    ok "  no SDIO-slave or esp-hosted symbol - the C6 radio coprocessor is unreachable"
+                else
+                    bad "  the C6 radio coprocessor path IS LINKED INTO THIS IMAGE:"
+                    printf '%s\n' "$syms" | grep -E '^(sdio_slave|esp_hosted|hosted_)' | head -20 | sed 's/^/            /'
+                fi
                 usj=$(printf '%s\n' "$syms" | grep -c '^usb_serial_jtag_write$' || true)
                 if [ "$usj" -gt 0 ]; then
                     ok "  USB-Serial-JTAG present as the IDF secondary console (output only)"

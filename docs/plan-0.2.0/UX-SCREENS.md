@@ -107,6 +107,34 @@ Plain, factual, short. Rules that are actually enforceable in review:
 | Prose, hints, labels | `BODY` (Sans Regular 32) | hints differ by ink, not size |
 | Mnemonic words, digits, wallet names in verification context | `MONO` (Mono Regular 32) | |
 | Addresses, xpubs, txids, hex, descriptors, fingerprints | `MONO_SMALL` (Mono Regular 28) | never Sans, ever |
+| The lines inside a control that cannot grow | `CAPTION` (Sans Regular 24) | title and hint together, separated by ink; never prose, never a comparand |
+
+**Amended 2026-08-19 - the `CAPTION` role.** The five faces above were the whole palette
+until the owner tested S-21 on the 800x480 Elecrow and found every wallet action card
+drawing its title and nothing else. The arithmetic, not a preference: four cards have to
+fit under the identity card and stay above the 60 px touch floor, which gives each one 88
+px of height and 62 px inside it, and `HEADING` over `BODY` is 42 + 42 = 84 px of line box.
+No copy edit reaches that - the shortest possible two rows at the ratified sizes are still
+84 px - and the 720x720 panel is the same failure with 71 px. The card had been silently
+dropping the line that says what the tap costs.
+
+"Hints differ by ink, not size" holds wherever the PAGE owns the height, and every screen
+in this document is such a page. It cannot hold inside a control whose height the finger
+and the panel own, and that is the whole of this exception: Sans Regular 24, line box 31
+px, so a card's title and its hint both fit in 62 px and still separate by ink exactly as
+the rule says.
+
+What it is NOT: a smaller body size, or room for more words. Prose stays `BODY`; a screen
+with too much text gets less text, and the two strings that overran their cards on the way
+here were shortened rather than set smaller ("registered wallets, import a descriptor" ->
+"registrations, import one"). And nothing a user compares against another device shrinks -
+fingerprints, addresses, xpubs, derivation paths, txids and the device words stay
+`MONO`/`MONO_SMALL` at their existing sizes, where a misread character costs money.
+
+Applied at 0.2.0 to S-21's action cards (both lines) and to S-38's status-card detail line,
+whose sentence is parked OPEN below pending the finalizer decision and could therefore be
+refitted but not reworded. Atlas: `crates/notyas-fonts/src/gen/sans_regular_24.rs`, 17144 B
+of bitmap plus a 1164 B glyph table, about 17.9 KiB of flash; rostered in `LICENSE-fonts`.
 
 **Amounts.** BTC, mono, always eight decimals, fractional part grouped 2-3-3 with
 spaces (satcomma, spaces rather than commas because a comma is a decimal separator in
@@ -595,6 +623,7 @@ section 3's inventory. (E) evolves a 0.1.0 screen, (N) is new.
 | S-19 | Keep or save | N | C2 |
 | S-20 | Name and save | N | C9, C12 |
 | S-21 | Wallet home | N | C1, C2 |
+| S-21b | Passphrase unlock | N | C3, C9 |
 | S-22 | Receive / address list | E | C2 |
 | S-23 | Address detail | E/N | C8 |
 | S-24 | Check an address (input) | N | C9 |
@@ -765,10 +794,6 @@ timeout. Touch anywhere -> S-04.
 |                                                                       |
 |                          "kitchen-desk"                               |
 |                                                                       |
-|                     +----------------------+                          |
-|                     |   your word:  ANVIL  |                          |
-|                     +----------------------+                          |
-|                                                                       |
 |                            Locked                                     |
 |                                                                       |
 |                                                                       |
@@ -778,8 +803,9 @@ timeout. Touch anywhere -> S-04.
 +----------------------------------------------------------------------+
 ```
 
-**Reflow (800x480).** Identical, vertically compressed; the word panel keeps its size
-(it is the security-relevant element).
+**Reflow (800x480).** Identical, vertically compressed. One centred column on every
+shipped panel: the second arrangement this screen used to need existed only to fit the
+lock-word panel beside the identity, and went with the panel (Q64, 2026-08-19).
 
 **Regions.**
 
@@ -792,16 +818,23 @@ Verify device is reachable *before* PIN entry, deliberately: commandment 4 says 
 device authenticates itself first, and a user who suspects a swap must be able to
 check the firmware hash without typing a digit into it.
 
-**Copy.** Device nickname is user-chosen (Settings), shown in quotes, mono. "your
-word:" plus the user-chosen lock word, `TITLE`-sized, uppercase, mono. "Locked".
-"Touch anywhere to unlock". Footer: version and storage state.
+**Copy.** The device NAME is user-chosen (Settings row -> S-44a), shown in quotes,
+mono. "Locked". "Touch anywhere to unlock". Footer: version and storage state.
 
-**Masked / shown.** The lock word is shown in the clear - it is an anti-swap token,
-not a secret, and it is worthless if hidden. `OPEN-QUESTIONS` Q10 accepted this.
+**One pre-PIN string, and it makes no claim (Q64, 2026-08-19).** This screen used to
+show two user-set strings: the name, and a "lock word" whose panel told the user it let
+them tell this device from a fake. The word is deleted. Anything drawn here is readable
+by whoever is holding the device, including whoever would build the counterfeit, so no
+string on this screen may be described as anti-swap evidence - the claim belongs to
+S-04's derived word pair, which a counterfeit cannot compute, and is taught by S-04a.
+The name is a label and is drawn as one.
+
+**Masked / shown.** The name is shown in the clear. It is not a secret and the screen
+does not treat it as one; what an attacker learns from it is the name.
 
 **Edge states.**
-- No nickname/word set (first boot after PIN creation, if the user skipped): the panel
-  reads "no word set - set one in Settings so you can tell this device from a fake."
+- No name set (the state every device ships in): the row reads "no name set", with no
+  instruction and no promise attached to it.
 - Storage unreadable: footer reads "storage unreadable" in `WARNING`.
 - Q2 duress accepted: footer degrades to "storage present" (see S-01).
 
@@ -1407,6 +1440,22 @@ as muted bullets). Unchanged, including the mismatch handling.
 
 **Edge states.** Unchanged (`PASS_MAX` 256 bytes; mismatch blocks Done with a reason).
 
+**Second entry point, added 2026-08-19 with the Q22 amendment.** S-21's `Add a passphrase`
+action opens this same screen with the words of a wallet that is already stored. In that
+purpose a passphrase is not optional - off would re-derive the wallet the user is looking
+at - so there is no toggle, and the first page is the explanation instead of the Q22 block:
+"This does not change "{name}": these words plus a passphrase are a different wallet, with
+its own fingerprint and addresses." Q22 is not repeated there because the flow it starts
+passes through both remaining placements: S-19 states it (ii) and S-20's save is GATED on
+the acknowledgement (iii). What comes out the far end is a NEW record in a NEW slot, which
+is the BIP-39 truth made unmistakable by the wallet list's own structure - two rows, two
+fingerprints - rather than by prose.
+
+**Q22 placement (i), as amended.** "Not stored here unless you choose to store it. Your
+seed words alone restore a DIFFERENT wallet - write this passphrase down and keep it
+apart." Three BODY lines, which is what the 800x480 fork screen has under two equal cards;
+the fuller wording is on the storage sheet, which is placement (iv).
+
 ---
 
 #### S-16 Deriving (E, 0.1.0 Deriving) - C3 instance
@@ -1728,11 +1777,41 @@ Lock -> S-03 (drops the session).
 plus one, each >= `LIST_ROW_MIN`.
 
 **Regions.** `ActReceive`, `ActSign`, `ActExport`, `ActMultisig`, `ActWalletSettings`,
-`Lock`, `Back`.
+`ActPassphraseStore`, `ActPassphraseDerive`, `WalletDelete`, `Lock`, `Back`.
 
 **Copy.** Identity card fields as drawn. `session only` appears in place of the
 storage line when the wallet came from Use-once. Multisig card's secondary text is the
 count, or "not set up" when zero.
+
+**The passphrase row (amended Q22, 2026-08-19).** The identity card's passphrase field is
+exactly one of three strings and never a switch: `no passphrase`, `passphrase required`,
+`passphrase stored`. The words ON and off are banned from it and a copy gate asserts they
+appear in no frame. The reason is not style: "off" implies a passphrase this wallet could
+be given, and a passphrase is not a setting of a wallet - the same words under a different
+passphrase are a DIFFERENT wallet, with a different fingerprint and different addresses.
+The one thing here that IS a setting is whether this device remembers it, and
+`passphrase stored` is the state that names it. The build before this one hardcoded the
+field to false and rendered `passphrase off` on wallets that demonstrably had one.
+
+**Two passphrase actions, offered exclusively.**
+
+- **`Remember the passphrase` / `Forget the passphrase`** (`ActPassphraseStore`), on a
+  STORED wallet that has a passphrase and is open with its keys - which is the same thing
+  as saying the session is holding the passphrase, so storing never asks the user to
+  retype and never stores anything unverified. Turning ON is one C4b sheet carrying
+  dangers (a) and (c). Turning OFF is a C4b consequence followed by a C4c hold, on the
+  delete sequence's own precedent: the grade this action earns is the hold, and a hold bar
+  leaves 64 px of prose on the 800x480 panel, which is one line. The row re-renders from
+  the record READ BACK after the write, never from the intent.
+- **`Add a passphrase`** (`ActPassphraseDerive`), on a wallet with NO passphrase. It
+  CREATES a second wallet from the same words - a new record, a new slot, its own label -
+  and changes nothing about this one. Its first page says so before a keyboard appears.
+
+**Reflow, amended.** A stored wallet with its keys, a registry and a passphrase action
+carries five cards, and 190 px under the identity card on the 800x480 panel holds two at
+the `LIST_ROW_MIN` floor. The body SCROLLS, identity card included - it is content, not a
+header - with the `more below` / `more above` chips C2 requires and S-30, S-38, S-42 and
+C7 already draw. What does not give way is the touch floor or the number of actions.
 
 **Masked / shown.** Fingerprint, script type, account path shown (all public). No key
 material, no words, no reveal path from here - viewing the words again is under
@@ -1743,6 +1822,59 @@ Wallet settings and goes through the reveal gate (S-13's modal).
   loses this wallet until you retype the words."
 - Backup unchecked (restore path where the user declined the quiz): status reads
   `BACKUP UNCHECKED` and Wallet settings offers "Check backup now".
+
+---
+
+#### S-21b Passphrase unlock (N, 0.2.0)
+
+**Purpose.** Ask for the BIP-39 passphrase of a wallet that already exists, at the moment
+the user taps its row. Until 0.2.0 this screen did not exist and a passphrase wallet could
+therefore be created once and never opened again (see the Q22 amendment, 2026-08-19).
+
+**Enter / Exit.** From S-10, when the embedder answers `OpenWallet` with
+`Ui::wallet_needs_passphrase` - which is NOT a failure and is never rendered as one:
+nothing went wrong, and the device is asking for the half of the seed it does not hold.
+Done -> C3 Busy -> S-21 on success (the unlock screen is REPLACED, so Back never returns
+to a passphrase field) or back to this screen with the refusal. Back -> S-10, nothing
+opened.
+
+**Three phases, each with a way out.**
+
+1. **Typing.** One field, one Show toggle, the byte counter, the keyboard. NO confirm
+   field: the record carries the fingerprint the seed must produce, so a typo is caught by
+   the device rather than by retyping, which is the whole difference from S-15.
+2. **Busy (C3).** Published BEFORE the derivation starts. No Back and nothing tappable -
+   the work is synchronous and cannot be cancelled, so a Back here would be a button that
+   lies. Both answers leave the phase, which is what makes it impossible to wedge.
+3. **Refused.** What happened, in derivation facts, with `Try again`.
+
+**Copy.** Bar: the wallet's name. Busy: "Opening this wallet... / Deriving keys from your
+words and passphrase. / This takes a few seconds. Do not power off." Counter:
+"{n} bytes (NFKD) - Done opens it". Q22 placement (iii), in the line this phase has room
+for: "Not stored on this device." - unconditional here, because this screen is only ever
+up for a wallet whose passphrase the device does NOT hold.
+
+**The refusal, which is a security property and not a message.** "Every passphrase opens
+some wallet. That one opens wallet {derived}. This record is wallet {expected}, so nothing
+was opened. Spelling, capitals and spaces all count - check them and try again." The
+device never says "wrong", "incorrect" or "invalid" about a passphrase: BIP-39 has no
+invalid passphrases, only different wallets. Both fingerprints are public - one is in the
+record, the other is a function of what the user just typed. What is NEVER rendered is the
+fingerprint the words derive with an EMPTY passphrase: that is an existence proof for a
+hidden wallet, and the firmware discards it rather than sending it here.
+
+**Retry gate.** Attempts 1 and 2 are immediate. From the third, `Try again` is drawn
+disabled with "Wait {n}s before the next try." beside it, starting at 5 s and doubling to
+a 300 s cap. The counter is per wallet slot, lives on the `Ui`, survives backing out to
+S-10 and survives a lock - a counter a tap could reset would be decoration - and is
+cleared by a successful open or a power cycle. It closes the on-panel oracle only; a flash
+dump plus the PIN lets the same guessing run offline at PBKDF2 speed, which only passphrase
+strength answers.
+
+**Regions.** `PassEntry`, `PassShow`, `PassUnlock` (Try again), the keyboard, `Back`.
+
+**Masked / shown.** Typed INPUT masking, one bullet per character, with the Show toggle
+S-15 has and for the same reason: an unseen typo is a wallet that does not open.
 
 ---
 
@@ -2756,9 +2888,12 @@ is visually separated by a full gap and drawn with `DANGER` ink on `DANGER_TINT`
 **Copy per sub-screen** (each is a C2 list of choices or a small form; they share one
 layout and are not specified individually beyond their copy):
 
-- **Device name / Lock word**: keyboard entry; the lock word screen explains "This
-  word appears on the lock screen before you type your PIN. If it is ever wrong or
-  missing, you may be looking at a different device."
+- **Device name** (S-44a): keyboard entry, first row of the list. The screen explains
+  what the name is - "Shown on the lock screen, before any PIN is typed. Anyone holding
+  the device can read it." - and what it is not: "It tells your devices apart. It is not
+  proof - the device words on the PIN screen are that." It refuses non-ASCII, an
+  all-digit string, a BIP-39 word, and anything too wide for the narrowest shipped
+  panel. Empty is legal and means unnamed. There is no lock-word screen (Q64).
 - **Screen brightness**: five steps, applied live.
 - **Lock after**: 1 / 2 / 5 / 15 minutes / never. "Never" carries "The session stays
   open until you power off or tap Lock."

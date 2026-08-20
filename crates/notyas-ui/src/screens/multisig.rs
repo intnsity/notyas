@@ -454,6 +454,17 @@ impl FactsCard {
 /// fingerprint.
 const ROW_H: i32 = LINE + SMALL_LINE + 2 * ROW_PAD;
 const ROW_PAD: i32 = 12;
+
+/// The second line of a slot this device could not read.
+///
+/// Named so it can be MEASURED. It is drawn through the row's clip, so the sentence it
+/// replaced - "unreadable - open to erase this slot and import again", 901 px of MONO_SMALL
+/// into 648 px of row - was cut off inside the row on both panels, and the one instruction
+/// a user with a corrupt slot has to go on ended mid-word. Shortened rather than set in a
+/// smaller face: it is one line on one screen and it had words to spare, and the two things
+/// it has to name - that the slot can be erased and that a descriptor can be imported over
+/// it - both survive.
+const UNREADABLE: &str = "unreadable - open to erase and import";
 const ROW_GAP: i32 = 6;
 
 const _: () = assert!(ROW_H >= LIST_ROW_MIN);
@@ -538,7 +549,7 @@ fn registry_row<D: DrawTarget<Color = Rgb565>>(
         // the row IS beats printing fields nothing verified.
         text(
             &mut clip,
-            "unreadable - open to erase this slot and import again",
+            UNREADABLE,
             second.x,
             second.y,
             MONO_SMALL,
@@ -2371,11 +2382,15 @@ impl Screen for MultisigDetailState {
 
 #[cfg(test)]
 mod tests {
+    use crate::UnlockGate;
     use super::*;
     use crate::danger::DangerGrade;
     use crate::layout::TOUCH_MIN;
     use crate::screens::testing::{fits, rows_are_clear_on, Fixture, GEOMETRIES};
-    use crate::{BackupState, CosignerRow, NullTarget, RefusalCode, RefusalNotice, WalletKind};
+    use crate::{
+        BackupState, CosignerRow, NullTarget, PassphraseState, RefusalCode, RefusalNotice,
+        WalletKind,
+    };
     use notyas_core::bitcoin::Network;
 
     // -----------------------------------------------------------------------------------
@@ -2457,7 +2472,7 @@ mod tests {
             network: Network::Bitcoin,
             registrations,
             stored: true,
-            passphrase: false,
+            passphrase: PassphraseState::None,
         }
     }
 
@@ -2497,13 +2512,23 @@ mod tests {
     /// Drive a tap the way the dispatcher does, with a throwaway `Env`.
     fn tap<S: Screen>(s: &mut S, f: &Fixture, id: RegionId) -> Outcome {
         let mut network = Network::Bitcoin;
-        let mut env = Env { network: &mut network, lock: &f.lock, wallets: &f.wallets };
+        let mut env = Env {
+            network: &mut network,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
         s.activate(id, &mut env)
     }
 
     fn answer<S: Screen>(s: &mut S, f: &Fixture, a: Answer) -> Outcome {
         let mut network = Network::Bitcoin;
-        let mut env = Env { network: &mut network, lock: &f.lock, wallets: &f.wallets };
+        let mut env = Env {
+            network: &mut network,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
         s.answered(a, &mut env)
     }
 
@@ -3018,6 +3043,28 @@ mod tests {
             );
             column_fits(&format!("{w}x{h} registry fault"), col, rect.inset(CARD_PAD));
             s.draw(&mut NullTarget, &ctx).expect("the fault card renders");
+        }
+    }
+
+    /// The unreadable-slot line fits the row that draws it, on both panels.
+    ///
+    /// A registry row clips to its own rectangle, so this line overran by 177 px at 800x480
+    /// and 253 px at 720x720 without the bounds gate seeing anything: the sentence simply
+    /// stopped, inside the row, on the glass. Measured here against the row's real width so
+    /// the copy cannot grow back.
+    #[test]
+    fn the_unreadable_row_line_fits_the_row() {
+        for (w, h) in GEOMETRIES {
+            let mut f = Fixture::new(w, h);
+            f.wallets = alloc::vec![WalletRow::Wallet(wallet(1))];
+            f.registrations = alloc::vec![info(0, false)];
+            let ctx = f.ctx();
+            let s = MultisigListState::new(&wallet(1));
+            let l = s.layout(&ctx);
+            let room = l.viewport.w - 2 * ROW_PAD;
+            let lw = MONO_SMALL.text_width(UNREADABLE) as i32;
+            assert!(lw <= room, "{w}x{h}: {UNREADABLE:?} needs {lw} px in {room} px");
+            s.draw(&mut NullTarget, &ctx).expect("the unreadable row renders");
         }
     }
 

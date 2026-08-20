@@ -418,8 +418,8 @@ items U1 to U6 of section 4, plus two staleness fixes:
   proceeds, and because it is performed by whoever flashes the device, no vendor
   genuine-check claim may appear anywhere.
 - **P2. The `media` partition "is DECLARED and never written".** UNSUPPORTED: the flashed
-  table declares `factory`, `wallets` and `counters` only, and there is no `media`
-  partition at any offset. Struck from the enumeration, with the underlying geometry
+  table declared `factory`, `wallets` and `counters` only (and, since 2026-08-19,
+  `settings` - see section 6 item 2), and there is no `media` partition at any offset. Struck from the enumeration, with the underlying geometry
   discrepancy raised in section 6 rather than papered over.
 - **P3. "miniscript" listed among the new dependency edges the ban list covers.**
   UNSUPPORTED: it is not in the graph at all. Corrected in invariant 1.
@@ -558,6 +558,17 @@ job is to find them, not to reach across a fence to fix them.
    table and its raw-digest ranges were all corrected TO the frozen numbers, so they and the
    flashed table now disagree. This must be settled before any device stores a wallet a user
    cares about, because moving data partitions destroys every sealed record.
+
+   **SETTLED 2026-08-19, the other way round: `firmware/partitions.csv` is normative and
+   the documents were corrected to it.** The shipped table is a 4 MiB `factory` at
+   `0x10000`, `wallets` at `0x410000`, `counters` at `0x450000`, and - added by the same
+   pass - `settings` at `0x460000`. No `media` partition exists at any offset and none is
+   planned. Nothing moved, so no sealed record was at risk. The corrections landed in
+   `VERIFY.md` 3.1 (flash map, class table, the tail-size argument, the raw-digest ranges
+   and both wireframes), `ARCHITECTURE.md` 2.7, `SECUREBOOT.md` 7 and 8.2, and
+   `BOARDS.md`, which now carries the table itself. The rule that replaces the freeze:
+   additions APPEND at the 64 KiB-aligned tail and no shipped offset is re-derived
+   (OPEN-QUESTIONS Q64).
 3. ~~**m5 (SD subsystem) has not started.**~~ **Superseded 2026-08-19: it has landed, and
    is reached by nothing.** `firmware/src/sd/` (`mod.rs`, `mount.rs`, `fs.rs`, `pins.rs`)
    and `crates/notyas-wallet/src/sd.rs` are complete and host-tested against a hostile

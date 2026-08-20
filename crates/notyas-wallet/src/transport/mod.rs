@@ -59,7 +59,7 @@ use alloc::string::String;
 
 mod bbqr;
 mod bytewords;
-mod checksum;
+pub(crate) mod checksum;
 mod fountain;
 mod playback;
 mod ur;

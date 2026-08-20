@@ -43,6 +43,28 @@
 //! than by a fixed catalogue index, so a row that is absent cannot be reached by tapping
 //! where it would have been.
 //!
+//! # Formatting a card is a ROW, and the PIN removal is still not
+//!
+//! S-49 (format an unreadable card) is the second dangerous thing reachable from this
+//! screen, and it is a list row drawn in danger ink rather than a second pinned control.
+//! Two reasons, and the first is the one that decides it:
+//!
+//! - **it is a navigation row, not an action.** Tapping it opens a screen that READS the
+//!   card and, in most cases, refuses. The pinned control below the list is pinned because
+//!   it opens a destruction IN PLACE, over this screen, from a rectangle a scroll could
+//!   otherwise slide under a finger. Nothing about S-49's row has that shape: it opens a
+//!   screen, exactly as `Wrong-PIN policy` and `Verify device` do, and it carries no
+//!   consent of its own - the consent for the erase is two sheets deep, on the screen that
+//!   knows which card is in the slot.
+//! - **the panel says so.** A second pinned row costs the list one row of window and the
+//!   800x480 body has only two: pinning both would leave a settings screen showing ONE
+//!   setting under two full-width danger blocks, which reads as a device whose main
+//!   business is destruction.
+//!
+//! It is drawn in DANGER ink anyway, and last in the list, because that is what the ink
+//! means here: this row leads somewhere destructive. The pinned control means the same
+//! thing, and the full page pad between them is what keeps the two from being one target.
+//!
 //! # Removing the PIN
 //!
 //! Q5.5, and the copy rule is easy to get backwards. "Keep the stored wallets with no PIN"
@@ -67,6 +89,8 @@ use crate::canvas::{button, fill, frame, text, toggle, ButtonKind, BODY, HEADING
 use crate::components::{back_rect, draw_bar, LINE, SMALL_LINE};
 use crate::danger::{Danger, DangerGrade, DangerOutcome};
 use crate::layout::{Metrics, Rect, LIST_ROW_MIN};
+use crate::screens::devicename::DeviceNameState;
+use crate::screens::format::FormatCardState;
 use crate::screens::policy::PolicyState;
 use crate::screens::verify::VerifyState;
 use crate::screens::{Ctx, Env, Nav, Outcome, Screen, State};
@@ -127,11 +151,11 @@ impl SettingsState {
     /// `layout`, `regions`, `draw` and `activate` alike, so a row can never be drawn at an
     /// index that resolves to a different action.
     ///
-    /// Ordered the way S-44's wireframe orders what it has: the benign preference first,
+    /// Ordered the way S-44's wireframe orders what it has: the benign preferences first,
     /// then the policy that decides what a wrong PIN costs, then the read-only readout.
     /// The destructive control is not in this table at all - see the module docs.
     fn rows(&self) -> &'static [Row] {
-        &[Row::Network, Row::WipePolicy, Row::VerifyDevice]
+        &[Row::DeviceName, Row::Network, Row::WipePolicy, Row::VerifyDevice, Row::FormatCard]
     }
 
     /// The pinned destructive control, as a row.
@@ -155,6 +179,13 @@ impl SettingsState {
     }
 
     /// C4b: what removing the PIN destroys, named individually with counts from the store.
+    ///
+    /// "all settings" is a promise the EMBEDDER keeps, and since 0.2.0 it costs it a real
+    /// erase: the device name and the network choice live on flash now, outside the sealed
+    /// store, because the lock screen draws the name before any PIN. A device that removes
+    /// its PIN and comes back up still wearing the previous owner's name would make this
+    /// sentence false, so the embedder's handler clears that region as part of the
+    /// operation. The wording stays as it is; the obligation is on the code.
     fn review_sheet(counts: StoredCounts) -> Danger {
         // Two paragraphs, and no more: the 800x480 sheet holds six lines of body copy
         // and a third paragraph would spend one of them on its own gap. The three things
@@ -207,6 +238,13 @@ impl SettingsState {
 /// what is showing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Row {
+    /// S-44a. The one string this device shows before a PIN is typed.
+    ///
+    /// FIRST, and the only row here whose effect is visible without unlocking: it is the
+    /// most benign thing on the screen and the one a new owner looks for. It is also the
+    /// row S-03 used to tell users to come here for while it did not exist - the defect
+    /// that collapsed the two pre-PIN strings into one on 2026-08-19.
+    DeviceName,
     /// The network every derivation this device starts runs on. A device-wide pipeline
     /// input rather than a per-wallet fact, which is why it outlives the flow that reads it
     /// and why it belongs to a settings list rather than to a creation screen.
@@ -215,12 +253,38 @@ enum Row {
     /// S-46. A readout, so it changes nothing and can be opened at any time - and post-PIN
     /// it is the only place the boot-counter acknowledgement can be given at all.
     VerifyDevice,
+    /// S-49. Look at a card this device cannot read and, only where a format would repair
+    /// it, offer to write an empty filesystem into the partition it already has.
+    ///
+    /// LAST, and drawn in danger ink: it is the one row here that leads to something this
+    /// device cannot undo and cannot see. See the module docs for why it is a row at all.
+    FormatCard,
 }
 
 impl Row {
     /// Everything the row shows, and therefore everything a tap on it can mean.
     fn view(self, ctx: &Ctx) -> RowView {
         match self {
+            // The value column carries the name itself, so the list answers "what is this
+            // device called" without a tap. `not set` rather than a blank: an empty value
+            // column reads as a row that failed to load.
+            //
+            // ELIDED, and it is the only value on this screen that has to be: every other
+            // one is a word or a number this crate composed, and this one is user data of
+            // a length the user chose. `draw_row` lays out from the right and clips the
+            // CAPTION to what is left, so a long name here would cut "Device name" in half
+            // - the row would lose its subject rather than its value. The full name is on
+            // the lock screen, which is the surface it exists for; this row is a reminder
+            // of what that surface says.
+            Row::DeviceName => RowView {
+                caption: DEVICE_NAME_CAPTION,
+                value: Some(if ctx.lock.device_name.is_empty() {
+                    String::from("not set")
+                } else {
+                    elide(&ctx.lock.device_name, value_room(&ctx.m))
+                }),
+                trailing: Trailing::Opens,
+            },
             Row::Network => RowView {
                 caption: "Network",
                 value: None,
@@ -246,8 +310,68 @@ impl Row {
             Row::VerifyDevice => {
                 RowView { caption: "Verify device", value: None, trailing: Trailing::Opens }
             }
+            // No value either, and for a stronger reason than S-46's: any word this row
+            // could carry about the card would be a claim made without looking at one.
+            // Whether a card is in the slot, whether it is readable, and whether a format
+            // would help are three things only the screen behind this row has asked.
+            Row::FormatCard => {
+                RowView { caption: "Format SD card", value: None, trailing: Trailing::Opens }
+            }
         }
     }
+
+    /// Whether this row leads somewhere destructive, and is therefore drawn in danger ink.
+    ///
+    /// A property of the ROW rather than of its position, so re-ordering the table cannot
+    /// silently move the ink onto the network toggle.
+    fn danger(self) -> bool {
+        matches!(self, Row::FormatCard)
+    }
+}
+
+/// The device-name row's caption, named because the width left for its VALUE is measured
+/// from it (see [`value_room`]) and a caption that grew without the arithmetic following it
+/// would crowd the name off its own row.
+const DEVICE_NAME_CAPTION: &str = "Device name";
+
+/// The elision marker, ASCII because the font atlas is.
+const ELLIPSIS: &str = "...";
+
+/// Pixels a value may take on the device-name row before it starts eating the caption.
+///
+/// The same arithmetic `draw_row` performs, read from the same metrics: the row's inner
+/// width, less the caption, less the chevron, less the two gaps between the three. Written
+/// here rather than passed in because `Row::view` is what has to answer with a string that
+/// already fits - the drawing code clips, and a clip is a defect you cannot see.
+fn value_room(m: &Metrics) -> i32 {
+    let inner_w = m.body().w - 2 * m.gap;
+    inner_w
+        - HEADING.text_width(DEVICE_NAME_CAPTION) as i32
+        - HEADING.text_width(">") as i32
+        - 2 * m.gap
+}
+
+/// `name` in [`MONO_SMALL`], shortened to `w` px with an [`ELLIPSIS`] if it did not fit.
+///
+/// Grown a character at a time and measured, never divided by an average glyph width: the
+/// mono face is fixed-pitch today and the row would silently start cropping the day it is
+/// not.
+fn elide(name: &str, w: i32) -> String {
+    if MONO_SMALL.text_width(name) as i32 <= w {
+        return String::from(name);
+    }
+    let mut out = String::new();
+    for c in name.chars() {
+        let mut next = out.clone();
+        next.push(c);
+        next.push_str(ELLIPSIS);
+        if MONO_SMALL.text_width(&next) as i32 > w {
+            break;
+        }
+        out.push(c);
+    }
+    out.push_str(ELLIPSIS);
+    out
 }
 
 /// What a row shows on its right, which is also what tapping it does.
@@ -374,7 +498,7 @@ impl Screen for SettingsState {
         {
             let mut clip = t.clipped(&l.viewport.to_eg());
             for (row, rect) in self.rows().iter().zip(&l.rows) {
-                draw_row(&mut clip, m, *rect, &row.view(ctx), false)?;
+                draw_row(&mut clip, m, *rect, &row.view(ctx), row.danger())?;
             }
         }
 
@@ -433,8 +557,18 @@ impl Screen for SettingsState {
                     };
                     Outcome::stay()
                 }
+                // Opened on the name the device HAS - `Env` carries the same `LockInfo`
+                // the row was drawn from - so the editor starts where the row says it
+                // does and cannot silently discard a name it never showed.
+                Some(Row::DeviceName) => {
+                    Outcome::push(State::DeviceName(DeviceNameState::new(&env.lock.device_name)))
+                }
                 Some(Row::WipePolicy) => Outcome::push(State::Policy(PolicyState::new())),
                 Some(Row::VerifyDevice) => Outcome::push(State::Verify(VerifyState::new())),
+                // Pushed WITH its probe, which is the only way that screen can be opened:
+                // a card screen with no card read behind it is a panel stating something
+                // nobody looked at. Nothing is written by opening it.
+                Some(Row::FormatCard) => FormatCardState::open(),
                 None => Outcome::stay(),
             },
             RegionId::RemoveThePin => {
@@ -637,6 +771,42 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// The longest name the device will ACCEPT still leaves its row's caption whole.
+    ///
+    /// The name is the only value on this screen the USER writes, and the entry screen's
+    /// limit is measured against the lock screen's row, not against this one - so a name
+    /// that is perfectly legal is wider than this row has to spare, and the row has to
+    /// shorten it rather than let `draw_row` clip the caption away. Both halves are
+    /// asserted: the row fits, and the elision actually happened.
+    #[test]
+    fn the_longest_accepted_device_name_still_leaves_its_caption_whole() {
+        // The boundary the entry screen enforces, grown rather than restated, on the widest
+        // glyph the mono face has.
+        let mut longest = String::new();
+        loop {
+            let mut next = longest.clone();
+            next.push('W');
+            if crate::screens::devicename::name_refusal(&next).is_some() {
+                break;
+            }
+            longest = next;
+        }
+        for (w, h) in GEOMETRIES {
+            let mut f = at_settings(w, h);
+            f.lock.device_name = longest.clone();
+            let ctx = f.ctx();
+            let view = Row::DeviceName.view(&ctx);
+            let value = view.value.as_deref().expect("the row carries a value");
+            assert!(value.ends_with(ELLIPSIS), "{w}x{h}: a name this long must be elided");
+            let need = HEADING.text_width(view.caption) as i32
+                + HEADING.text_width(">") as i32
+                + MONO_SMALL.text_width(value) as i32
+                + 2 * ctx.m.gap;
+            let inner_w = ctx.m.body().w - 2 * ctx.m.gap;
+            assert!(need <= inner_w, "{w}x{h}: the row needs {need} px of {inner_w}");
         }
     }
 

@@ -1311,6 +1311,104 @@ not, that is a gap to patch, tracked in INDEX.md.
 m3 froze the layout; it also touches m4b's unlock flow, m9's Lock Down Seed, and Q2's
 filler-slot sizing.
 
+#### AMENDED 2026-08-19: per-wallet opt-in storage, and the override hardened to a refusal
+*The decision above is left exactly as it was ratified. This is an amendment and not a
+reversal: not-stored remains the DEFAULT and remains the only state a user reaches without
+turning storage on for one named wallet, and every warning the ratified answer requires
+still ships. What changed is that the owner may now choose, per wallet, to have the device
+remember the passphrase - and what that costs is written below rather than implied.*
+
+**Who amended it and why.** The project owner, on 2026-08-19, after being shown the trade.
+His words: *"remember for session is default - user is allowed to turn on 'store on wallet'
+user is told the dangers are if someone has their pin, and the dangers are they must
+remember their passphrase because we can never show it back to them"*.
+
+The immediate cause was a defect rather than a preference. A wallet created WITH a
+passphrase could not be opened again on his device at all: `UiRequest::OpenWallet` carried a
+slot and nothing else, the firmware opened every slot with the empty passphrase, and
+`Wallet::open` refused - correctly - with `PassphraseMismatch { expected: b4e3f5ed, derived:
+73c5da0a }`. Tapping the wallet did nothing a user could act on. Fixing that needed a way to
+ASK for the passphrase, and once the device can ask, "how long does it remember the answer"
+is a question that has to be decided rather than defaulted.
+
+**What ships.**
+
+1. **Session by default.** A passphrase typed once is held in RAM (`PassSession`,
+   `firmware/src/session.rs`) until the device locks, the session times out, the wallet is
+   deleted, the store is destroyed, or the power goes. Re-tapping the wallet inside one
+   unlocked session does not re-ask. Nothing is written to flash.
+2. **Per-wallet opt-in storage.** On the wallet home of an OPEN passphrase wallet, a
+   "Remember the passphrase" card opens a C4b consequence sheet; consenting re-seals that
+   one record with the passphrase in it. Turning it off is a C4b consequence followed by a
+   C4c hold, and it re-seals the record without the passphrase - the vault erases the stale
+   side before the write returns, so no side of that slot still decrypts to a record
+   carrying it (`firmware/hostcheck/tests/passphrase_forget.rs` proves that against a
+   simulated flash, including across a remount).
+3. **The three dangers are stated where the decision is made.** (a) anyone who knows the
+   PIN can then spend from the wallet - the passphrase stops being a second lock; (b) the
+   device will never show the passphrase back; (c) **and the one that actually loses
+   coins**: if the device is lost or destroyed, the seed words ALONE restore a DIFFERENT
+   wallet, so the passphrase must be written down and kept apart from the words whether or
+   not the device remembers it. "Remembered here" is not "backed up here", and the copy
+   says so.
+
+**What was traded away, precisely.**
+
+- **The flash-dump-plus-PIN guarantee, on opted-in wallets only.** Stated plainly, because
+  the honest version is narrower than it first sounds. TODAY, an attacker with a flash dump
+  AND the PIN already gets every phrase, label and fingerprint - and for a passphrase wallet
+  the stored fingerprint already lets them grind passphrase guesses OFFLINE at PBKDF2 speed,
+  so a weak passphrase is already losable. With the opt-in ON they get the passphrase in
+  plaintext inside the unsealed record: the funds outright, no grinding. **The opt-in
+  converts "a second factor, weak ones crackable" into "no second factor".** That is the
+  whole of what is sold, it is sold per wallet, and it is sold behind a sheet that says the
+  first half of it in the owner's own words.
+- **Nothing else.** The default is unchanged, the warning placements are unchanged and gain
+  a fourth (the storage sheet), and no wallet acquires stored state by being opened, saved,
+  or re-opened.
+
+**Consequence 1 is hardened, not weakened.** The ratified text says a fingerprint mismatch
+is "a WARNING the user can override, never a hard block". The code has always shipped the
+refusal instead, and this amendment ratifies the code rather than the sentence: a record
+names ONE identity, and its label, its backup-verified state and its multisig registrations
+belong to that fingerprint alone. Reaching a different wallet from the same words is a
+legitimate action and it has its own routes - the use-once restore flow, or the new "Add a
+passphrase" action on the wallet home, which CREATES a second record in a second slot with
+its own label and its own fingerprint. Overriding the check in place would have attached one
+wallet's name and registrations to another wallet's keys.
+
+**A deviation from consequence 1 that predates this amendment and is now written down.** It
+specifies a KDF-separated check value derived through a distinct HKDF info label. The
+shipped record stores the master fingerprint instead (`WalletRecord::fingerprint`). The two
+are equivalent as an oracle - both let a holder of the record verify a passphrase guess -
+and the fingerprint is additionally a PUBLIC value the user compares between devices, which
+is what makes the refusal statable on screen. The ratified text and the code disagreed for
+two milestones; the code is what ships, and this is the record of it.
+
+**What the device still never does.** It never renders the fingerprint the words derive with
+an EMPTY passphrase. That value is an existence proof for a hidden wallet, and the open path
+discards it: a record with no flag is tried with the empty passphrase first, and a mismatch
+there becomes a prompt, never a message. It never says a passphrase is "wrong", "incorrect"
+or "invalid" either - BIP-39 has no invalid passphrases, only different wallets - and a copy
+gate asserts both (`crates/notyas-ui/tests/passphrase_open.rs`).
+
+**Record format.** The sealed wallet record moves from `NYW1` to `NYW2`: format 1's reserved
+byte becomes a flags byte (bit 0 passphrase applied, bit 1 passphrase stored, the rest
+must-be-zero), and bit 1 adds a length-prefixed passphrase after the phrase. The reader
+accepts both magics and a format 1 body decodes as "no statement", which is what makes the
+owner's existing wallet openable without a migration. Writers always emit NYW2, so a
+downgrade to an older build reads `NotThisKind` - refused, not damaged - and reflashing
+forward restores access. The release notes must say so.
+
+**Blast radius.** `crates/notyas-ui` (`UiRequest::UnlockWallet` / `StorePassphrase` /
+`ForgetPassphrase`, `PassphraseState`, `WalletDraft::passphrase`, the S-21b unlock screen,
+the wallet home's storage card and sheets); `firmware/src/session.rs` (new),
+`firmware/src/main.rs` (the four-case open path and the five clear sites),
+`firmware/src/wallet/{mod,record}.rs` (NYW2, `set_passphrase_storage`); UX-SCREENS.md
+(S-21b, the two sheets, the fourth Q22 placement). Q2's filler-slot sizing is untouched: the
+largest record this format can produce is 527 bytes against a 3996-byte slot, measured in
+`firmware/hostcheck/tests/wallet_record.rs`.
+
 ### Q45. eFuse provisioning is a host-side factory step, with no burn code in release firmware [ESP-SEAL.md 4.3]
 **DECISION: factory provisioning. Release firmware contains no eFuse-burn code at all.**
 *Ratified 2026-08-17 on the project owner's instruction to settle all questions with a
@@ -1555,6 +1653,95 @@ UX-PATTERNS 3.3, UX-REVISION A4 and A10 (done with this entry); UX-SCREENS C10, 
 its region table, COMPETITIVE.md's scrambled-keypad row, SIMPLE-MODE.md's `PinPad`
 mentions, MILESTONES.md's unprovisioned-path note and ESP-SEAL.md's pad-permutation line
 (outstanding).
+
+### Q64. The pre-PIN lock word is REMOVED; one device NAME takes its place [UX-SCREENS.md S-03 / S-44]
+**DECISION: S-03 shows exactly one user-set string, it is the device name, and it carries
+no security claim. The user-chosen "lock word" is deleted - the field, the panel, its copy
+and its tests.**
+*Decided by the project owner on 2026-08-19, after using the device. Recorded here rather
+than applied silently, because the word was specified copy in a ratified document and
+UX-SCREENS.md S-03 cites a ratification for showing it in the clear.*
+
+**What was ratified, and the erratum in the citation.** UX-SCREENS.md S-03 says of the lock
+word: "it is an anti-swap token, not a secret, and it is worthless if hidden.
+`OPEN-QUESTIONS` Q10 accepted this." Q10 in this file is the class-d reject list and says
+nothing about S-03; the citation is an erratum and there is no ratified answer in this
+document that decides the lock word either way. What existed was S-03's specified copy,
+its edge state, and UX-PATTERNS.md 4, which lists "a user-chosen lock word and nickname" as
+this product's addition to the identity-binding pattern. Those are what this entry
+overturns, and they are corrected rather than left standing.
+
+**The owner's words.** "personally, i think naming the device a custom name (it says 'no
+name set' on the front screen pre-pin) is the same as the white box private word pre-pin
+and i'd rather just have the user be able to set device name custom in settings than the
+pre-pin 'security' word."
+
+**Why the decision is right on the merits, and not only the owner's to make.** The two
+strings were one mechanism: a value the owner chose, displayed to the owner before any
+authentication. Only one of them claimed to be a security feature, and the claim does not
+survive inspection - anything drawn before the PIN is readable by anyone holding the
+device, including whoever would build the counterfeit, so the word catches a careless swap
+and never a targeted one. It is a bank sitekey. Shipping two controls for one job, and
+attaching a defence claim to the half that cannot keep it, is worse than shipping one
+control that says what it is.
+
+**What was given up, precisely.**
+
+- **The careless-swap catch, and only that.** A user who is handed a different unit of the
+  same model, by someone who never saw the original, no longer has a word to miss. They
+  still have the device NAME, which fails in exactly the same case and is not claimed to
+  do otherwise. Against an attacker who has held the device - the case the word's own copy
+  invoked, "so you can tell this device from a fake" - nothing is lost, because nothing was
+  there.
+- **One row of COMPETITIVE.md-style parity flavour.** No competitor ships a pre-PIN
+  user-chosen word either; Coldcard and Passport both put their identity evidence after
+  the PIN prefix, which is where ours already was.
+- **Nothing else.** The anti-phishing words, the attempt counter, the backoff, the wipe,
+  the pre-PIN Verify chip and R20 are untouched.
+
+**What replaces it, and it is strictly more than what went.**
+
+1. **A device name that can actually be set.** S-03's edge state told the user to "set one
+   in Settings", and Settings had no such row - a screen advertising a control that was
+   never built. S-44 now carries `Device name` as its first row, opening S-44a, which is a
+   keyboard editor over the existing keyboard component. It refuses a name that is not one:
+   non-ASCII (the font atlas is ASCII-only), an all-digit string (a PIN typed into a field
+   whose contents are printed before the PIN), a BIP-39 word (one word of somebody's backup
+   printed to an unauthenticated reader), and anything wider than the narrowest shipped
+   panel's body can show whole. Empty is legal and means unnamed.
+2. **The claim moves to the mechanism that can keep it.** S-04a, a short skippable
+   explainer, states what the anti-phishing words are - the device computes them from the
+   typed PIN prefix and a secret only it holds, so a counterfeit cannot produce them - and
+   that they must be checked BEFORE the rest of the PIN is typed. It is shown at the two
+   moments a user can act on it, a PIN having just been set and the words being about to be
+   shown for the first time, and at most once per power-up.
+
+**The honest cost that is NOT hidden: the name does not survive a power cycle.** It lives
+in the UI's `LockInfo` for the life of a power-up, beside the network choice, which is
+where every device-wide preference lives at this milestone. It cannot live in the sealed
+store - it is shown before the unlock that would make the store readable - and this board
+has no plaintext region to put it in: `firmware/partitions.csv` deliberately carries no
+NVS, and both engine regions are frozen at exactly the size `Layout::V1` claims. Persisting
+it means a new plaintext partition and a reader for it, which is a change to the shared
+partition table every board flashes and is therefore the owner's call, not a side effect of
+this change. Nothing in the UI claims the name is stored. **This is the one part of Q64
+that is unfinished, and it is unfinished on purpose rather than unnoticed.**
+
+**Ratified Q2(a) is unaffected and still holds.** A device NAME is a label the owner chose;
+it states no wallet count, no capacity and no contents. The S-03 copy test that enforces
+Q2(a) over every fixed string the screen can paint is kept and extended with a second test
+that no pre-PIN line claims the name proves which device this is.
+
+**Blast radius.** `LockInfo::nickname` and `LockInfo::lock_word` collapse to
+`LockInfo::device_name`; `crates/notyas-ui/src/screens/lock.rs` (the panel, its copy, its
+constants, its two-arrangement layout - the second arrangement existed only to fit the
+panel and goes with it); new `screens/devicename.rs` and `screens/words.rs`; one row in
+`screens/settings.rs` and the row indices that shift with it; `UiRequest::SetDeviceName`,
+`Ui::device_name_result`, `ScreenId::DeviceName` and `ScreenId::AboutDeviceWords`; the
+firmware's `lock_info` and one request arm. Documents: UX-SCREENS.md S-03 copy, masked/shown
+and edge states, and its S-44 sub-screen copy; UX-PATTERNS.md 4; SIMPLE-MODE.md's lock-word
+references in the door arrangement (the door is not wired up yet, and its identity-column
+budget shrinks by the panel's height).
 
 ### Q41. The HIL test-mode console [CORPUS.md corpus-3]
 **DECISION: accept the proposed package** - build-feature gated, off by default, "HIL
@@ -2584,3 +2771,53 @@ the shape.
   folded in, including the ones that do not use the literal `OPEN:` prefix. No document in
   this directory is owed a sweep. The list runs to **Q61**; a further design document
   continues from Q62.
+
+---
+
+## Q64 - where does a pre-PIN device name live? (raised and settled 2026-08-19)
+
+**Settled, not open.** Recorded here because it changed the shipped partition table, which
+is the one artifact this document treats as expensive to move.
+
+**The trigger.** A device name set in Settings did not survive a power cycle. It lives in
+`LockInfo::device_name` because there was nowhere to put it: the lock screen draws it
+BEFORE any PIN, so it cannot live in the sealed store, whose contents are unreadable until
+the unlock the name is displayed in front of; `firmware/partitions.csv` deliberately
+carries no NVS; and both engine regions are frozen at exactly the size `Layout::V1` claims.
+
+**The answer: one new partition, appended.** `settings, data, undefined, 0x460000, 64K`,
+no `encrypted` flag. Two A/B slots of one sector, a 64-byte header (magic, seq, length,
+CRC-32) written LAST after its payload, and a TLV payload whose unknown tags a reader skips
+by length. Format, torn-write analysis and the admission rule:
+`crates/notyas-wallet/src/settings.rs`; host tests at every cut byte:
+`crates/notyas-wallet/tests/settings.rs`.
+
+**What it may hold.** The device name and the network choice, and in future only values
+that pass one test: *"an attacker sets this to any value of their choosing" must be an
+acceptable outcome.* The region is unauthenticated plaintext and no MAC would change that -
+an attacker with a programmer erases a MAC'd region just as easily, so a CRC is honest and
+a MAC would be a claim the hardware cannot keep. Excluded by name, and this list is the
+threat model inverted: the wipe policy, attempts-left and `min_pin_len` (the sealed ledger
+owns those with `policy_gen` and the strictness rule; a plaintext copy is an
+attacker-writable guess budget); the boot counter and the acknowledgement timestamps (a
+counter an attacker resets reveals nothing - the coercion-gap leak the Verify tests name);
+wallet count, occupancy, labels and fingerprints (ratified Q2a withholds exactly these from
+the pre-PIN Verify sheet); anything secret or secret-derived, including the S-04 device
+words; and provisioning state and anti-rollback version, which are eFuse facts and may
+never be read from flash.
+
+**Why 64 KiB and why there.** Two sectors is the floor (a write must never be the only
+copy); the other fourteen are reserved so a 0.3.0 format revision needs no table change,
+which is the expensive operation. The offset makes the region END at the 64 KiB-aligned
+`0x470000`, which is where 0.3.0's `otadata`/`ota_1` can be APPENDED - app partitions must
+be 64 KiB aligned (SECUREBOOT.md 7 and 8.2). Nothing existing moves: `factory`, `wallets`
+and `counters` keep their offsets, so the Verify running-partition SHA256 procedure, the
+published span maps and every superblock-recorded geometry stay valid, and a device
+reflashed to this table keeps its sealed store mountable.
+
+**Rejected: the records region's reserved tail (sectors 58-63).** Three independent
+reasons, written up at ESP-SEAL.md 3.2. **Rejected: inserting `settings` before `wallets`
+for a rounder map** - it moves two frozen regions and buys cosmetics.
+
+**The rule this establishes for every later addition.** Append at the 64 KiB-aligned tail.
+No offset that has ever been on a user's device is re-derived.

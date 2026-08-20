@@ -23,21 +23,24 @@
 //! exist on every panel.
 
 use notyas_ui::{
-    Artifact, CardListing, CardOutcome, ImportOutcome, LockInfo, PsbtOutcome, QrData, RefusalCode,
-    RegionId, RegistrationOutcome, ScreenId, SignOutcome, StoreStatus, Ui, UiRequest,
-    UnsealOutcome, WalletRow, WriteOutcome,
+    Artifact, CardListing, CardOutcome, FormatOffer, FormatOutcome, FormatRefusal, ImportOutcome,
+    LockInfo, PassphraseRefusal, PassphraseState, PsbtOutcome, QrData, RefusalCode, RegionId,
+    RegistrationOutcome, ScreenId, SignOutcome, StorageOutcome, StoreStatus, Ui, UiRequest,
+    UnsealOutcome, WalletRow, WordsOutcome, WriteOutcome,
 };
 
 use crate::drive::{
-    answer_quiz, hold, locked, page_forward, page_to, pin_entry, store_in, tap, type_dice,
-    type_keys, type_shifted, unlocked, unlocked_with_dummy_wallets,
+    answer_quiz, device_words, hold, last_list_row, locked, page_forward, page_to, pin_entry,
+    scroll_to, store_in, tap,
+    type_dice, type_keys, type_shifted, unlocked, unlocked_with_dummy_wallets,
 };
 use crate::fixtures::{
-    dummy_empty_card, dummy_flash_scan, dummy_lock_info, dummy_long_psbt_card,
-    dummy_multisig_card, dummy_psbt_card, dummy_refusal, dummy_registration_review,
-    dummy_registrations, dummy_report, dummy_saved_registration, dummy_signed,
+    dummy_empty_card, dummy_flash_scan, dummy_format_target, dummy_lock_info,
+    dummy_long_psbt_card, dummy_multisig_card, dummy_psbt_card, dummy_refusal,
+    dummy_registration_review, dummy_registrations, dummy_report, dummy_saved_registration, dummy_signed,
     dummy_single_psbt_card, dummy_tx_review, dummy_verify_info, dummy_wallets, ReviewShape,
-    ELEVEN_SIXES_WORDS, SIXES,
+    DUMMY_DEVICE_NAME,
+    ELEVEN_SIXES_WORDS, SIXES, SIXES_PHRASE,
 };
 
 /// The panel the portrait docs pictures are taken on (Waveshare 4B).
@@ -189,6 +192,23 @@ fn session_wallet(ui: &mut Ui) {
 }
 
 /// A stored wallet opened from the post-PIN list.
+/// S-47b, reached the way a user reaches it: the wallet home, the C4b consequence, the
+/// C4d sheet with the wallet's own name typed back into it, and the answer to that.
+///
+/// Written out rather than shortcut into the state, because the ROUTE is half of what this
+/// screen is for. A frame that constructed the state directly would still pass the day
+/// somebody made the typed sheet skippable.
+fn erase_offer(ui: &mut Ui) {
+    stored_wallet(ui);
+    tap(ui, RegionId::WalletDelete);
+    tap(ui, RegionId::DangerConfirm);
+    // "DUMMY savings", exactly, case included - the sheet accepts nothing else.
+    type_shifted(ui, "DUMMY");
+    tap(ui, RegionId::Shift);
+    type_keys(ui, " savings");
+    tap(ui, RegionId::DangerConfirm);
+}
+
 fn stored_wallet(ui: &mut Ui) {
     unlocked_with_dummy_wallets(ui);
     let Some(UiRequest::OpenWallet(slot)) = tap(ui, RegionId::ListRow(0)) else {
@@ -198,6 +218,49 @@ fn stored_wallet(ui: &mut Ui) {
         panic!("slot {slot} is not a readable wallet")
     };
     ui.wallet_opened(info);
+}
+
+/// A stored wallet, unsealed WITH its derivation, in the passphrase state the card is to
+/// render.
+///
+/// The state is installed rather than derived from anything the simulator does, because it
+/// is a fact about a sealed record and this harness has no flash: what is under test is
+/// that the identity row and the action cards say the right thing about each of the three.
+fn wallet_home_with(ui: &mut Ui, passphrase: PassphraseState) {
+    unlocked_with_dummy_wallets(ui);
+    let Some(UiRequest::OpenWallet(slot)) = tap(ui, RegionId::ListRow(0)) else {
+        panic!("a wallet row must ask the embedder to unseal it");
+    };
+    let WalletRow::Wallet(mut info) = dummy_wallets()[slot as usize].clone() else {
+        panic!("slot {slot} is not a readable wallet")
+    };
+    info.passphrase = passphrase;
+    ui.wallet_opened_with_keys(info, dummy_report());
+}
+
+/// A tap on a wallet whose record needs a passphrase this device is not holding: the
+/// embedder answers with the prompt rather than with a failure band.
+fn passphrase_prompt(ui: &mut Ui) {
+    unlocked_with_dummy_wallets(ui);
+    let Some(UiRequest::OpenWallet(slot)) = tap(ui, RegionId::ListRow(0)) else {
+        panic!("a wallet row must ask the embedder to unseal it");
+    };
+    ui.wallet_needs_passphrase(slot, String::from("dummy"));
+}
+
+/// ...-> a passphrase typed and handed over, and the answer that it opens a different
+/// wallet. The two fingerprints are the published test vector's: the same words derive
+/// b4e3f5ed under the passphrase TREZOR and 73c5da0a under none.
+fn passphrase_refused(ui: &mut Ui) {
+    passphrase_prompt(ui);
+    type_keys(ui, "hunter");
+    let Some(UiRequest::UnlockWallet { .. }) = tap(ui, RegionId::KeyDone) else {
+        panic!("Done must hand the passphrase to the embedder");
+    };
+    ui.passphrase_refused(PassphraseRefusal {
+        expected: String::from("b4e3f5ed"),
+        derived: String::from("9f8e7d6c"),
+    });
 }
 
 /// The multisig wallet's registry (S-41), with `held` installed and the wallet record
@@ -351,13 +414,72 @@ fn verify_unlocked(ui: &mut Ui) {
 /// The wipe-policy editor, reached from a session.
 fn wipe_policy(ui: &mut Ui) {
     settings(ui);
-    tap(ui, RegionId::SetRow(1));
+    // Scrolled to, not indexed blind: the 800x480 list shows two rows at a time and the
+    // policy row is the third since the device name took the top of the list.
+    scroll_to(ui, RegionId::SetRow(2));
+    tap(ui, RegionId::SetRow(2));
 }
 
 /// S-44 itself, reached from a session.
 fn settings(ui: &mut Ui) {
     unlocked_with_dummy_wallets(ui);
     tap(ui, RegionId::OpenSettings);
+}
+
+/// Settings -> S-44a, opened on the name the device already has.
+///
+/// Reached by index because the device name is the FIRST row of the list and therefore
+/// above the fold on every panel - the only row in this table of which that is true.
+fn device_name_screen(ui: &mut Ui) {
+    settings(ui);
+    tap(ui, RegionId::SetRow(0));
+}
+
+/// Settings -> S-49, with the probe answered by `offer`.
+///
+/// The row is reached by SCROLLING to it rather than by index arithmetic, because on the
+/// 800x480 panel it is below the fold: a recipe that could not scroll to it would be
+/// photographing a screen no finger on that panel can open.
+fn format_card(ui: &mut Ui, offer: FormatOffer) {
+    settings(ui);
+    let row = last_list_row(ui);
+    let asked = tap(ui, row);
+    assert!(
+        matches!(asked, Some(UiRequest::ProbeCardFormat)),
+        "S-49 must open with its probe in flight, never on an unasked card"
+    );
+    ui.format_offer(offer);
+}
+
+/// ...on the card the feature exists for, with the C4b consequence sheet open.
+fn format_consequence(ui: &mut Ui) {
+    format_card(ui, FormatOffer::Ready(dummy_format_target()));
+    tap(ui, RegionId::CardFormat);
+}
+
+/// ...and on the C4d sheet, with the card's own capacity typed back in full.
+///
+/// The typing is the whole point of the frame: "32GB" needs the digit page and then a
+/// shifted letter page, which is friction, and the friction is the feature. Nobody types
+/// this by accident.
+fn format_typed(ui: &mut Ui) {
+    format_consequence(ui);
+    tap(ui, RegionId::DangerConfirm);
+    tap(ui, RegionId::PageDigits);
+    type_keys(ui, "32");
+    tap(ui, RegionId::PageLetters);
+    type_shifted(ui, "GB");
+}
+
+/// ...consent complete and the write in flight, unanswered: the C3 frame during which the
+/// user's own data is being overwritten.
+fn format_writing(ui: &mut Ui) {
+    format_typed(ui);
+    let asked = tap(ui, RegionId::DangerConfirm);
+    assert!(
+        matches!(asked, Some(UiRequest::FormatCard { .. })),
+        "the typed word is the only thing that raises the write"
+    );
 }
 
 /// The restore screen with eleven of the twelve words typed, which is where it stops
@@ -561,6 +683,47 @@ pub const CATALOG: &[Frame] = &[
             tap(ui, RegionId::KeyDone);
         },
     },
+    Frame {
+        name: "passphrase/derive-intro",
+        variant: "derive-intro",
+        screen: ScreenId::PassphraseEntry,
+        doc: Doc::Both("130-derive-passphrase-wallet", "131-derive-passphrase-wallet-800x480"),
+        // The action that makes a SECOND wallet from an open wallet's words. Its first
+        // page is the copy gate's other subject: it has to say that this does not change
+        // the wallet the user came from, and that what it makes is a different wallet.
+        build: |ui| {
+            wallet_home_with(ui, PassphraseState::None);
+            tap(ui, RegionId::ActPassphraseDerive);
+        },
+    },
+    // --- S-21b The passphrase of a wallet that already exists ---------------------------
+    Frame {
+        name: "passphrase-unlock/prompt",
+        variant: "prompt",
+        screen: ScreenId::PassphraseUnlock,
+        doc: Doc::Both("121-passphrase-unlock", "122-passphrase-unlock-800x480"),
+        build: passphrase_prompt,
+    },
+    Frame {
+        name: "passphrase-unlock/typed",
+        variant: "typed",
+        screen: ScreenId::PassphraseUnlock,
+        doc: Doc::None,
+        build: |ui| {
+            passphrase_prompt(ui);
+            type_keys(ui, "hunter");
+        },
+    },
+    Frame {
+        name: "passphrase-unlock/refused",
+        variant: "refused",
+        screen: ScreenId::PassphraseUnlock,
+        doc: Doc::Both("123-passphrase-refused", "124-passphrase-refused-800x480"),
+        // The one frame in the product that states two fingerprints to a user, and the one
+        // the copy gate reads: it may not contain "wrong", "incorrect" or "invalid", and it
+        // may not contain the fingerprint the words derive with no passphrase.
+        build: passphrase_refused,
+    },
     // --- S-21 Wallet home --------------------------------------------------------------
     Frame {
         name: "wallet-home/session",
@@ -587,6 +750,87 @@ pub const CATALOG: &[Frame] = &[
         build: wallet_home_signable,
     },
     Frame {
+        name: "wallet-home/passphrase-required",
+        variant: "passphrase-required",
+        screen: ScreenId::WalletHome,
+        doc: Doc::Both("125-wallet-home-passphrase", "126-wallet-home-passphrase-800x480"),
+        // The card that used to read "passphrase off" for exactly this wallet.
+        build: |ui| wallet_home_with(ui, PassphraseState::Required),
+    },
+    Frame {
+        name: "wallet-home/passphrase-stored",
+        variant: "passphrase-stored",
+        screen: ScreenId::WalletHome,
+        doc: Doc::None,
+        build: |ui| wallet_home_with(ui, PassphraseState::Stored),
+    },
+    Frame {
+        name: "wallet-home/store-passphrase-consequence",
+        variant: "store-passphrase-consequence",
+        screen: ScreenId::WalletHome,
+        doc: Doc::Both("127-store-passphrase", "128-store-passphrase-800x480"),
+        // C4b. The two dangers that are true whichever way the toggle goes.
+        build: |ui| {
+            wallet_home_with(ui, PassphraseState::Required);
+            tap(ui, RegionId::ActPassphraseStore);
+        },
+    },
+    Frame {
+        name: "wallet-home/forget-passphrase-consequence",
+        variant: "forget-passphrase-consequence",
+        screen: ScreenId::WalletHome,
+        doc: Doc::Portrait("129-forget-passphrase"),
+        // C4b. The consequence, on a sheet with room for it - a hold bar leaves two lines
+        // on the short panel, and this needs five.
+        build: |ui| {
+            wallet_home_with(ui, PassphraseState::Stored);
+            tap(ui, RegionId::ActPassphraseStore);
+        },
+    },
+    Frame {
+        name: "wallet-home/forget-passphrase-hold",
+        variant: "forget-passphrase-hold",
+        screen: ScreenId::WalletHome,
+        doc: Doc::Both("132-forget-passphrase-hold", "133-forget-passphrase-hold-800x480"),
+        // C4c. A tap must not be able to destroy a secret this device can never show back.
+        build: |ui| {
+            wallet_home_with(ui, PassphraseState::Stored);
+            tap(ui, RegionId::ActPassphraseStore);
+            tap(ui, RegionId::DangerConfirm);
+        },
+    },
+    Frame {
+        name: "wallet-home/storage-refused",
+        variant: "storage-refused",
+        screen: ScreenId::WalletHome,
+        doc: Doc::None,
+        // The band a refused write leaves behind. The row must still read the state the
+        // FLASH is in, which here is the state it was in before.
+        build: |ui| {
+            wallet_home_with(ui, PassphraseState::Required);
+            tap(ui, RegionId::ActPassphraseStore);
+            tap(ui, RegionId::DangerConfirm);
+            ui.passphrase_storage_result(StorageOutcome::Refused(String::from(
+                "Nothing was changed: the record is 3998 bytes and the slot holds 3996.",
+            )));
+        },
+    },
+    Frame {
+        name: "wallet-home/exit-modal",
+        variant: "exit-modal",
+        screen: ScreenId::WalletHome,
+        doc: Doc::Portrait("12-exit-modal"),
+        // Back off a screen the user would LOSE by leaving is gated by a confirm, and the
+        // modal is drawn OVER the sheet - the one frame where two layers are on the panel.
+        // A session wallet is that screen: nothing was written, so its keys exist here and
+        // nowhere else. It used to be photographed over the export view one step further
+        // in, which was the bug - that Back belongs to the wallet, and asks nothing.
+        build: |ui| {
+            session_wallet(ui);
+            tap(ui, RegionId::Back);
+        },
+    },
+    Frame {
         name: "wallet-home/delete-consequence",
         variant: "delete-consequence",
         screen: ScreenId::WalletHome,
@@ -606,6 +850,63 @@ pub const CATALOG: &[Frame] = &[
             tap(ui, RegionId::WalletDelete);
             tap(ui, RegionId::DangerConfirm);
             type_keys(ui, "dummy");
+        },
+    },
+    // --- S-13 again, on the delete path ------------------------------------------------
+    Frame {
+        name: "mnemonic/stored-masked",
+        variant: "stored-masked",
+        screen: ScreenId::MnemonicDisplay,
+        doc: Doc::None,
+        // The same screen, the same bullet run, reached from a STORED wallet instead of
+        // from the dice. If the masking law ever grew a second implementation this frame is
+        // where the two would stop matching.
+        build: |ui| {
+            erase_offer(ui);
+            tap(ui, RegionId::EraseShowWords);
+            ui.recovery_words(WordsOutcome::words(SIXES_PHRASE));
+        },
+    },
+    Frame {
+        name: "mnemonic/stored-revealed",
+        variant: "stored-revealed",
+        screen: ScreenId::MnemonicDisplay,
+        doc: Doc::None,
+        // Through S-13's reveal gate, verbatim, and nowhere else: a stored wallet's words
+        // are no cheaper to show than a fresh one's.
+        build: |ui| {
+            erase_offer(ui);
+            tap(ui, RegionId::EraseShowWords);
+            ui.recovery_words(WordsOutcome::words(SIXES_PHRASE));
+            tap(ui, RegionId::Reveal);
+            tap(ui, RegionId::ModalConfirm);
+        },
+    },
+    // --- S-47b The last words ----------------------------------------------------------
+    Frame {
+        name: "erase-wallet/offer",
+        variant: "offer",
+        screen: ScreenId::EraseWallet,
+        doc: Doc::Both("119-erase-offer", "120-erase-offer-800x480"),
+        // Both panels, because this is the frame the balance claim is about: two cards of
+        // the same size in one row, with the consequence above them. A layout that nudged
+        // would be visible here before it was visible on a device.
+        build: erase_offer,
+    },
+    Frame {
+        name: "erase-wallet/words-refused",
+        variant: "words-refused",
+        screen: ScreenId::EraseWallet,
+        doc: Doc::None,
+        // The one state where the Q22 line steps aside: the words could not be read, so the
+        // sentence about what they are not enough for has no subject, and the sentence
+        // about why they are not there takes its place.
+        build: |ui| {
+            erase_offer(ui);
+            tap(ui, RegionId::EraseShowWords);
+            ui.recovery_words(WordsOutcome::Refused(String::from(
+                "Wallet slot 0 did not open: the record did not come back intact.",
+            )));
         },
     },
     // --- S-08 Schemes ------------------------------------------------------------------
@@ -642,18 +943,6 @@ pub const CATALOG: &[Frame] = &[
             let matrix = notyas_core::qr::matrix(&target.payload).expect("encode xpub");
             let data = QrData::from_matrix(&matrix).expect("square matrix");
             ui.show_qr(target, data);
-        },
-    },
-    Frame {
-        name: "schemes/exit-modal",
-        variant: "exit-modal",
-        screen: ScreenId::Schemes,
-        doc: Doc::Portrait("12-exit-modal"),
-        // Back off a screen holding a derived secret is gated by a confirm. The modal is
-        // drawn OVER the sheet, so it is the one frame where two layers are on the panel.
-        build: |ui| {
-            schemes_bip84(ui);
-            tap(ui, RegionId::Back);
         },
     },
     // --- S-09 Phrase entry -------------------------------------------------------------
@@ -791,33 +1080,23 @@ pub const CATALOG: &[Frame] = &[
     },
     // --- S-03 Lock ---------------------------------------------------------------------
     Frame {
-        name: "lock/word",
-        variant: "word",
+        name: "lock/named",
+        variant: "named",
         screen: ScreenId::Lock,
         doc: Doc::Both("16-lock", "16-lock-800x480"),
         build: |ui| locked(ui, dummy_lock_info()),
     },
     Frame {
-        name: "lock/no-word",
-        variant: "no-word",
+        name: "lock/no-name",
+        variant: "no-name",
         screen: ScreenId::Lock,
-        doc: Doc::Both("16b-lock-no-word", "16b-lock-no-word-800x480"),
-        // The state EVERY device ships in and the one an owner meets first. Its panel
-        // holds a wrapped sentence instead of two rows, which is a different HEIGHT and
-        // therefore a different arrangement - so the frames above do not stand in for it.
+        doc: Doc::Both("16b-lock-no-name", "16b-lock-no-name-800x480"),
+        // The state EVERY device ships in and the one an owner meets first: the screen
+        // renders its own edge state rather than a blank line. The two lock-word frames
+        // this replaces went with the word itself on 2026-08-19 - there is one pre-PIN
+        // string now, so there is one unset state to picture.
         build: |ui| {
-            locked(ui, LockInfo { lock_word: String::new(), ..dummy_lock_info() });
-        },
-    },
-    Frame {
-        name: "lock/no-nickname",
-        variant: "no-nickname",
-        screen: ScreenId::Lock,
-        doc: Doc::None,
-        // The other unset identity field. The screen renders its own edge state rather
-        // than a blank line, which means one fewer row and, again, a different height.
-        build: |ui| {
-            locked(ui, LockInfo { nickname: String::new(), ..dummy_lock_info() });
+            locked(ui, LockInfo { device_name: String::new(), ..dummy_lock_info() });
         },
     },
     Frame {
@@ -856,7 +1135,7 @@ pub const CATALOG: &[Frame] = &[
         doc: Doc::Portrait("18-pin-device-words"),
         build: |ui| {
             pin_entry(ui, dummy_lock_info(), &[0, 3, 6, 9]);
-            ui.show_device_words(["anvil".into(), "mercury".into()]);
+            device_words(ui, ["anvil".into(), "mercury".into()]);
         },
     },
     Frame {
@@ -870,7 +1149,7 @@ pub const CATALOG: &[Frame] = &[
         // kind of change only a picture is an honest check on.
         build: |ui| {
             pin_entry(ui, dummy_lock_info(), &[0, 3, 6, 9, 1, 2]);
-            ui.show_device_words(["anvil".into(), "mercury".into()]);
+            device_words(ui, ["anvil".into(), "mercury".into()]);
         },
     },
     Frame {
@@ -880,7 +1159,7 @@ pub const CATALOG: &[Frame] = &[
         doc: Doc::Portrait("19-pin-wrong"),
         build: |ui| {
             pin_entry(ui, dummy_lock_info(), &[0, 3, 6, 9]);
-            ui.show_device_words(["anvil".into(), "mercury".into()]);
+            device_words(ui, ["anvil".into(), "mercury".into()]);
             ui.unseal_result(UnsealOutcome::WrongPin { attempts_left: Some(2) });
         },
     },
@@ -1028,9 +1307,10 @@ pub const CATALOG: &[Frame] = &[
         // The one row that acts here rather than opening a screen, in its other position.
         // The network outlives this screen, so what it reads here is what the next
         // derivation runs on.
+        // Row 1: the device name took the top of the list on 2026-08-19.
         build: |ui| {
             settings(ui);
-            tap(ui, RegionId::SetRow(0));
+            tap(ui, RegionId::SetRow(1));
         },
     },
     Frame {
@@ -1056,6 +1336,160 @@ pub const CATALOG: &[Frame] = &[
             tap(ui, RegionId::DangerConfirm);
             type_shifted(ui, "WIP");
         },
+    },
+    // --- S-44a Device name ---------------------------------------------------------------
+    Frame {
+        name: "device-name/current",
+        variant: "current",
+        screen: ScreenId::DeviceName,
+        doc: Doc::Both("53a-device-name", "60a-device-name-800x480"),
+        // Opened on the name the device already has, which is what the row promises.
+        build: device_name_screen,
+    },
+    Frame {
+        name: "device-name/typing",
+        variant: "typing",
+        screen: ScreenId::DeviceName,
+        doc: Doc::None,
+        // The keyboard phase. It replaces everything the screen SAYS, which is the whole
+        // reason the screen has two phases on the 800x480 panel.
+        build: |ui| {
+            device_name_screen(ui);
+            tap(ui, RegionId::DeviceNameField);
+        },
+    },
+    Frame {
+        name: "device-name/refused",
+        variant: "refused",
+        screen: ScreenId::DeviceName,
+        doc: Doc::None,
+        // A seed word typed into a field whose contents are printed before any PIN is.
+        // The refusal is on the panel and the commit is inert.
+        build: |ui| {
+            device_name_screen(ui);
+            tap(ui, RegionId::DeviceNameField);
+            for _ in 0..DUMMY_DEVICE_NAME.chars().count() {
+                tap(ui, RegionId::KeyBackspace);
+            }
+            type_keys(ui, "abandon");
+            tap(ui, RegionId::KeyDone);
+        },
+    },
+    // --- S-04a The device-words explainer -------------------------------------------------
+    Frame {
+        name: "about-device-words/explainer",
+        variant: "explainer",
+        screen: ScreenId::AboutDeviceWords,
+        doc: Doc::Both("18a-device-words-explained", "20a-device-words-explained-800x480"),
+        // Raised by the first answer of a power-up, over PIN entry with a prefix typed.
+        build: |ui| {
+            pin_entry(ui, dummy_lock_info(), &[0, 3, 6, 9]);
+            ui.show_device_words(["anvil".into(), "mercury".into()]);
+        },
+    },
+    // --- S-49 Format card ---------------------------------------------------------------
+    //
+    // Six variants, eight frames, and six of the eight are states in which NOTHING is
+    // erased. That ratio is the feature: a format is offered for one fault and refused for
+    // every other reason a card will not work.
+    //
+    // `Doc::None` throughout. The committed picture set is a curated, historically
+    // numbered sequence, and appending to it is a separate decision from shipping the
+    // screen - the gate covers every one of these on all five panels either way, which is
+    // what stops a layout defect reaching a device.
+    Frame {
+        name: "format-card/offer",
+        variant: "offer",
+        screen: ScreenId::FormatCard,
+        doc: Doc::None,
+        build: |ui| format_card(ui, FormatOffer::Ready(dummy_format_target())),
+    },
+    Frame {
+        name: "format-card/refused",
+        variant: "refused",
+        screen: ScreenId::FormatCard,
+        doc: Doc::None,
+        // The refusal worth a picture: a card that works. This device does not offer to
+        // erase one, and the screen says so rather than leaving the button greyed out.
+        build: |ui| {
+            format_card(
+                ui,
+                FormatOffer::Refused {
+                    why: FormatRefusal::CardAlreadyReadable,
+                    note: String::new(),
+                },
+            )
+        },
+    },
+    Frame {
+        name: "format-card/refused-firmware",
+        variant: "refused",
+        screen: ScreenId::FormatCard,
+        doc: Doc::None,
+        // The refusal that stops the worst outcome this feature has: the FIRMWARE cannot
+        // read cards, so every card looks unreadable, and formatting one would erase
+        // somebody's data to work around a build setting.
+        build: |ui| {
+            format_card(
+                ui,
+                FormatOffer::Refused {
+                    why: FormatRefusal::FirmwareCannotRead,
+                    note: String::from("CONFIG_FATFS_LFN_HEAP=y"),
+                },
+            )
+        },
+    },
+    Frame {
+        name: "format-card/consequence",
+        variant: "consequence",
+        screen: ScreenId::FormatCard,
+        doc: Doc::None,
+        build: format_consequence,
+    },
+    Frame {
+        name: "format-card/typed",
+        variant: "typed",
+        screen: ScreenId::FormatCard,
+        doc: Doc::None,
+        build: format_typed,
+    },
+    Frame {
+        name: "format-card/done",
+        variant: "done",
+        screen: ScreenId::FormatCard,
+        doc: Doc::None,
+        build: |ui| {
+            format_writing(ui);
+            ui.format_result(FormatOutcome::Done(String::from(
+                "The 32 GB card now holds one empty FAT filesystem in partition 1.",
+            )));
+        },
+    },
+    Frame {
+        name: "format-card/failed",
+        variant: "failed",
+        screen: ScreenId::FormatCard,
+        doc: Doc::None,
+        // The state nobody wants to write and every user of a locked card reaches: the
+        // write started and did not finish, so the card is in a state neither the device
+        // nor its owner can describe.
+        build: |ui| {
+            format_writing(ui);
+            ui.format_result(FormatOutcome::Failed {
+                why: String::from(
+                    "The card refused the write (FatFs error 1). A write-protect switch on \
+                     the card or its adapter fails like this.",
+                ),
+                wrote: true,
+            });
+        },
+    },
+    Frame {
+        name: "working/formatting-card",
+        variant: "formatting-card",
+        screen: ScreenId::Working,
+        doc: Doc::None,
+        build: format_writing,
     },
     // --- S-44's wrong-PIN policy -------------------------------------------------------
     Frame {
@@ -1610,13 +2044,25 @@ pub fn required_variants(screen: ScreenId) -> &'static [&'static str] {
         // it, so this is where they have to be seen.
         ScreenId::Home => &["fresh", "store-blank", "store-unreadable"],
         ScreenId::DiceEntry => &["empty", "typed", "word-count-mode"],
-        ScreenId::MnemonicDisplay => &["masked", "reveal-confirm", "revealed"],
+        // Six states, not three: the SAME screen shows a freshly derived set of words on
+        // the create path and a stored wallet's words on the delete path, and the masking
+        // law has to hold on both. The stored pair is what makes that a photographed fact
+        // rather than a claim about shared code.
+        ScreenId::MnemonicDisplay => {
+            &["masked", "reveal-confirm", "revealed", "stored-masked", "stored-revealed"]
+        }
         ScreenId::PhraseEntry => {
             &["empty", "typed", "autocomplete", "final-word", "final-word-sheet"]
         }
-        ScreenId::PassphraseEntry => &["off", "typed-masked", "typed-shown"],
+        ScreenId::PassphraseEntry => {
+            &["off", "typed-masked", "typed-shown", "derive-intro"]
+        }
+        // The prompt, something typed into it, and the refusal - which is the state the
+        // copy gate reads, because it is the only frame in the product that names two
+        // wallet fingerprints to a user.
+        ScreenId::PassphraseUnlock => &["prompt", "typed", "refused"],
         ScreenId::Deriving => &["running"],
-        ScreenId::Schemes => &["bip44", "bip84", "qr", "exit-modal"],
+        ScreenId::Schemes => &["bip44", "bip84", "qr"],
         ScreenId::VerifyDevice => {
             &["pre-pin", "digests", "unlocked", "reserved-space", "acknowledge"]
         }
@@ -1624,7 +2070,7 @@ pub fn required_variants(screen: ScreenId) -> &'static [&'static str] {
         // "store-blank", "store-unreadable" and "store-not-provisioned" are deliberately
         // NOT here: `Ui::lock` is a no-op without a PIN (R20), so this screen cannot exist
         // in those states at all. They are Home variants, which is where they are gated.
-        ScreenId::Lock => &["word", "no-word", "no-nickname", "wipe-off"],
+        ScreenId::Lock => &["named", "no-name", "wipe-off"],
         ScreenId::PinEntry => &["fresh", "typed", "device-words", "wrong", "last-attempt"],
         // The two spec screens are one id, so the STEP is a state here. "not-provisioned"
         // is the one refusal a user can arrive at by walking forward: the fork sends every
@@ -1641,13 +2087,35 @@ pub fn required_variants(screen: ScreenId) -> &'static [&'static str] {
         // over. It is the only one that offers Sign, and every frame below S-27 starts on
         // it.
         ScreenId::WalletHome => {
-            &["session", "stored", "stored-with-keys", "delete-consequence", "delete-typed-name"]
+            &[
+                "session",
+                "stored",
+                "stored-with-keys",
+                "exit-modal",
+                "delete-consequence",
+                "delete-typed-name",
+                // The three states of the identity row are two frames plus "stored", which
+                // every other wallet-home frame above is: the row may never read "ON" or
+                // "off", and the only way to prove that of all three is to render all
+                // three.
+                "passphrase-required",
+                "passphrase-stored",
+                "store-passphrase-consequence",
+                "forget-passphrase-consequence",
+                "forget-passphrase-hold",
+                "storage-refused",
+            ]
         }
+        // S-47b's two states. The busy frame is not among them: it reports
+        // `ScreenId::Working`, like every other C3 frame in the product, and is gated there.
+        ScreenId::EraseWallet => &["offer", "words-refused"],
         // The PIN-removal sheet lives on S-44 itself rather than on the policy
         // sub-screen: it is opened from a settings row and draws over settings.
         ScreenId::Settings => {
             &["default", "network-testnet", "remove-pin-consequence", "remove-pin-typed"]
         }
+        ScreenId::DeviceName => &["current", "typing", "refused"],
+        ScreenId::AboutDeviceWords => &["explainer"],
         ScreenId::WipePolicy => {
             &["default", "edited", "wipe-off-arithmetic", "wipe-off-typed"]
         }
@@ -1695,6 +2163,9 @@ pub fn required_variants(screen: ScreenId) -> &'static [&'static str] {
             "reading-card",
             "checking-transaction",
             "writing",
+            // The longest blocking operation in the product, and the only one during which
+            // "Do not remove the card" is load-bearing rather than polite.
+            "formatting-card",
         ],
         ScreenId::MultisigList => {
             &["empty", "registered", "unreadable-claim", "no-card", "pick"]
@@ -1706,6 +2177,11 @@ pub fn required_variants(screen: ScreenId) -> &'static [&'static str] {
             &["facts", "cosigner", "approve", "not-a-member", "replace"]
         }
         ScreenId::MultisigDetail => &["saved", "cosigners", "delete-typed", "unreadable"],
+        // Six states, and the ORDER of this list is the argument: the two the user is most
+        // likely to see are the two in which nothing is erased.
+        ScreenId::FormatCard => {
+            &["offer", "refused", "consequence", "typed", "done", "failed"]
+        }
     }
 }
 

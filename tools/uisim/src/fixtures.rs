@@ -27,8 +27,10 @@ use notyas_core::derive::{Account, ChildIndex, Scheme};
 use notyas_core::report::{Parameters, Report};
 use notyas_ui::{
     AmountProof, Artifact, BackupState, Bit, BlankSpan, CardListing, Claim, ClaimedKey,
-    CosignerRow, FileKind, FileRow, HexValue, InputFacts, KeyBlockInfo, LockInfo, Network,
-    OutputFacts, OutputRole, Owner, PartitionRow, RefusalCode, RefusalNotice, RegionDigest,
+    CosignerRow, FileKind, FileRow, FormatTarget, HexValue, InputFacts, KeyBlockInfo, LockInfo,
+    Network,
+    OutputFacts, OutputRole, Owner, PartitionRow, PassphraseState, RefusalCode, RefusalNotice,
+    RegionDigest,
     RegistrationInfo, RegistrationReview, ReservedSpace, ReviewedFee, ScriptKind, SetBytes,
     SignedTx, StoreStatus, TxReview, VerifyInfo, WalletInfo, WalletKind, WalletRow, ADDRESS_ROWS,
     VERSION,
@@ -59,7 +61,7 @@ pub fn dummy_wallets() -> Vec<WalletRow> {
             network,
             registrations: 0,
             stored: true,
-            passphrase: false,
+            passphrase: PassphraseState::None,
         })
     };
     vec![
@@ -227,13 +229,16 @@ pub fn dummy_flash_scan() -> ReservedSpace {
     }
 }
 
+/// The DUMMY device's name, named so a recipe that has to CLEAR the field can count the
+/// characters it is deleting rather than restating the string.
+pub const DUMMY_DEVICE_NAME: &str = "DUMMY kitchen-desk";
+
 /// The lock and PIN screens' values for the tour. A device WITH a PIN, because the tour
 /// exists to render the screens and the lock screen only exists on such a device (R20).
 pub fn dummy_lock_info() -> LockInfo {
     LockInfo {
         status: StoreStatus::Locked,
-        nickname: "DUMMY kitchen-desk".into(),
-        lock_word: "anvil".into(),
+        device_name: DUMMY_DEVICE_NAME.into(),
         attempts_left: Some(9),
         wipe_after: Some(15),
         // The floor this DUMMY device was formatted at. The firmware reads it from the
@@ -744,4 +749,17 @@ fn dummy_pubkey() -> PublicKey {
         0xF8, 0x17, 0x98,
     ])
     .expect("the generator point is a valid compressed key")
+}
+
+/// The card S-49's offer is rendered against: an ordinary factory-shipped SDXC card, which
+/// ships exFAT and which this build's FatFs cannot mount. It is the exact case the feature
+/// exists for, and the numbers are a real 32 GB card's.
+pub fn dummy_format_target() -> FormatTarget {
+    FormatTarget {
+        partition: 1,
+        capacity: String::from("32 GB"),
+        word: String::from("32GB"),
+        holds: String::from("an exFAT or NTFS filesystem"),
+        volume: String::from("32 GB"),
+    }
 }

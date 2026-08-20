@@ -48,6 +48,7 @@ use crate::theme::*;
 use crate::{BackupState, QuizView, Region, RegionId};
 use notyas_core::bip39::wordlist;
 use notyas_core::report::Report;
+use zeroize::Zeroizing;
 
 /// Candidates offered per word. Five, per S-17; the layout below is written against this
 /// constant rather than against the number 5.
@@ -67,11 +68,19 @@ pub(crate) struct QuizState {
     attempt: u32,
     /// The last tap was wrong and the line saying so is showing. Cleared by the next tap.
     wrong: bool,
+    /// The passphrase this wallet was derived with, empty where none was applied.
+    ///
+    /// This screen never reads it and never draws it: it is in transit from the entry
+    /// screen to the save, which is the one place it is needed - to write the record's
+    /// flag truthfully and to seed the session so the new wallet opens without asking for
+    /// it back. It is `Zeroizing`, so being carried costs the same wipe every other secret
+    /// on this screen gets (see the drop-equals-zeroize check in the parent module).
+    pub(super) passphrase: Zeroizing<String>,
 }
 
 impl QuizState {
-    pub fn new(report: Report) -> QuizState {
-        QuizState { report: Some(report), at: 0, attempt: 0, wrong: false }
+    pub fn new(report: Report, passphrase: Zeroizing<String>) -> QuizState {
+        QuizState { report: Some(report), at: 0, attempt: 0, wrong: false, passphrase }
     }
 
     /// The mnemonic being checked. Empty only if the report has already been handed on,
@@ -279,6 +288,9 @@ impl Screen for QuizState {
             Some(report) => Outcome::enter(State::Fork(ForkState::new(
                 report,
                 BackupState::Verified(String::new()),
+                // Moved, not copied: this screen is dropped by the transition and the
+                // fork becomes the one holder of the passphrase.
+                core::mem::take(&mut self.passphrase),
             ))),
             None => Outcome::stay(),
         }
@@ -322,7 +334,13 @@ mod tests {
     fn the_correct_answer_is_uniform_across_the_five_slots() {
         let mut counts = [0usize; CHOICES];
         for position in 0..wordlist().len() {
-            let state = QuizState { report: None, at: position, attempt: 0, wrong: false };
+            let state = QuizState {
+                report: None,
+                at: position,
+                attempt: 0,
+                wrong: false,
+                passphrase: Zeroizing::new(String::new()),
+            };
             counts[state.slot()] += 1;
         }
         let expect = wordlist().len() / CHOICES;
@@ -343,7 +361,13 @@ mod tests {
         for at in 0..24usize {
             let mut previous = None;
             for attempt in 0..8u32 {
-                let s = QuizState { report: None, at, attempt, wrong: false }.slot();
+                let s = QuizState {
+                    report: None,
+                    at,
+                    attempt,
+                    wrong: false,
+                    passphrase: Zeroizing::new(String::new()),
+                }.slot();
                 assert!(s < CHOICES, "slot {s} is off the pad");
                 assert_ne!(Some(s), previous, "word {at} attempt {attempt} repeated a slot");
                 previous = Some(s);
@@ -358,7 +382,13 @@ mod tests {
         for (w, h) in GEOMETRIES {
             let f = Fixture::new(w, h);
             let ctx = f.ctx();
-            let state = QuizState { report: None, at: 0, attempt: 0, wrong: false };
+            let state = QuizState {
+                report: None,
+                at: 0,
+                attempt: 0,
+                wrong: false,
+                passphrase: Zeroizing::new(String::new()),
+            };
             let l = state.layout(&ctx);
             let body = f.m.body();
             for (i, r) in l.choices.iter().enumerate() {

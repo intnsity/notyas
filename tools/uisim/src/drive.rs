@@ -121,11 +121,84 @@ pub fn page_to(ui: &mut Ui, id: RegionId) {
     }
 }
 
+/// Drag a scrolling list until `id` is reachable, exactly as a finger does it.
+///
+/// The counterpart to [`page_to`] for the screens that scroll instead of paging. It drags
+/// rather than reaching into the state, so a row this cannot reach is a row a user cannot
+/// reach either - which is the property the frame is being built to photograph.
+pub fn scroll_to(ui: &mut Ui, id: RegionId) {
+    // Well inside the body of the shortest shipped panel (480 px) and the narrowest
+    // (720 px), and a drag is acted on wherever it starts, so these coordinates are about
+    // being ON the panel and nothing else.
+    let (x, from, to) = (100, 400, 240);
+    for step in 0..16 {
+        if ui_has(ui, id) {
+            return;
+        }
+        ui.touch(TouchEvent::Down { x, y: from });
+        ui.touch(TouchEvent::Move { x, y: to });
+        ui.touch(TouchEvent::Up { x, y: to });
+        assert!(step < 15, "{id:?} is unreachable by scrolling on {:?}", ui.screen());
+    }
+}
+
+/// Scroll a settings-style list to its foot and return its LAST row.
+///
+/// Rows are addressed by position in the live list, so a recipe that wants "the last row"
+/// must not hardcode an index: adding a setting above it would silently move the recipe
+/// onto a different row, and the frame would keep passing while photographing the wrong
+/// screen. Scrolling first is what makes the answer complete - a row below the fold has no
+/// region until it is in the window.
+pub fn last_list_row(ui: &mut Ui) -> RegionId {
+    /// Far above any settings list this product will have, and far below the 256 a `u8`
+    /// allows: every probe here rebuilds the whole region set, so the bound is what keeps
+    /// a helper used by forty frames from costing a quarter of a million of them.
+    const MAX_LIST_ROWS: u8 = 32;
+
+    let mut last = None;
+    for _ in 0..16 {
+        for i in 0..MAX_LIST_ROWS {
+            if ui_has(ui, RegionId::SetRow(i)) {
+                last = Some(RegionId::SetRow(i));
+            }
+        }
+        let before = last;
+        let (x, from, to) = (100, 400, 240);
+        ui.touch(TouchEvent::Down { x, y: from });
+        ui.touch(TouchEvent::Move { x, y: to });
+        ui.touch(TouchEvent::Up { x, y: to });
+        for i in 0..MAX_LIST_ROWS {
+            if ui_has(ui, RegionId::SetRow(i)) {
+                last = Some(RegionId::SetRow(i));
+            }
+        }
+        if last == before && before.is_some() {
+            break;
+        }
+    }
+    let last = last.expect("a settings list has rows");
+    scroll_to(ui, last);
+    last
+}
+
 /// A device with a PIN, locked, with the DUMMY device facts installed.
 pub fn locked(ui: &mut Ui, lock: LockInfo) {
     ui.set_verify_info(dummy_verify_info());
     ui.set_lock_info(lock);
     assert!(ui.lock(), "a device with a PIN starts locked");
+}
+
+/// Answer `UiRequest::DeviceWords` and leave PIN entry on the panel.
+///
+/// The first answer of a power-up raises S-04a over the PIN screen, which is the point of
+/// it - so a recipe that wants the PIN screen has to dismiss it, exactly as a finger does.
+/// Written as one helper rather than a tap after every call site, so that a frame cannot
+/// silently become a picture of the explainer.
+pub fn device_words(ui: &mut Ui, words: [String; 2]) {
+    ui.show_device_words(words);
+    if ui_has(ui, RegionId::WordsUnderstood) {
+        tap(ui, RegionId::WordsUnderstood);
+    }
 }
 
 /// A device with a session open, holding `wallets`.

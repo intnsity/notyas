@@ -469,6 +469,7 @@ impl Drop for PinTemps {
 
 #[cfg(test)]
 mod tests {
+    use crate::UnlockGate;
     use super::*;
     use crate::canvas::{wrap_words, HEADING};
     use crate::screens::testing::{Fixture, GEOMETRIES};
@@ -718,7 +719,12 @@ mod tests {
                     "{w}x{h}: slot {i} (the {digit} key) is not at column {c}, row {r}"
                 );
                 let mut env =
-                    Env { network: &mut network, lock: &f.lock, wallets: &f.wallets };
+                    Env {
+            network: &mut network,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
                 s.activate(RegionId::PinKey(i as u8), &mut env);
                 assert_eq!(
                     s.entry.chars().last(),

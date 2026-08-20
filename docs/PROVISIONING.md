@@ -126,6 +126,16 @@ esptool --chip esp32p4 -p COM6 erase-region 0x410000 0x40000   # wallets,  256 K
 esptool --chip esp32p4 -p COM6 erase-region 0x450000 0x4000    # counters,  16 KiB
 ```
 
+The third data region, `settings` at `0x460000` (64 KiB), is NOT part of this recovery and
+must not be erased with the others by reflex. It holds the device name and the network
+choice - public preferences, no key, no sealed content - and nothing in the store depends on
+it, so erasing it only costs the user their device name. Erase it deliberately or not at
+all:
+
+```
+esptool --chip esp32p4 -p COM6 erase-region 0x460000 0x10000   # settings,  64 KiB
+```
+
 Then power-cycle the board and run `format <pin>` on the HIL console. Both commands are
 esptool v5.3.1 spelling (`erase-region`, hyphenated); v4 spells it `erase_region`. The end
 state to expect is the `status` line reporting provenance `eFuse HMAC_UP key,
@@ -135,9 +145,10 @@ reported after this procedure.
 Two cautions, because this is a destructive procedure that looks routine.
 
 - Erasing `wallets` destroys every sealed record permanently. A seed is re-derivable from
-  the user's own dice rolls or mnemonic; labels, settings and multisig registrations are
-  not, and 0.2.0 has no backup for them (SECURITY.md wipe posture). This is a bench
-  procedure for a store you already know to be worthless, never a field recovery.
+  the user's own dice rolls or mnemonic; labels, the wipe policy and multisig
+  registrations are not, and 0.2.0 has no backup for them (SECURITY.md wipe posture). This
+  is a bench procedure for a store you already know to be worthless, never a field
+  recovery.
 - Erasing `counters` resets the attempt log and the boot counter. On a product unit that is
   precisely the tamper those counters exist to reveal. It is acceptable here only because
   the store they counted for is being discarded in the same breath.

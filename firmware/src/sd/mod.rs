@@ -36,6 +36,12 @@
 //! - **export and verify** (m10, screens S-27 and 8): the same `deliver` and `read` with
 //!   [`text_bounds`].
 //!
+//! And one operation that is not a flow, because it does not go through [`Volume`] at all:
+//! [`probe_format`] and [`format_card`] reach the card at BLOCK level, below FatFs, to
+//! repair a card that has no filesystem this device can mount. It is the only destructive
+//! thing this directory does and the only thing here the user has to type a word to reach;
+//! `format` carries the whole argument, and `probe` carries the decision that gates it.
+//!
 //! # Who calls it
 //!
 //! `crate::flow`, which is where the card requests the screens raise are answered:
@@ -45,9 +51,11 @@
 //! dead-code allow; the allow is gone, which is the form of "it is called now" that a
 //! compiler checks.
 
+mod format;
 mod fs;
 mod mount;
 mod pins;
+mod probe;
 
 // What the rest of the firmware may name. Trimmed to the items that have callers:
 // `LONG_NAMES`, `MOUNT_POINT` and the wiring note are read inside this directory and by
@@ -55,7 +63,30 @@ mod pins;
 pub use fs::FsError;
 pub use mount::{is_mounted, mounts, Card, CardError};
 
+use notyas_ui::{FormatOffer, FormatOutcome};
 use notyas_wallet::sd::Bounds;
+
+/// Look at the card in the slot and decide whether formatting it could repair it.
+///
+/// Reads one sector and writes nothing, on any path. See [`format`] for the whole
+/// argument; the short version is that this is the gate, and it refuses far more cards
+/// than it accepts - a card that mounts, an empty slot, a card that will not return its
+/// first sector, a card with two partitions and a card with no partition table are all
+/// refusals, and only one fault is repaired by writing a filesystem.
+pub fn probe_format() -> FormatOffer {
+    format::probe()
+}
+
+/// Write a fresh FAT filesystem into `partition`, on the card whose capacity renders as
+/// `word`.
+///
+/// Both arguments are re-derived from the card in the slot and compared before anything is
+/// written, so a card swapped between the consent sheet and the tap is refused rather than
+/// erased. **This is the only function in this subsystem that destroys data**, and the
+/// only one in the firmware that destroys data the device never held.
+pub fn format_card(partition: u8, word: &str) -> FormatOutcome {
+    format::format(partition, word)
+}
 
 /// Bounds for reading a PSBT off a card.
 ///

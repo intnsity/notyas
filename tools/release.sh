@@ -18,9 +18,14 @@
 #   3. The tag before the build. The artifacts are a function of the committed
 #      tree, so the tag names the tree the artifacts came from rather than being
 #      applied afterwards to whatever produced a good result.
-#   4. Reproduction before signature. Signing a build nobody has reproduced voids
-#      the entire chain docs/VERIFYING.md asks a stranger to walk: the signature
-#      would attest to bytes whose provenance nobody checked.
+#   4. Reproduction before signature, and reproduction OF THE BYTES BEING SIGNED.
+#      Signing a build nobody has reproduced voids the entire chain
+#      docs/VERIFYING.md asks a stranger to walk: the signature would attest to
+#      bytes whose provenance nobody checked. A double build that is never compared
+#      to the artifact directory is that same void wearing a green stamp, so the
+#      reproduce stage compares them and the later stages re-assert the comparison
+#      against the directory in front of them. See the block above
+#      reproduction_covers_artifacts.
 #   5. Signature before publication, on a machine that is not a CI runner. The
 #      release key does not touch hosted infrastructure (REPRODUCIBLE.md 6.3).
 #   6. Re-checked at the irreversible boundary, not merely earlier. A stamp binds a
@@ -111,6 +116,12 @@ TAG="v$VERSION"
 OUT="$REPO/out/release/$VERSION"
 ARTIFACTS="$OUT/artifacts"
 STAMPS="$OUT/stamps"
+
+# Build A of the double build, one directory per board, as tools/repro/check-repro.sh
+# leaves it behind. That script owns the path and deletes the tree at the start of its
+# next run; it is named here because the reproduce stage compares it against $ARTIFACTS,
+# which is the comparison that makes "reproduction before signature" mean anything.
+CHECK_REPRO_A="$REPO/out/check-repro/a"
 
 IMAGE="notyas-repro:$VERSION"
 
@@ -730,6 +741,168 @@ artifacts_fully_hashed() {
 }
 
 # ---------------------------------------------------------------------------
+# The tie between what was reproduced and what gets signed.
+#
+# tools/repro/check-repro.sh answers one question: does this recipe reproduce. It
+# builds twice, into out/check-repro/a and out/check-repro/b, and compares those
+# two trees against each other. It has never heard of $ARTIFACTS, which is the
+# directory 'sign' signs and 'publish' hands over.
+#
+# Until this was written the reproduce stage ran that script, read nothing it left
+# behind, and stamped a pass. The only comparison ever made against $ARTIFACTS was
+# the optional second-machine attestation, so with --no-second-machine the stage
+# proved the recipe reproduces and proved nothing whatever about the bytes the
+# signature was about to make authoritative. Ordering rule 4 at the top of this
+# file - "signing a build nobody has reproduced voids the entire chain" - was being
+# enforced against a build, not against the release.
+#
+# What that permitted is not exotic. Anything that rewrote an artifact after the
+# build stage and regenerated SHA256SUMS.txt from the directory, the way
+# tools/repro/build.sh writes it - a stray container run against a modified mount,
+# a sync tool, a tamper in the window cmd_publish's header names - passed every
+# later check. artifacts_fully_hashed asks whether the list and the directory agree
+# with each other, and after such a rewrite they do.
+#
+# So the rebuild is compared to the artifact directory, through the hashes, in both
+# directions:
+#
+#   every artifact the rebuild produced is in the hash list about to be signed,
+#   with the same digest        - or the bytes being signed are not reproduced ones
+#   every entry in that hash list came out of the rebuild
+#                               - or something rides along that no rebuild made
+#
+# and the reduced list is digested into the reproduce stamp, so that 'sign' and
+# 'publish' can re-ask it about the directory as it stands at THAT moment. The
+# stamp half is not decoration: the reproduce stage can only speak for the
+# directory as it was while the stage ran, and the window in question opens after
+# it and closes at the push.
+#
+# The stated limit is the one the xverify binding carries for the same reason:
+# anything that can write out/ can rewrite the stamp beside the artifacts, and can
+# edit this file besides. What this closes is the accidental rewrite and the stale
+# directory, not a host that is already owned. tools/ci/selftest-reproduce-binding.sh
+# is the proof that both halves can say no, and the reproduce stage runs it before
+# the double build for the reason cmd_build runs the Q41 self-test: a check that
+# has only ever passed is indistinguishable from a check that cannot fail.
+
+# "<sha256> <basename>" for every artifact one board's rebuild produced, sorted.
+#
+# Recomputed from the files rather than read out of the SHA256SUMS.txt the container
+# wrote beside them. A hash list is a claim about a directory; the claim under test
+# here is about bytes, and a list that lies about its neighbours reproduces exactly
+# as well as one that does not. Reduced through hash_list_pairs, the one place in
+# this script that turns hashes into comparable pairs, because the subtle way to
+# break this comparison is to reduce it differently - see the note on that function.
+rebuilt_pairs() {
+    local dir=$1 raw rc=0
+    raw=$(mktemp)
+    # -r: an empty board directory would otherwise run sha256sum with no arguments,
+    # which reads stdin and hangs a release stage forever. -d '\n': one name per
+    # line, so a name carrying a space is hashed rather than split into two files
+    # that do not exist - which would fail here rather than pass, but would name the
+    # wrong fault.
+    if ( cd "$dir" && find . -maxdepth 1 ! -type d ! -name 'SHA256SUMS.txt*' -printf '%P\n' \
+            | LC_ALL=C sort | xargs -r -d '\n' sha256sum ) > "$raw"; then
+        hash_list_pairs "$raw"
+    else
+        rc=1
+    fi
+    rm -f "$raw"
+    return "$rc"
+}
+
+# One line standing for "this exact set of artifacts, with these exact digests". It
+# is what the reproduce stamp carries, so the later stages can ask whether the
+# directory is still the one that was tied to the rebuild without needing the
+# rebuild tree, which check-repro.sh deletes at the start of its next run.
+artifact_pairs_digest() {
+    hash_list_pairs "$1" | sha256sum | cut -d' ' -f1
+}
+
+# The comparison itself. Arguments rather than globals so the self-test can drive it
+# against fixtures.
+#
+#   $1  the rebuild tree, one directory per board, as check-repro.sh leaves it
+#   $2  the hash list that is about to be signed
+#   $3+ the boards that must be in that tree
+reproduction_covers_artifacts() {
+    local root=$1 sums=$2; shift 2
+    local board rebuilt signed dup missing extra rc=0
+
+    [ -f "$sums" ] || { bad "there is no hash list at $sums"; return 1; }
+    [ $# -gt 0 ]   || { bad "no boards were named, so this would compare the artifacts against nothing"; return 1; }
+
+    rebuilt=$(mktemp); signed=$(mktemp)
+    for board in "$@"; do
+        if [ -d "$root/$board" ]; then
+            rebuilt_pairs "$root/$board" >> "$rebuilt" || rc=1
+        else
+            bad "the rebuild left no tree for board $board at $root/$board"
+            note "The reproduce stage builds every release board; a tree that is missing one"
+            note "is an old out/check-repro, not a reproduction of this release."
+            rc=1
+        fi
+    done
+
+    if [ "$rc" -ne 0 ] || [ ! -s "$rebuilt" ]; then
+        [ -s "$rebuilt" ] || bad "the rebuild produced no artifacts at all, so there is nothing here that could vouch for $sums"
+        rm -f "$rebuilt" "$signed"
+        return 1
+    fi
+
+    LC_ALL=C sort -u -o "$rebuilt" "$rebuilt"
+
+    # The source archive and the components archive are written by every board build
+    # under one name, so a basename legitimately appears in more than one rebuilt
+    # tree - with the same bytes. Two boards that disagree about it would otherwise
+    # surface below as "the rebuild made something the list does not carry", which
+    # names the symptom and hides the fault.
+    dup=$(awk '{ print $2 }' "$rebuilt" | LC_ALL=C uniq -d)
+    if [ -n "$dup" ]; then
+        bad "two boards' rebuilds disagree about the bytes of the same artifact:"
+        printf '%s\n' "$dup" | sed 's/^/          /'
+        rm -f "$rebuilt" "$signed"
+        return 1
+    fi
+
+    hash_list_pairs "$sums" > "$signed"
+    missing=$(LC_ALL=C comm -23 "$rebuilt" "$signed")
+    extra=$(LC_ALL=C comm -13 "$rebuilt" "$signed")
+    rm -f "$rebuilt" "$signed"
+
+    if [ -n "$missing" ]; then
+        bad "the rebuild produced these, and the hash list about to be signed does not carry them:"
+        printf '%s\n' "$missing" | sed 's/^/          /'
+    fi
+    if [ -n "$extra" ]; then
+        bad "the hash list about to be signed carries these, and no rebuild produced them:"
+        printf '%s\n' "$extra" | sed 's/^/          /'
+    fi
+    [ -z "$missing$extra" ] || return 1
+    return 0
+}
+
+# The same claim, re-asked by 'sign' and by 'publish' against the artifact directory
+# as it stands in front of them. Same reasoning as every other re-measurement in
+# cmd_publish: a stamp binds a STAGE to a commit, and cannot bind a file on disk to
+# the bytes somebody checked hours ago. Beside artifacts_fully_hashed, which proves
+# the list still describes the directory, this proves the list is still the one the
+# rebuild vouched for - and the two together are what "these bytes were reproduced"
+# requires. Either alone is satisfied by a directory and a list rewritten together.
+artifacts_match_reproduce_stamp() {
+    local stage=$1 want now
+    want=$(sed -n 's/^reproduced_artifacts_sha256 = //p' "$STAMPS/reproduce" 2> /dev/null)
+    [ -n "$want" ] || die "$stage: the reproduce stamp does not record which artifacts were reproduced. It was written by an older release.sh, from before the double build was tied to the bytes being signed, so nothing here can tell these artifacts apart from ones no rebuild produced. Re-run: tools/release.sh reproduce"
+
+    now=$(artifact_pairs_digest "$ARTIFACTS/SHA256SUMS.txt")
+    if [ "$now" = "$want" ]; then
+        ok "the artifacts are still the ones the double build reproduced ($want)"
+        return 0
+    fi
+    die "$stage: $ARTIFACTS no longer holds the artifacts the reproduce stage tied to the double build - reproduced $want, here now $now. STOP. This is the finding the release process exists to make, not an inconvenience to work around: something rewrote the artifact directory after it was reproduced, and SHA256SUMS.txt was regenerated alongside it, which is why every other check here is green. Re-run from 'build' and do not sign anything in that directory."
+}
+
+# ---------------------------------------------------------------------------
 # plan - the default. Prints the order and where this release stands.
 
 cmd_plan() {
@@ -774,7 +947,7 @@ stage_blurb() {
         hardware)  printf 'the owner acknowledges the hardware gauntlet' ;;
         tag)       printf 'signed annotated tag at this commit' ;;
         build)     printf 'container build of every release board' ;;
-        reproduce) printf 'built twice, and matched on a second machine' ;;
+        reproduce) printf 'built twice, tied to what gets signed' ;;
         sign)      printf 'detached signature over SHA256SUMS.txt' ;;
         publish)   printf 'push the tag and hand over the artifacts' ;;
     esac
@@ -1156,10 +1329,30 @@ cmd_reproduce() {
         die "supply the second machine's hash list (--attestation FILE) or state plainly that there is none (--no-second-machine). A reproducibility claim with one builder is a claim about one machine."
     fi
 
+    # Before the hours, not after: the comparison this stage makes against
+    # $ARTIFACTS has never refused anything in this tree, because every rebuild
+    # here has matched, and a gate that has only ever said yes is indistinguishable
+    # from one that cannot say no. Cheap gates before expensive ones, ordering rule
+    # 1, applies inside a stage as well as between them.
+    step "the reproduction/artifact tie can say no (self-test)"
+    bash tools/ci/selftest-reproduce-binding.sh \
+        || die "the check that ties the double build to the artifacts did not refuse artifacts no rebuild produced. Until tools/ci/selftest-reproduce-binding.sh passes, a green reproduce stage says nothing about the bytes that get signed."
+
     # Two builds on THIS machine, from two host paths, at different times, the
     # second handed a hostile environment. It is the check-repro.sh contract and
     # it is not reimplemented here.
     bash tools/repro/check-repro.sh
+
+    # And now the question check-repro.sh does not ask: is what it just reproduced
+    # what is about to be signed. See the block above reproduction_covers_artifacts
+    # for what this stage used to leave unasserted, and for what a pass here means.
+    step "the artifacts against the rebuild"
+    local reproduced_digest
+    # shellcheck disable=SC2046  # the board list is a list, and this script wrote it
+    reproduction_covers_artifacts "$CHECK_REPRO_A" "$ARTIFACTS/SHA256SUMS.txt" $(boards) \
+        || die "the artifacts in $ARTIFACTS are not the bytes the double build just produced. STOP. This is the finding the release process exists to make, not an inconvenience to work around: the two builds matched each other, so the recipe is sound and the artifact directory is not. Triage with docs/VERIFYING.md section 9 item 3, re-run from 'build', and do not sign anything in there."
+    ok "every artifact about to be signed is byte-for-byte one the rebuild produced, and the hash list names nothing else"
+    reproduced_digest=$(artifact_pairs_digest "$ARTIFACTS/SHA256SUMS.txt")
 
     local second_state
     if [ -n "$attestation" ]; then
@@ -1191,7 +1384,8 @@ NOSECONDEOF
         second_state="second_machine = NOT RUN, and the release notes must say so"
     fi
 
-    stamp_write reproduce "double_build = passed" "$second_state"
+    stamp_write reproduce "double_build = passed" \
+        "reproduced_artifacts_sha256 = $reproduced_digest" "$second_state"
 }
 
 # ---------------------------------------------------------------------------
@@ -1220,6 +1414,13 @@ cmd_sign() {
     artifacts_fully_hashed \
         || die "SHA256SUMS.txt no longer describes $ARTIFACTS. Do not sign this."
     ok "every artifact still hashes to its listed value, and the list names every file here"
+
+    # The half that check cannot answer. A directory and a list rewritten together
+    # agree with each other perfectly, which is what an artifact rewritten since the
+    # build looks like from here. This asks the other question: is this list still
+    # the one the double build vouched for. Ordering rule 4 is about the bytes being
+    # signed, and this is where it is asserted about them.
+    artifacts_match_reproduce_stamp sign
 
     rm -f "$sums.asc"
     gpg --armor --detach-sign --local-user "$RELEASE_KEY_FPR" "$sums"
@@ -1318,6 +1519,11 @@ cmd_publish() {
     # a file appears.
     check_artifacts publish
     ok "the signature verifies over a hash list that describes this directory exactly"
+
+    # And that the hash list is still the one the double build reproduced, asked
+    # again here for the same reason every other fact on this page is: 'sign' asked
+    # it, and the answer it got was about a moment that has passed.
+    artifacts_match_reproduce_stamp publish
 
     # The cross-check's evidence, re-asked here for the same reason: 'gates' ran
     # hours ago, and out/xverify/attestation.json is a file anything could have

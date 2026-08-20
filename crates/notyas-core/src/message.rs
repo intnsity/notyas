@@ -504,9 +504,13 @@ const BASE64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq
 /// Base64 with padding.
 ///
 /// Hand written rather than pulled in: it is twenty lines against a new dependency in a
-/// crate whose dependency list is itself a security claim, and the encoder has exactly one
-/// caller with exactly one input length.
-fn base64_encode(input: &[u8]) -> String {
+/// crate whose dependency list is itself a security claim.
+///
+/// `pub(crate)` for its second caller, [`crate::psbt_qr`], which needs the same standard
+/// alphabet for the same reason this one does - the string is pasted or scanned into a
+/// wallet that decodes RFC 4648 section 4. One encoder rather than two: the vectors below
+/// are the only place either of them is pinned.
+pub(crate) fn base64_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         // Missing tail bytes contribute zero bits, which is what the padding then hides.

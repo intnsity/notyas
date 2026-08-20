@@ -18,6 +18,7 @@ use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::Pixel;
 
 use notyas_ui::{
+    PassphraseState,
     BackupState, LockInfo, Network, Region, RegionId, ScreenId, StoreStatus, TouchEvent,
     Ui, UiRequest, UnsealOutcome, WalletInfo, WalletKind, WalletRow,
 };
@@ -61,8 +62,7 @@ fn locked(w: u32, h: u32) -> Ui {
     let mut ui = Ui::new(w, h);
     ui.set_lock_info(LockInfo {
         status: StoreStatus::Locked,
-        nickname: String::from("kitchen-desk"),
-        lock_word: String::from("anvil"),
+        device_name: String::from("kitchen-desk"),
         attempts_left: Some(9),
         ..LockInfo::default()
     });
@@ -82,7 +82,7 @@ fn wallet(slot: u8, name: &str) -> WalletRow {
         network: Network::Bitcoin,
         registrations: 0,
         stored: true,
-        passphrase: false,
+        passphrase: PassphraseState::None,
     })
 }
 
@@ -279,18 +279,26 @@ fn a_half_scrolled_row_is_painted_and_inert() {
 // 4. NOTHING ELSE REGRESSED
 // ---------------------------------------------------------------------------------------
 
+macro_rules! alloc_vec { ($($x:expr),* $(,)?) => { vec![$($x),*] } }
+
 #[test]
 fn the_chips_and_the_actions_still_resolve() {
     for (w, h) in GEOM {
         for n in [0usize, 1, 2, 3, 8] {
             let slots: Vec<u8> = (0..n as u8).map(|i| i + 1).collect();
             let mut ui = unlocked(w, h, rows(&slots));
-            for id in [
-                RegionId::Lock,
-                RegionId::OpenSettings,
-                RegionId::WalletNew,
-                RegionId::WalletRestore,
-            ] {
+            // At capacity the two create actions are drawn Disabled and emit NO region.
+            // That is deliberate: a control that looks disabled and still activates is the
+            // defect this asserts against, and it shipped - the buttons were painted
+            // Disabled at 8 wallets and started the create flow anyway. So the expectation
+            // here is a function of occupancy, not a constant.
+            let at_capacity = n >= notyas_ui::WALLET_SLOTS as usize;
+            let mut expected = alloc_vec![RegionId::Lock, RegionId::OpenSettings];
+            if !at_capacity {
+                expected.push(RegionId::WalletNew);
+                expected.push(RegionId::WalletRestore);
+            }
+            for id in expected {
                 let r = find(&ui, id).unwrap_or_else(|| panic!("{w}x{h} n={n}: no {id:?}"));
                 assert_eq!(
                     hit(&ui, r.rect.x + r.rect.w / 2, r.rect.y + r.rect.h / 2),
@@ -318,12 +326,26 @@ fn the_chips_and_the_actions_still_resolve() {
             let mut s = unlocked(w, h, rows(&slots));
             tap_id(&mut s, RegionId::OpenSettings);
             assert_eq!(s.screen(), ScreenId::Settings, "{w}x{h}: Settings did not open");
-            let mut a = unlocked(w, h, rows(&slots));
-            tap_id(&mut a, RegionId::WalletNew);
-            assert_eq!(a.screen(), ScreenId::DiceEntry, "{w}x{h}: New wallet did not open");
-            let mut b = unlocked(w, h, rows(&slots));
-            tap_id(&mut b, RegionId::WalletRestore);
-            assert_eq!(b.screen(), ScreenId::PhraseEntry, "{w}x{h}: Restore did not open");
+            // Below capacity the two create actions open their flows. AT capacity they are
+            // drawn Disabled and emit no region at all, so there is nothing to tap - and the
+            // assertion that matters there is the opposite one: that a tap in the middle of
+            // the disabled control does NOT start a flow. A button that looks dead and acts
+            // live is the defect; a button that looks dead and IS dead is the fix.
+            if at_capacity {
+                for id in [RegionId::WalletNew, RegionId::WalletRestore] {
+                    assert!(
+                        find(&ui, id).is_none(),
+                        "{w}x{h} n={n}: {id:?} still emits a region at capacity"
+                    );
+                }
+            } else {
+                let mut a = unlocked(w, h, rows(&slots));
+                tap_id(&mut a, RegionId::WalletNew);
+                assert_eq!(a.screen(), ScreenId::DiceEntry, "{w}x{h}: New wallet did not open");
+                let mut b = unlocked(w, h, rows(&slots));
+                tap_id(&mut b, RegionId::WalletRestore);
+                assert_eq!(b.screen(), ScreenId::PhraseEntry, "{w}x{h}: Restore did not open");
+            }
         }
     }
 }

@@ -58,16 +58,30 @@ mod readout;
 /// bounded card layer in `notyas_wallet::sd`. Called by `crate::flow`, which is where the
 /// picker, the loader and the deliver screen's write are answered.
 mod sd;
+/// The public settings region (0.2.0): the `settings` partition, holding the values this
+/// device has to read BEFORE a PIN - the device name the lock screen draws and the network
+/// choice. Four `esp_partition_*` calls; every rule about the format lives in
+/// `notyas_wallet::settings`, where the host tests can reach it.
+mod settings;
 /// The signing pipeline (0.2.0-m6): bytes in, a reviewed transaction, bytes out. All I/O
 /// stays outside it - the transport hands it a `&[u8]` and takes a `Vec<u8>` back - which
 /// is the same split `store` keeps against the sealing engine. Its callers are the review
 /// and deliver screens, through `crate::flow`.
 mod signing;
+/// What an unlocked session remembers between screens: the passphrases the user has
+/// typed once. Pure by construction - no store, no logger, no ESP-IDF - and covered on the
+/// host by `firmware/hostcheck`, because "the bytes are gone when it is cleared" is a
+/// property no panel photograph can show.
+mod session;
 /// The sealed store: the two `esp_partition` regions, the device-binding MAC, the PSRAM
 /// Argon2id working set and the session lifetime. Product code, always compiled.
 mod store;
 mod theme;
 mod touch;
+/// Which unseal outcome an unlock refusal is - the one judgement that decides whether the
+/// PIN screen accuses the owner of a miscount or reports a store it could not read. Pure,
+/// and covered on the host by `firmware/hostcheck`.
+mod unseal;
 mod verify;
 /// The unlocked wallet (0.2.0-m6/m7): the sealed record schema, the one place a seed
 /// exists, and the only source of the `psbt::Context` the signing pipeline validates
@@ -83,15 +97,18 @@ use esp_idf_svc::sys;
 use notyas_core::selftest::{self, SelfTest};
 use notyas_fonts::{draw_text, TextStyle, MONO_REGULAR_32, SANS_REGULAR_32, SANS_SEMIBOLD_44};
 use notyas_ui::{
-    BackupState, Bit, Network, QrData, ReservedSpace, ScreenId, TouchEvent, Ui, UiRequest,
-    UnsealOutcome, VerifyInfo, WalletDraft, WalletInfo, WalletKind, WalletRow,
+    BackupState, Bit, DeleteOutcome, Network, PassphraseRefusal, PassphraseState, QrData,
+    ReservedSpace, ScreenId, StorageOutcome, TouchEvent, Ui, UiRequest, UnsealOutcome,
+    VerifyInfo, WalletDraft, WalletInfo, WalletKind, WalletRow,
 };
 use notyas_wallet::{Pin, SlotState};
 use zeroize::Zeroizing;
 
 use crate::display::Display;
 use crate::flow::Flow;
-use crate::wallet::record::{RegistrationRecord, SealedWallet, WalletRecord};
+use crate::session::PassSession;
+use crate::wallet::record::{RegistrationRecord, SealedWallet, StoredPassphrase, WalletRecord};
+use crate::wallet::erase::Erased;
 use crate::wallet::{Wallet, WalletError};
 
 /// Firmware semver (workspace releases in lockstep, so this is the product version).
@@ -240,9 +257,37 @@ fn main() {
 
     // The product UI, laid out for this board's panel, fed with measured facts.
     let mut ui = Ui::new(board::DISPLAY_WIDTH, board::DISPLAY_HEIGHT);
+    // The public settings, read here because here is BEFORE the lock screen and before
+    // any PIN. This read touches no key, no session and no sealed record: the region is
+    // plaintext by requirement, since the value it carries furthest - the device name - is
+    // drawn on the very screen that asks for the PIN. A device whose table has no settings
+    // partition, a blank region and a torn write all land on the same defaults, so nothing
+    // here has a failure path that can stop a boot.
+    let saved = settings::load();
+    ui.set_network(settings::network_from(saved.network()));
+    // Seeded through `LockInfo` because that is where the name lives for the life of a
+    // power-up; `refresh_lock_info` below carries it forward across every later refresh,
+    // exactly as it does for a name typed on this boot.
+    ui.set_lock_info(notyas_ui::LockInfo {
+        device_name: String::from(saved.device_name()),
+        ..notyas_ui::LockInfo::default()
+    });
+    log::info!(
+        "settings: device name {} | network {:?}",
+        if saved.device_name().is_empty() {
+            String::from("<unnamed>")
+        } else {
+            format!("{:?}", saved.device_name())
+        },
+        saved.network()
+    );
     // The one long-lived seed on this device, and everything derived from it. Empty until
     // a user opens a wallet, emptied again by every route out of one (see `close_flow`).
     let mut flow = Flow::default();
+    // What the user has typed once and should not have to type again until this session
+    // ends. Beside `flow` rather than inside it, and outliving it on purpose - see
+    // `PassSession`.
+    let mut passphrases = PassSession::default();
     // One pass over the chip and flash, then everything downstream is a
     // rendering of it: the nine-row screen, the boot-log readout and (at m4b)
     // the QR export all read the same struct, so they cannot disagree.
@@ -269,7 +314,7 @@ fn main() {
     hmac_check::run();
 
     ui.set_verify_info(info);
-    ui.set_lock_info(lock_info(store.as_ref()));
+    refresh_lock_info(&mut ui, store.as_ref());
     // A device with a PIN starts locked. `Ui::lock` refuses on any other state, which is
     // what keeps R20 true without a check at this call site: on an unprovisioned or blank
     // device the lock screen - and the device words behind it - cannot be reached at all.
@@ -361,7 +406,7 @@ fn main() {
         let ticked = ui.tick(elapsed_ms);
         let mut dirty = ticked.dirty;
         publish_before_answering(&ui, &mut display, &mut repaints, &ticked.request, &mut dirty);
-        answer_request(&mut ui, &mut store, &mut flow, ticked.request);
+        answer_request(&mut ui, &mut store, &mut flow, &mut passphrases, ticked.request);
         if was_deriving && ui.screen() != ScreenId::Deriving {
             // Duration only - no seed, phrase or passphrase material. Worth a
             // line: this is the one operation slow enough for a user to call
@@ -379,11 +424,15 @@ fn main() {
             // wallet open would leave a signed transaction and a live seed behind a lock
             // screen, which is the opposite of what locking means.
             close_flow(&mut flow, "the session timed out");
+            // The passphrases go with the session, and this is the pass that ends it. The
+            // seed and the passphrases are two different lifetimes on purpose (see
+            // `PassSession`) and this is one of the four places they coincide.
+            clear_passphrases(&mut passphrases, "the session timed out");
             // The session is gone; the screens above it go with it. `Ui::lock` clears the
             // navigation stack, and each entry wipes its screen's secrets on drop, so the
             // auto-lock is a wipe on both sides of the boundary and not just on the
             // std one.
-            ui.set_lock_info(lock_info(store.as_ref()));
+            refresh_lock_info(&mut ui, store.as_ref());
             ui.lock();
             dirty = true;
         }
@@ -425,7 +474,7 @@ fn main() {
         }
 
         publish_before_answering(&ui, &mut display, &mut repaints, &request, &mut dirty);
-        answer_request(&mut ui, &mut store, &mut flow, request);
+        answer_request(&mut ui, &mut store, &mut flow, &mut passphrases, request);
 
         // Screen transitions are the UI's audit trail (ScreenId carries no
         // data, so this is safe to log - notyas-ui's Debug discipline). The
@@ -447,6 +496,20 @@ fn main() {
         if network != last_network {
             last_network = network;
             log::info!("network: {network:?}");
+            // Persisted from the LOOP rather than from a request handler because the
+            // network toggle is answered inside the UI - it changes a value the embedder
+            // reads, and raises nothing. This is the one place that can observe the
+            // change, and it observes it by comparing, so a toggle that lands back where
+            // it started costs no flash write at all.
+            //
+            // Signet and regtest are reachable only from the test console and are not a
+            // user preference; `network_tag` returns nothing for them and nothing is
+            // written, rather than the record being made to say the nearest thing it can.
+            if let Some(tag) = settings::network_tag(network) {
+                if !settings::update(|s| s.set_network(tag)) {
+                    log::warn!("settings: network {network:?} is in force but was not stored");
+                }
+            }
         }
 
         if dirty {
@@ -475,6 +538,17 @@ fn main() {
         }
 
         thread::sleep(Duration::from_millis(POLL_MS));
+    }
+}
+
+/// Drop every remembered passphrase, and say so once.
+///
+/// One function rather than a `clear()` at each site, on `close_flow`'s precedent: "the
+/// session forgot the passphrases and the log says why" is one obligation instead of four.
+/// Silent when it was already empty.
+fn clear_passphrases(session: &mut PassSession, why: &str) {
+    if session.clear() {
+        log::info!("wallet: session passphrases forgotten - {why}");
     }
 }
 
@@ -542,20 +616,41 @@ fn bit_words(b: Bit) -> &'static str {
     }
 }
 
-/// The lock and PIN screens' values, from what the store actually reports.
+/// The lock and PIN screens' values, from what the store actually reports, plus the one
+/// value that is NOT the store's: the device name.
 ///
-/// The nickname and the lock word are Settings values and Settings is m4b, so both are
-/// empty here and the lock screen renders its own edge state. Nothing invents a word: the
-/// anti-phishing words are derived from the eFuse key on demand (`PinShowWords`), and the
-/// lock word is user-chosen and does not exist until the user sets one (R20).
-fn lock_info(store: Option<&store::Store>) -> notyas_ui::LockInfo {
+/// # Where the device name lives, and why it is not in the store
+///
+/// It is shown on the lock screen, BEFORE a PIN is typed, so it cannot live in the sealed
+/// store: the store's contents are unreadable until an unlock, which is precisely when the
+/// name has to be on the panel. It is not a secret and does not want the store's
+/// protection - see `notyas_ui::LockInfo::device_name`, which states in full what an
+/// attacker learns from it (the name, by picking the device up) and what it therefore
+/// proves (nothing).
+///
+/// So it lives beside the network choice, in the UI's own `LockInfo`, for the life of a
+/// power-up: `answer_set_device_name` writes it there and this function carries it forward
+/// across every refresh. Since 0.2.0 it ALSO lives on flash, in the plaintext `settings`
+/// partition (`crate::settings`), which is read at boot before the first frame and written
+/// when the user taps Save. That region is deliberately outside the sealing engine: no key,
+/// no session, no `Layout`, and no `encrypted` flag, because a value the lock screen draws
+/// has to be readable before the unlock that would produce a key.
+///
+/// It is not authenticated and nothing may claim it is. An attacker with a programmer
+/// rewrites it, exactly as they can rewrite any plaintext region, and the CRC in that
+/// format catches a torn write and nothing else. That costs the user nothing, because the
+/// name was never evidence: the anti-swap evidence is the S-04 word pair a counterfeit
+/// cannot compute, and the UI is tested to make no claim on the name at all.
+///
+/// On a device flashed with a table older than 0.2.0 there is no such partition, the name
+/// is RAM-only exactly as it was before, and nothing raises an error about it.
+fn lock_info(store: Option<&store::Store>, device_name: String) -> notyas_ui::LockInfo {
     let Some(s) = store else {
-        return notyas_ui::LockInfo::default();
+        return notyas_ui::LockInfo { device_name, ..notyas_ui::LockInfo::default() };
     };
     notyas_ui::LockInfo {
         status: s.ui_status(),
-        nickname: String::new(),
-        lock_word: String::new(),
+        device_name,
         attempts_left: s.attempts_remaining(),
         wipe_after: s.wipe_after(),
         // The PIN floor is the STORE's, read from the policy this device was formatted
@@ -574,6 +669,17 @@ fn lock_info(store: Option<&store::Store>) -> notyas_ui::LockInfo {
         // the store keeps that number, so there is no measured value to prefer.
         unlock_ms: notyas_ui::UNLOCK_MS_M1,
     }
+}
+
+/// Re-read the store into the UI, keeping the device name the user set.
+///
+/// One function rather than a `set_lock_info(lock_info(...))` at each of eight call sites,
+/// because the name is the one field of `LockInfo` the STORE cannot answer for: a refresh
+/// that rebuilt the struct from the store alone would silently un-name the device on the
+/// next lock, the next unlock and the next policy write.
+fn refresh_lock_info(ui: &mut Ui, store: Option<&store::Store>) {
+    let device_name = ui.lock_info().device_name.clone();
+    ui.set_lock_info(lock_info(store, device_name));
 }
 
 /// Drop the open wallet, and say so once.
@@ -621,6 +727,10 @@ fn holds_a_wallet(screen: ScreenId) -> bool {
         | ScreenId::MnemonicDisplay
         | ScreenId::PhraseEntry
         | ScreenId::PassphraseEntry
+        // The unlock screen: the wallet it names is NOT open - asking for the passphrase
+        // is what stands between the tap and opening it - and a refusal leaves the user
+        // here with nothing behind the screen.
+        | ScreenId::PassphraseUnlock
         | ScreenId::Deriving
         | ScreenId::VerifyDevice
         | ScreenId::ScanningFlash
@@ -631,7 +741,19 @@ fn holds_a_wallet(screen: ScreenId) -> bool {
         | ScreenId::KeepOrSave
         | ScreenId::NameWallet
         | ScreenId::Settings
-        | ScreenId::WipePolicy => false,
+        | ScreenId::DeviceName
+        | ScreenId::AboutDeviceWords
+        | ScreenId::WipePolicy
+        // S-47b is reached by REPLACING the wallet home, not by covering it, so the wallet
+        // is already gone from the screen by the time this is asked. `false` closes the
+        // flow on arrival, which is the answer this screen wants twice over: it needs no
+        // wallet - the erase runs against the store - and the one thing that must not
+        // outlive a record being destroyed is a live seed derived from it.
+        | ScreenId::EraseWallet
+        // S-49 is opened from Settings, which is not behind a wallet, and it never
+        // touches one: the only thing it can destroy is on a card, and nothing secret is
+        // ever written to a card.
+        | ScreenId::FormatCard => false,
     }
 }
 
@@ -643,14 +765,20 @@ fn holds_a_wallet(screen: ScreenId) -> bool {
 /// refusal rather than dropped, because a screen waiting for an answer that never comes
 /// is a hung screen.
 ///
-/// Four of the m4b requests are answered with a refusal in EVERY build of this image, and
-/// each arm states its own reason at the site. Erasing a record, committing a wipe policy
-/// and removing the PIN are operations `Store` publishes no route to at all; changing the
-/// PIN is one it does publish, and the new PIN that route needs is a value no screen in
-/// this UI can hand over. Three of the four re-seal or destroy sealed records, which is
-/// why "close enough" is not one of the options: a refusal is a screen the user can read
-/// and act on, while a handler that quietly did nothing would teach the UI - and through
-/// it the user - that a destructive operation had succeeded.
+/// Three of the m4b requests are answered with a refusal in EVERY build of this image, and
+/// each arm states its own reason at the site. Committing a wipe policy and removing the
+/// PIN are operations `Store` publishes no route to at all; changing the PIN is one it does
+/// publish, and the new PIN that route needs is a value no screen in this UI can hand over.
+/// All three re-seal or destroy sealed records, which is why "close enough" is not one of
+/// the options: a refusal is a screen the user can read and act on, while a handler that
+/// quietly did nothing would teach the UI - and through it the user - that a destructive
+/// operation had succeeded.
+///
+/// Erasing a wallet record used to be the fourth, and it was the one the rule was written
+/// about: the refusal reached the user as a wallet list that looked unchanged, which after a
+/// typed-name consent reads as a dead button. `Store::clear_payload` and
+/// `crate::wallet::erase` are what closed it, and `UiRequest::DeleteWallet` is now answered
+/// on both of the channels that request documents.
 ///
 /// A device's FIRST PIN is the exception and arrives here through `UiRequest::SetPin`,
 /// collected by S-06/S-07. That route formats a store holding nothing, so it re-seals
@@ -665,6 +793,7 @@ fn answer_request(
     ui: &mut Ui,
     store: &mut Option<store::Store>,
     flow: &mut Flow,
+    passphrases: &mut PassSession,
     request: Option<UiRequest>,
 ) {
     let Some(request) = request else { return };
@@ -678,9 +807,12 @@ fn answer_request(
                 None => log::error!("store: device words unavailable: no store"),
             }
         }
-        UiRequest::UnsealWallet(pin) => answer_unseal(ui, store, flow, pin),
+        UiRequest::UnsealWallet(pin) => answer_unseal(ui, store, flow, passphrases, pin),
         UiRequest::SetPin(pin) => answer_set_pin(ui, store, pin),
-        UiRequest::PersistWallet(draft) => answer_persist_wallet(ui, store, &draft),
+        UiRequest::SetDeviceName(name) => answer_set_device_name(ui, store, name),
+        UiRequest::PersistWallet(draft) => {
+            answer_persist_wallet(ui, store, passphrases, &draft)
+        }
         UiRequest::LockSession => {
             if let Some(s) = store.as_mut() {
                 s.lock();
@@ -688,7 +820,9 @@ fn answer_request(
             // The wallet is part of the session, so it goes with it. `Ui::lock` below
             // clears the screens; this clears what was behind them.
             close_flow(flow, "the device was locked");
-            ui.set_lock_info(lock_info(store.as_ref()));
+            // What "remember for the session" means, at the moment the session ends.
+            clear_passphrases(passphrases, "the device was locked");
+            refresh_lock_info(ui, store.as_ref());
             ui.lock();
             log::info!("store: locked on request - session dropped");
         }
@@ -721,21 +855,57 @@ fn answer_request(
                 });
             }
         }
-        UiRequest::OpenWallet(slot) => answer_open_wallet(ui, store, flow, slot),
+        UiRequest::OpenWallet(slot) => {
+            answer_open_wallet(ui, store, flow, passphrases, slot)
+        }
+        UiRequest::UnlockWallet { slot, passphrase } => {
+            answer_unlock_wallet(ui, store, flow, passphrases, slot, passphrase.as_str())
+        }
+        UiRequest::StorePassphrase(slot) => {
+            answer_passphrase_storage(ui, store, passphrases, slot, true)
+        }
+        UiRequest::ForgetPassphrase(slot) => {
+            answer_passphrase_storage(ui, store, passphrases, slot, false)
+        }
         UiRequest::DeleteWallet(slot) => {
-            // REFUSED, and the refusal is the whole handler. Erasing a record is
-            // `Vault::clear`, and `Store` publishes no method that reaches it: every sealed
-            // path this file can call WRITES a record. Writing an empty one into the slot
-            // would leave something that reads as occupied and decodes as nothing - a
-            // corrupted wallet wearing a delete's clothes - so nothing is written at all.
+            // The objection the previous build refused on was sound and is unchanged: no
+            // EMPTY record is ever written into a payload slot, because an empty record
+            // reads as occupied and decodes as nothing. What was wrong was the conclusion.
+            // `Vault::clear` does not write an empty record - under
+            // `Occupancy::AlwaysFilled` it writes device FILLER, sealed under the key
+            // ladder's filler root, which `slot_state` tries FIRST and answers `Empty` to.
+            // `Store::clear_payload` is the route to it, and `crate::wallet::erase` owns
+            // the order the two record classes go in and the read-back that decides whether
+            // this may be called a delete at all.
             //
-            // The answer is the one the C4d sheet documents: the list as it now reads. It
-            // still holds this wallet, which is the evidence either way - the user watches
-            // the wallet survive instead of being told it is gone.
-            log::error!(
-                "store: delete of wallet slot {slot} refused: this build has no erase path"
-            );
+            // Answered on BOTH channels, which is the rule at the top of this function: the
+            // outcome says what happened to this wallet, and the list installed after it
+            // says what the device now holds. The list is the evidence either way - and
+            // this time it is evidence of something.
+            let name = wallet_name(ui, slot);
+            let outcome = flow::delete_wallet(ui, store, flow, slot, &name);
+            // That slot's passphrase, and only that slot's: there is no wallet left for it
+            // to open, and the next wallet stored on this device takes the lowest free
+            // slot - which is this one.
+            passphrases.forget(slot);
             install_wallets(ui, store);
+            let next = ui.wallet_deleted(match outcome {
+                Erased::Gone { registrations } => DeleteOutcome::Gone { registrations },
+                Erased::Refused(why) => DeleteOutcome::Refused(why),
+                // Both of the remaining outcomes mean the user must not walk away believing
+                // the words are safely gone OR safely intact: one destroyed part of the
+                // wallet, the other cannot say what it destroyed. Neither is a refusal, and
+                // rendering them as one would be the lie this handler exists to stop
+                // telling.
+                Erased::Partial(why) | Erased::NotGone(why) => DeleteOutcome::Damaged(why),
+            });
+            answer_request(ui, store, flow, passphrases, next);
+        }
+        UiRequest::RecoveryWords(slot) => {
+            // The last look at the words, from the one screen that offers it. No seed is
+            // derived and no passphrase is asked for: the record stores the WORDS.
+            let next = ui.recovery_words(flow::recovery_words(store, slot));
+            answer_request(ui, store, flow, passphrases, next);
         }
         UiRequest::SetWipePolicy { wipe_after } => {
             // REFUSED. Committing a policy is `Vault::set_policy`, and it takes the PIN:
@@ -757,7 +927,7 @@ fn answer_request(
                 }
             );
             ui.policy_result(false);
-            ui.set_lock_info(lock_info(store.as_ref()));
+            refresh_lock_info(ui, store.as_ref());
         }
         UiRequest::ChangePin => {
             // REFUSED. `Store::change_pin` exists and re-seals every record correctly, and
@@ -773,7 +943,7 @@ fn answer_request(
             // line and the screens are re-fed the state as it still stands. Nothing is left
             // waiting for an answer.
             log::error!("store: change PIN refused: this build cannot collect a new PIN");
-            ui.set_lock_info(lock_info(store.as_ref()));
+            refresh_lock_info(ui, store.as_ref());
         }
         UiRequest::RemovePin => {
             // REFUSED, and this is the one refusal that reaches the user in words:
@@ -788,6 +958,18 @@ fn answer_request(
                 "store: PIN removal refused: it destroys every sealed record and needs a \
                  fresh PIN confirmation this build cannot ask for"
             );
+            // When this IS implemented, it must also call `settings::clear()`. The consent
+            // sheet promises that "all settings" are destroyed, and since 0.2.0 the device
+            // name and the network choice outlive a power cycle - leaving the previous
+            // owner's name on the lock screen of a device that now stores nothing would
+            // make that sheet a false statement. Nothing is destroyed on this path today,
+            // settings included, so the promise is not broken by the refusal.
+            //
+            // It must also clear `passphrases`: a session passphrase for a record that no
+            // longer exists opens nothing, and holding a secret with nothing to open is
+            // the definition of a secret nobody is watching. Nothing is destroyed on this
+            // path today, so nothing is stale, and the clear belongs with the destruction
+            // rather than beside a refusal.
             ui.pin_removed(false);
         }
         // The card, the transaction and the registry. Every one of these needs a wallet
@@ -796,35 +978,85 @@ fn answer_request(
         // follow-up request, which goes straight back through this function.
         UiRequest::ListCard { dir, filter } => {
             let next = flow::list_card(ui, dir, filter);
-            answer_request(ui, store, flow, next);
+            answer_request(ui, store, flow, passphrases, next);
         }
         UiRequest::LoadPsbt { dir, name } => {
             let next = flow::load_psbt(ui, flow, dir, name);
-            answer_request(ui, store, flow, next);
+            answer_request(ui, store, flow, passphrases, next);
         }
         UiRequest::SignTx => {
             let next = flow::sign_tx(ui, flow);
-            answer_request(ui, store, flow, next);
+            answer_request(ui, store, flow, passphrases, next);
         }
         UiRequest::WriteSigned { overwrite } => {
             let next = flow::write_signed(ui, flow, overwrite);
-            answer_request(ui, store, flow, next);
+            answer_request(ui, store, flow, passphrases, next);
         }
         UiRequest::DiscardSigned => {
             let next = flow::discard_signed(ui, flow);
-            answer_request(ui, store, flow, next);
+            answer_request(ui, store, flow, passphrases, next);
+        }
+        UiRequest::ShowSignedQr => {
+            use notyas_ui::{QrData, SignedQrOutcome};
+            let Some(delivery) = flow.signed_ref() else {
+                ui.show_signed_qr(SignedQrOutcome::Refused(String::from(
+                    "This device is not holding a signed transaction.",
+                )));
+                return;
+            };
+            let bytes = delivery.signed_bytes();
+            match notyas_core::psbt_qr::frame(bytes) {
+                Ok(b64) => {
+                    let rows = match notyas_core::qr::matrix(&b64) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            ui.show_signed_qr(SignedQrOutcome::Refused(String::from(
+                                "QR encoding failed.",
+                            )));
+                            return;
+                        }
+                    };
+                    match QrData::from_matrix(&rows) {
+                        Some(qr) => {
+                            ui.show_signed_qr(SignedQrOutcome::Symbol(qr));
+                        }
+                        None => {
+                            ui.show_signed_qr(SignedQrOutcome::Refused(String::from(
+                                "The signed transaction does not fit a single QR symbol.",
+                            )));
+                        }
+                    }
+                }
+                Err(e) => {
+                    ui.show_signed_qr(SignedQrOutcome::Refused(format!("{e:?}")));
+                }
+            }
         }
         UiRequest::ImportRegistration { dir, name } => {
             let next = flow::import_registration(ui, flow, dir, name);
-            answer_request(ui, store, flow, next);
+            answer_request(ui, store, flow, passphrases, next);
         }
         UiRequest::ApproveRegistration { replace } => {
             let next = flow::approve_registration(ui, store, flow, replace);
-            answer_request(ui, store, flow, next);
+            answer_request(ui, store, flow, passphrases, next);
+        }
+        // The two card-repair requests. Neither needs a wallet, a store or a session, so
+        // both could have been answered inline here - they go through `flow` anyway
+        // because every request that reaches `crate::sd` is answered in one place, and
+        // because the format is the one operation in this image that destroys data the
+        // device does not own: it belongs where a reader looking for "what can this
+        // firmware erase" will find it beside the others.
+        UiRequest::ProbeCardFormat => {
+            let next = flow::probe_card_format(ui);
+            answer_request(ui, store, flow, passphrases, next);
+        }
+        UiRequest::FormatCard { partition, card } => {
+            let next = flow::format_card(ui, partition, card);
+            answer_request(ui, store, flow, passphrases, next);
         }
         UiRequest::DeleteRegistration(slot) => {
             let next = flow::delete_registration(ui, store, flow, slot);
-            answer_request(ui, store, flow, next);
+            answer_request(ui, store, flow, passphrases, next);
         }
     }
 }
@@ -856,7 +1088,12 @@ fn answer_request(
 /// is the half that is reachable - it is the one route by which the slot a wallet actually
 /// landed in gets to the screens, and without it the wallet home keeps rendering the slot
 /// the create flow guessed.
-fn answer_persist_wallet(ui: &mut Ui, store: &mut Option<store::Store>, draft: &WalletDraft) {
+fn answer_persist_wallet(
+    ui: &mut Ui,
+    store: &mut Option<store::Store>,
+    passphrases: &mut PassSession,
+    draft: &WalletDraft,
+) {
     let sealed = match store.as_mut() {
         Some(s) => match seal_draft(s, draft) {
             Ok(slot) => {
@@ -883,7 +1120,39 @@ fn answer_persist_wallet(ui: &mut Ui, store: &mut Option<store::Store>, draft: &
     if sealed {
         install_wallets(ui, store);
     }
-    ui.set_lock_info(lock_info(store.as_ref()));
+    // The one place a passphrase enters the session other than an unlock. Without it the
+    // user would type a passphrase, approve a fingerprint, name the wallet, save it - and
+    // be asked for the passphrase again the moment they tapped the row they had just
+    // created. The slot is looked up from the list that was just installed, because the
+    // save chose it and the request never carried one.
+    if let (true, Some(passphrase)) = (sealed, draft.passphrase.as_ref()) {
+        match slot_of_fingerprint(ui, &draft.fingerprint) {
+            Some(slot) => passphrases.remember(slot, passphrase.as_str()),
+            // Not fatal: the wallet is saved and opening it will ask. Worth a line,
+            // because the only way here is a list that does not hold a wallet this device
+            // has just sealed.
+            None => log::error!(
+                "wallet: {} was sealed and is not in the list, so its passphrase was not \
+                 remembered for this session",
+                draft.fingerprint
+            ),
+        }
+    }
+    // Store the passphrase in the sealed record if the user asked for it at
+    // creation time. The session already holds it; this makes it persistent.
+    if sealed && draft.store_passphrase {
+        if let Some(slot) = slot_of_fingerprint(ui, &draft.fingerprint) {
+            if let Some(s) = store.as_mut() {
+                if let Some(passphrase) = draft.passphrase.as_ref() {
+                    match crate::wallet::Wallet::set_passphrase_storage(s, slot, Some(passphrase.as_str())) {
+                        Ok(state) => log::info!("wallet: slot {} passphrase stored at creation: {:?}", slot, state),
+                        Err(e) => log::error!("wallet: slot {} passphrase storage at creation failed: {:?}", slot, e),
+                    }
+                }
+            }
+        }
+    }
+    refresh_lock_info(ui, store.as_ref());
 }
 
 /// The draft as a sealed record, in the slot the store picked.
@@ -897,22 +1166,58 @@ fn seal_draft(s: &mut store::Store, draft: &WalletDraft) -> Result<u8, WalletErr
         draft.network,
         draft.phrase(),
         &draft.fingerprint,
-        draft.passphrase,
+        // `Applied` and never `Stored`: a save states that this wallet HAS a passphrase,
+        // and storing one is a decision the owner makes afterwards, per wallet, on a
+        // screen that says what it costs (Q22 amendment, 2026-08-19). The default is that
+        // the passphrase is written nowhere, and this is the line that keeps it.
+        match draft.passphrase {
+            Some(_) => StoredPassphrase::Applied,
+            None => StoredPassphrase::None,
+        },
     )?;
     Wallet::seal_into_free_slot(s, &new)
+}
+
+/// Which slot holds the wallet with this fingerprint, according to the list the embedder
+/// has just installed.
+///
+/// The save picks the slot ([`Wallet::seal_into_free_slot`]) and neither the request nor
+/// the answer carries it, so the list is the only channel by which the number reaches this
+/// side again. Matched on the FINGERPRINT rather than on the name, because a fingerprint is
+/// an identity and a name is a label the user may reuse.
+fn slot_of_fingerprint(ui: &Ui, fingerprint: &str) -> Option<u8> {
+    ui.wallets().iter().find_map(|row| match row {
+        WalletRow::Wallet(w) if w.fingerprint == fingerprint => Some(w.slot),
+        _ => None,
+    })
 }
 
 /// Open the wallet in `slot`, hand the screens its identity AND its derivation, and keep the
 /// seed for as long as the panel is inside that wallet.
 ///
-/// # The passphrase
+/// # The passphrase, and the four cases
 ///
-/// Empty, and not as a placeholder for one this function should have been given:
-/// [`UiRequest::OpenWallet`] names a slot and nothing else, and a BIP-39 passphrase is never
-/// stored (Q22), so a wallet sealed with one cannot be opened from this request at all. That
-/// case arrives here as a refusal naming both fingerprints, which is exactly right - opening
-/// under the wrong passphrase silently derives a DIFFERENT wallet, and the fingerprint in the
-/// record exists so that `Wallet::open` refuses instead of doing that.
+/// [`UiRequest::OpenWallet`] names a slot and nothing else, deliberately: the common case is
+/// a wallet this device can open with what it already has, and that case must stay one tap
+/// with no prompt. So this function DECIDES which passphrase to try, from the record and
+/// from the session, before it spends the seconds that trying one costs:
+///
+/// 1. **The record stores one** (the per-wallet opt-in of the Q22 amendment). Open with it.
+/// 2. **The session is holding one for this slot.** Open with it. A mismatch here means the
+///    cache is stale rather than that the user typed anything wrong, so it falls through to
+///    case 4 and NOTHING is shown about it.
+/// 3. **The record says no passphrase was applied.** Open with the empty one, as every
+///    build before this did. A format 1 record makes no statement, so it takes this path
+///    too - and when the empty passphrase does not open it, the mismatch is discarded and
+///    case 4 follows. The fingerprint those words derive with an EMPTY passphrase is never
+///    shown to anyone: it is an existence proof for a hidden wallet.
+/// 4. **Otherwise, ask.** [`Ui::wallet_needs_passphrase`] puts the entry screen up, and the
+///    answer comes back through [`UiRequest::UnlockWallet`] into `answer_unlock_wallet`.
+///
+/// Case 3 falling through to case 4 is the whole of the owner's `tz` bug, fixed with no
+/// migration: that wallet is a format 1 record whose words derive `73c5da0a` with no
+/// passphrase and whose record was sealed for `b4e3f5ed`, and every build before this one
+/// answered the tap with a refusal band naming both.
 ///
 /// # Why the derivation is produced here
 ///
@@ -942,7 +1247,13 @@ fn seal_draft(s: &mut store::Store, draft: &WalletDraft) -> Result<u8, WalletErr
 /// A refused open produces NO screen change, so a handler that only logged would leave a row
 /// that does nothing when it is tapped. [`Ui::wallet_open_failed`] is the other half: the
 /// list stays where it is and says why it stayed.
-fn answer_open_wallet(ui: &mut Ui, store: &mut Option<store::Store>, flow: &mut Flow, slot: u8) {
+fn answer_open_wallet(
+    ui: &mut Ui,
+    store: &mut Option<store::Store>,
+    flow: &mut Flow,
+    passphrases: &mut PassSession,
+    slot: u8,
+) {
     let Some(s) = store.as_mut() else {
         log::error!("wallet: slot {slot} not opened: no store");
         ui.wallet_open_failed(String::from(
@@ -950,26 +1261,61 @@ fn answer_open_wallet(ui: &mut Ui, store: &mut Option<store::Store>, flow: &mut 
         ));
         return;
     };
-    let t0 = Instant::now();
-    let wallet = match Wallet::open(s, slot, "") {
-        Ok(w) => w,
-        // The mismatch is the one refusal worth its own sentence, because the sentence the
-        // error type writes is about a passphrase the user was never asked for. Both
-        // fingerprints are public, and both readings of them are stated: this record was
-        // sealed under a passphrase, or it did not come back from flash intact.
-        Err(WalletError::PassphraseMismatch { expected, derived }) => {
-            log::error!(
-                "wallet: slot {slot} did not open with no passphrase: its words derive \
-                 wallet {derived} and the record was sealed for {expected} - either it has \
-                 a BIP-39 passphrase, which this request carries no way to ask for, or the \
-                 record did not come back intact"
-            );
-            ui.wallet_open_failed(format!(
-                "Wallet slot {slot} did not open. Its words derive wallet {derived} and the \
-                 record was sealed for {expected}, so either it has a BIP-39 passphrase - \
-                 which this release cannot ask for - or the record did not come back intact."
-            ));
+    // One AEAD open and a parse, no PBKDF2: what the record says about itself, which is
+    // what decides which passphrase this open should try.
+    let facts = match Wallet::inspect(s, slot) {
+        Ok(f) => f,
+        Err(e) => {
+            log::error!("wallet: slot {slot} not opened: {e}");
+            ui.wallet_open_failed(format!("Wallet slot {slot} did not open: {e}."));
             return;
+        }
+    };
+    // The order is the case list in this function's docs. A `Zeroizing` copy, because the
+    // value may come out of the record and must not be left in a plain buffer.
+    let mut attempt = Zeroizing::new(String::new());
+    let (source, applied) = match (facts.passphrase.stored(), passphrases.get(slot)) {
+        (Some(stored), _) => {
+            attempt.push_str(stored);
+            ("the record", true)
+        }
+        (None, Some(cached)) => {
+            attempt.push_str(cached);
+            ("this session", true)
+        }
+        (None, None) => ("no passphrase", facts.passphrase.applied()),
+    };
+    // The record says a passphrase was applied and nothing here holds it: ask, without
+    // spending a derivation that can only fail.
+    if applied && attempt.is_empty() {
+        log::info!("wallet: slot {slot} needs its passphrase - asking");
+        ui.wallet_needs_passphrase(slot, facts.label);
+        return;
+    }
+    log::info!("wallet: slot {slot} opening with the passphrase from {source}");
+    let cached = source == "this session";
+    match open_and_install(ui, store, flow, slot, &attempt) {
+        Ok(()) => {
+            // Remembered for the session whatever it came from, so that turning storage
+            // ON later stores a value this device has just proven opens this wallet.
+            passphrases.remember(slot, &attempt);
+        }
+        // The one refusal this path never SHOWS. Two ways to get here and both end in the
+        // same place: the empty passphrase did not open a record that carries no flag (the
+        // format 1 case), or a cached passphrase went stale. In neither case did the user
+        // type anything, and in neither case may the derived fingerprint reach the panel -
+        // it is what these words derive with the passphrase this device guessed, and for
+        // the empty guess that is an existence proof for a hidden wallet.
+        Err(WalletError::PassphraseMismatch { expected, derived }) => {
+            log::info!(
+                "wallet: slot {slot} did not open with the passphrase from {source} \
+                 (record {expected}) - asking for one"
+            );
+            let _ = derived;
+            if cached {
+                passphrases.forget(slot);
+            }
+            ui.wallet_needs_passphrase(slot, facts.label);
         }
         // Everything else is already a sentence: a locked store, a slot that holds nothing,
         // a record that will not decode. Printing it is what turns "it did not open" into
@@ -977,9 +1323,159 @@ fn answer_open_wallet(ui: &mut Ui, store: &mut Option<store::Store>, flow: &mut 
         Err(e) => {
             log::error!("wallet: slot {slot} not opened: {e}");
             ui.wallet_open_failed(format!("Wallet slot {slot} did not open: {e}."));
+        }
+    }
+}
+
+/// The passphrase the user typed on the unlock screen, answering
+/// [`UiRequest::UnlockWallet`].
+///
+/// The screen is showing its Busy frame and the embedder has already published it
+/// (`publish_before_answering`), so the seconds this spends are seconds the panel is
+/// explaining. BOTH answers leave that frame, which is what makes the phase impossible to
+/// wedge: a success replaces the screen with the wallet home, and a refusal re-renders it
+/// with what happened.
+///
+/// The refusal is the one place this device states two fingerprints to a user, and it may:
+/// both are public, the record's is in the record, and the derived one is a function of
+/// what they just typed. What it must never state is the fingerprint these words derive
+/// with an EMPTY passphrase, and no path here can produce that - this function only ever
+/// derives with what the user typed, and the screen refuses to raise a request with an
+/// empty field.
+fn answer_unlock_wallet(
+    ui: &mut Ui,
+    store: &mut Option<store::Store>,
+    flow: &mut Flow,
+    passphrases: &mut PassSession,
+    slot: u8,
+    passphrase: &str,
+) {
+    if store.is_none() {
+        log::error!("wallet: slot {slot} not opened: no store");
+        ui.wallet_open_failed(String::from(
+            "This device could not reach its sealed storage, so no wallet was opened.",
+        ));
+        return;
+    }
+    match open_and_install(ui, store, flow, slot, passphrase) {
+        Ok(()) => {
+            // The whole of "remember for the session": typed once, good until the device
+            // locks. It has just been proven to derive this wallet.
+            passphrases.remember(slot, passphrase);
+            log::info!("wallet: slot {slot} opened with a typed passphrase");
+        }
+        Err(WalletError::PassphraseMismatch { expected, derived }) => {
+            // Public values, and the screen says the same two. The device does not say
+            // "wrong": every passphrase opens some wallet, and this one opens that one.
+            log::info!(
+                "wallet: slot {slot} not opened: that passphrase opens wallet {derived} and \
+                 this record is wallet {expected}"
+            );
+            ui.passphrase_refused(PassphraseRefusal {
+                expected: expected.to_string(),
+                derived: derived.to_string(),
+            });
+        }
+        Err(e) => {
+            log::error!("wallet: slot {slot} not opened: {e}");
+            // The unlock screen's failure channel is the refusal; a storage fault is not a
+            // refusal and must not be worded as one. It goes to the list's band, which
+            // means leaving the Busy frame the only other way there is - and the panel must
+            // not be left on it, so the list is where this lands.
+            ui.wallet_open_failed(format!("Wallet slot {slot} did not open: {e}."));
+        }
+    }
+}
+
+/// Whether this device remembers the passphrase of the wallet in `slot`, answering
+/// [`UiRequest::StorePassphrase`] and [`UiRequest::ForgetPassphrase`].
+///
+/// # Where the stored value comes from
+///
+/// From the SESSION, never from a screen: the toggle is offered only on a wallet that is
+/// open, and a wallet that is open is one this device has just derived a seed for, so the
+/// passphrase in hand is byte-for-byte the one that produced the fingerprint in the record.
+/// Asking the user to type it again would mean storing something nothing had checked.
+///
+/// # The answer is the read-back
+///
+/// [`Wallet::set_passphrase_storage`] re-seals, reads the record back and reports what the
+/// FLASH says. This hands that on unchanged. A toggle that rendered the intent would be a
+/// switch that lies about the one thing it controls.
+fn answer_passphrase_storage(
+    ui: &mut Ui,
+    store: &mut Option<store::Store>,
+    passphrases: &mut PassSession,
+    slot: u8,
+    remember: bool,
+) {
+    let Some(s) = store.as_mut() else {
+        log::error!("wallet: slot {slot} passphrase storage not changed: no store");
+        ui.passphrase_storage_result(StorageOutcome::Refused(String::from(
+            "This device could not reach its sealed storage, so nothing was changed.",
+        )));
+        return;
+    };
+    // Copied out of the session before the store is borrowed for the write, and dropped
+    // with this function. Zeroizing: it is the passphrase.
+    let held = passphrases.get(slot).map(|p| {
+        let mut buf = Zeroizing::new(String::with_capacity(p.len()));
+        buf.push_str(p);
+        buf
+    });
+    let remember = match (remember, &held) {
+        (true, Some(p)) => Some(p.as_str()),
+        // Nothing to store. Reachable only from a screen that offered the control on a
+        // wallet this session is not holding a passphrase for, which the wallet home does
+        // not do - and stated rather than assumed, because storing an empty passphrase
+        // would seal a record claiming a wallet nobody has.
+        (true, None) => {
+            log::error!(
+                "wallet: slot {slot} passphrase not stored: this session is not holding one"
+            );
+            ui.passphrase_storage_result(StorageOutcome::Refused(String::from(
+                "This device is not holding this wallet's passphrase, so it stored \
+                 nothing. Open the wallet with it and try again.",
+            )));
             return;
         }
+        (false, _) => None,
     };
+    match Wallet::set_passphrase_storage(s, slot, remember) {
+        Ok(state) => {
+            log::info!("wallet: slot {slot} record re-sealed, passphrase now {state:?}");
+            // The session KEEPS what it knows when storage is turned off: this session
+            // still has the passphrase, so re-opening or re-enabling inside it is
+            // lossless. The lock that ends the session is what makes the forgetting real,
+            // and the sheet says so.
+            ui.passphrase_storage_result(StorageOutcome::Now(state));
+        }
+        Err(e) => {
+            log::error!("wallet: slot {slot} passphrase storage not changed: {e}");
+            ui.passphrase_storage_result(StorageOutcome::Refused(format!(
+                "Nothing was changed: {e}."
+            )));
+        }
+    }
+}
+
+/// Open the wallet in `slot` with `passphrase`, install it in the flow and hand the screens
+/// its identity and its derivation.
+///
+/// The half of an open that is the same whichever of the four cases got here, so that the
+/// registry re-proof, the derivation and the two `Ui` answers exist once. Failure is the
+/// caller's to word, because only the caller knows whether the passphrase came from the
+/// user, from the record or from a guess this device made.
+fn open_and_install(
+    ui: &mut Ui,
+    store: &mut Option<store::Store>,
+    flow: &mut Flow,
+    slot: u8,
+    passphrase: &str,
+) -> Result<(), WalletError> {
+    let s = store.as_mut().ok_or(WalletError::Locked)?;
+    let t0 = Instant::now();
+    let wallet = Wallet::open(s, slot, passphrase)?;
     // A registration that did not survive its re-proof is a multisig wallet the user
     // believes is registered and is not, and the next PSBT from it would be refused with
     // nothing to say why. One line each, at error level.
@@ -1009,10 +1505,10 @@ fn answer_open_wallet(ui: &mut Ui, store: &mut Option<store::Store>, flow: &mut 
     );
 
     let t1 = Instant::now();
-    // The empty passphrase again, and it is the SAME one the record was just opened with.
-    // `Wallet::derivation` re-checks that what it produced belongs to the wallet in hand and
-    // returns nothing rather than a report about somebody else's keys.
-    let report = wallet.derivation("", notyas_ui::ADDRESS_ROWS);
+    // The SAME passphrase the record was just opened with, whichever of the four cases
+    // supplied it. `Wallet::derivation` re-checks that what it produced belongs to the
+    // wallet in hand and returns nothing rather than a report about somebody else's keys.
+    let report = wallet.derivation(passphrase, notyas_ui::ADDRESS_ROWS);
     match &report {
         Some(_) => log::info!(
             "wallet: slot {slot} derivation ready in {} ms",
@@ -1029,10 +1525,12 @@ fn answer_open_wallet(ui: &mut Ui, store: &mut Option<store::Store>, flow: &mut 
 
     let info = WalletInfo {
         registrations: claimed,
-        // MEASURED. This open used an empty passphrase and the seed it produced derived the
-        // fingerprint the record was sealed with, so this wallet has no passphrase. One that
-        // does never reaches this line.
-        passphrase: false,
+        // MEASURED, and by the one thing that can measure it: what it took to open this
+        // record. `Wallet::open` decides it from the record's own flag AND from whether
+        // the passphrase that worked was empty, which is the only evidence a format 1
+        // record offers. The hardcoded `false` this replaces is why a wallet that
+        // demonstrably had a passphrase rendered "passphrase off" on its own identity card.
+        passphrase: wallet.passphrase(),
         ..stored_wallet(
             wallet.slot(),
             String::from(wallet.label()),
@@ -1051,12 +1549,37 @@ fn answer_open_wallet(ui: &mut Ui, store: &mut Option<store::Store>, flow: &mut 
         Some(report) => ui.wallet_opened_with_keys(info, report),
         None => ui.wallet_opened(info),
     }
+    // Every answer in this vocabulary is DROPPED unless the screen that asked is still
+    // showing, and a dropped open leaves this function holding a seed no screen can use.
+    // The screen-change watcher in the main loop cannot catch it - the screen did not
+    // change, which is precisely why the answer was dropped - so it is caught here, at the
+    // one site that can see both halves.
+    if !holds_a_wallet(ui.screen()) {
+        close_flow(flow, "the panel was not on this wallet when it opened");
+    }
+    Ok(())
 }
 
 /// Read the wallet list out of the store and install it.
 ///
 /// The answer to every request whose contract is "the list as it now reads", and the only
 /// way the list can ever be filled: the UI owns no flash and computes no part of this.
+/// What to call the wallet in slot `slot` in a sentence.
+///
+/// Read out of the list the embedder itself installed, so the name in a delete's answer is
+/// the same string the consent sheet asked the user to type. A slot with no row - a record
+/// this session cannot read, or a list that has moved on - falls back to the slot number,
+/// which is a true name for it and the one the C4d sheet uses in the same situation.
+fn wallet_name(ui: &Ui, slot: u8) -> String {
+    ui.wallets()
+        .iter()
+        .find_map(|row| match row {
+            WalletRow::Wallet(w) if w.slot == slot => Some(w.name.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| format!("wallet slot {slot}"))
+}
+
 fn install_wallets(ui: &mut Ui, store: &mut Option<store::Store>) {
     let Some(s) = store.as_mut().filter(|s| s.is_unlocked()) else {
         // No session, no list - and nothing installed rather than an empty one. An empty
@@ -1136,11 +1659,16 @@ fn wallet_row(s: &mut store::Store, slot: u8, body: &mut [u8], registrations: u8
     };
     WalletRow::Wallet(WalletInfo {
         registrations,
-        // Unknown here, and false is the closest the vocabulary comes to saying so: the
-        // record carries no passphrase flag and cannot (Q22 keeps the passphrase out of
-        // storage entirely). It becomes a measured fact at open, where an empty passphrase
-        // either reproduces the record's fingerprint or does not. No row renders it.
-        passphrase: false,
+        // What the RECORD says, which is all a list can know: reading a slot costs one AEAD
+        // open and deciding this properly costs a PBKDF2 run per wallet. A format 2 record
+        // states it; a format 1 record makes no statement and reads as `None` here. No row
+        // renders this field - the identity card does, and by then the wallet is open and
+        // the value is measured (see `open_and_install`).
+        passphrase: match &record.passphrase {
+            StoredPassphrase::Stored(_) => PassphraseState::Stored,
+            StoredPassphrase::Applied => PassphraseState::Required,
+            StoredPassphrase::None => PassphraseState::None,
+        },
         ..stored_wallet(slot, record.label, record.fingerprint.to_string(), record.network)
     })
 }
@@ -1236,7 +1764,7 @@ fn stored_wallet(slot: u8, name: String, fingerprint: String, network: Network) 
         network,
         registrations: 0,
         stored: true,
-        passphrase: false,
+        passphrase: PassphraseState::None,
     }
 }
 
@@ -1249,6 +1777,55 @@ fn stored_wallet(slot: u8, name: String, fingerprint: String, network: Network) 
 /// and "was this device ever formatted by a test build" is a question an owner and an
 /// auditor can both reasonably ask of a signer holding real money.
 const STORE_LABEL: &[u8] = b"notyas";
+
+/// Install the device name, answering [`UiRequest::SetDeviceName`].
+///
+/// Public and unsealed, and since 0.2.0 written to the plaintext `settings` partition -
+/// see `lock_info` for why it cannot live in the sealed store. It is logged like the
+/// network setting, which is the other public device-wide preference: both are safe to log
+/// precisely because neither is a secret.
+///
+/// # What a failure means, and when it is one
+///
+/// The name is in force either way, because the UI holds it for the life of the power-up.
+/// A failure is therefore only ever about SURVIVING a power cycle, and the user is told
+/// about it only when there is something to tell: if this device's table has no settings
+/// partition - every device flashed before the 0.2.0 table - the name behaves exactly as it
+/// did before the region existed, which is a known limitation of that table and not a fault
+/// the user can act on. If the region IS there and the write failed, that is a real fault
+/// and `device_name_result(false)` puts it on the panel, because a write that quietly did
+/// nothing would leave the user believing their device is named.
+///
+/// Answered on BOTH channels the request documents, like every other write: the verdict,
+/// so the screen can navigate or state a refusal, and the lock info as it now reads, so
+/// the lock screen behind it draws the name that is actually in force.
+fn answer_set_device_name(ui: &mut Ui, store: &mut Option<store::Store>, name: String) {
+    if name.is_empty() {
+        log::info!("device name: cleared");
+    } else {
+        log::info!("device name: set to {name:?}");
+    }
+    let mut record = settings::load();
+    let saved = match record.set_device_name(&name) {
+        Ok(()) => {
+            let stored = settings::save(&record);
+            if !stored {
+                log::warn!("settings: device name is in force but was not stored");
+            }
+            // An absent region is not a fault to report: see the doc comment.
+            stored || !settings::available()
+        }
+        Err(e) => {
+            // The screen's rules are strictly tighter than the format's - same alphabet,
+            // trimmed, and a width limit far below 256 bytes - so this arm is a
+            // disagreement between the two and a defect on our side, not a user error.
+            log::error!("settings: device name refused by the format: {e:?}");
+            false
+        }
+    };
+    ui.device_name_result(saved);
+    refresh_lock_info(ui, store.as_ref());
+}
 
 /// Install the FIRST PIN, answering [`UiRequest::SetPin`], and report the verdict.
 ///
@@ -1290,13 +1867,14 @@ fn answer_set_pin(ui: &mut Ui, store: &mut Option<store::Store>, pin: notyas_ui:
     }
     // Whether it worked or not: status, attempt budget and the PIN floor all move on a
     // format, and every screen downstream reads them from here.
-    ui.set_lock_info(lock_info(store.as_ref()));
+    refresh_lock_info(ui, store.as_ref());
 }
 
 fn answer_unseal(
     ui: &mut Ui,
     store: &mut Option<store::Store>,
     flow: &mut Flow,
+    passphrases: &mut PassSession,
     pin: notyas_ui::Secret,
 ) {
     let Some(s) = store.as_mut() else {
@@ -1314,16 +1892,23 @@ fn answer_unseal(
             log::info!("store: unlocked in {ms} ms");
             UnsealOutcome::Unsealed
         }
-        Err(e) => {
+        // A refusal is not automatically a wrong PIN, and the store's state after one
+        // cannot say which it was: a hardware fault and a bad guess both leave it
+        // `Formatted`. Only the typed failure knows, so it is what gets matched.
+        Err(store::UnlockFailure::NoScratch) => {
+            // The Argon2id working set was never allocated (bring-up logs that and warns
+            // that PIN operations will refuse). No guess was made, no attempt was spent,
+            // and the owner's correct PIN would fail exactly the same way - so this is
+            // the store being unreadable, not the PIN being wrong.
+            log::error!("store: unlock refused: no Argon2id working set");
+            UnsealOutcome::Unreadable
+        }
+        Err(store::UnlockFailure::Refused(e)) => {
             log::info!("store: unlock refused: {e:?}");
-            if matches!(s.state(), notyas_wallet::StoreState::Wiped { .. }) {
-                UnsealOutcome::Wiped
-            } else {
-                UnsealOutcome::WrongPin { attempts_left: s.attempts_remaining() }
-            }
+            unseal::refusal_outcome(&e)
         }
     };
-    ui.set_lock_info(lock_info(store.as_ref()));
+    refresh_lock_info(ui, store.as_ref());
     let next = ui.unseal_result(outcome);
     if matches!(outcome, UnsealOutcome::Unsealed) {
         // The wallet list is where an unlock lands, and this is the only thing that can
@@ -1332,7 +1917,7 @@ fn answer_unseal(
         // exists - reading a slot needs one.
         install_wallets(ui, store);
     }
-    answer_request(ui, store, flow, next);
+    answer_request(ui, store, flow, passphrases, next);
 }
 
 /// The UI never computes a QR (it is no_std; the encoder needs std): a tap on

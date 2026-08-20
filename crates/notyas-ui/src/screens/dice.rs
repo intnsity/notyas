@@ -23,7 +23,7 @@ use crate::canvas::{
 use crate::components::{back_rect, draw_bar, LINE, SMALL_LINE};
 use crate::layout::Rect;
 use crate::screens::mnemonic::MnemonicState;
-use crate::screens::{Ctx, Env, Outcome, Screen, State};
+use crate::screens::{Ctx, Env, Nav, Outcome, Screen, State};
 use crate::theme::*;
 use crate::{secret_buf, Region, RegionId};
 use notyas_core::bip39::{self, rolls_for_bits, MnemonicMode, WordCount, MIN_SECURE_BITS};
@@ -393,6 +393,27 @@ impl Screen for DiceState {
                 }
             }
             _ => Outcome::stay(),
+        }
+    }
+
+    /// Back over rolls the user cannot get back asks first.
+    ///
+    /// The question is whether leaving LOSES something, and it is asked of the rolls
+    /// themselves rather than of how the screen was reached: this screen is entered from
+    /// Home, pushed from the wallet list and pushed from the lock screen, and ninety rolls
+    /// are equally gone in all three. The exit modal's copy was written for exactly this
+    /// screen - "You can re-enter your dice rolls or seed words to start again" - and every
+    /// other screen in this chain that holds secret material already gates Back this way
+    /// (mnemonic, passphrase, quiz, fork).
+    ///
+    /// An empty screen has nothing to lose, so it does not ask. A confirmation over nothing
+    /// is the kind of prompt users learn to tap through, which costs the rolls the one time
+    /// it mattered.
+    fn back(&self) -> Nav {
+        if self.rolls.is_empty() {
+            Nav::Back
+        } else {
+            Nav::ConfirmExit
         }
     }
 }

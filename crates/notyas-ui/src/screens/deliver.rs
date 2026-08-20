@@ -29,6 +29,21 @@
 //! the only copy of a signed transaction, which is the defect the answer vocabulary exists
 //! to stop.
 //!
+//! # The second exit, and what makes it honest
+//!
+//! `Show as QR` opens S-39 over this screen with the transaction as one static symbol. It
+//! is offered only while `notyas_core::psbt_qr::fits` says the transaction can be drawn at
+//! a density a phone can resolve on the shortest panel this firmware ships; over that, the
+//! control is drawn DISABLED with the size and the limit beside it and is not hit-tested,
+//! because a control that refuses on tap teaches nothing and the card is the remedy for
+//! exactly that case.
+//!
+//! The symbol arrives as an ANSWER and lives in this screen's own state, so it is the one
+//! extra rendering of the transaction that exists and it dies with the screen. What the
+//! user does with it comes back as [`deliverqr::Exit`]: `My wallet has it` sets the same
+//! delivered flag a successful card write sets, because the panel cannot see the camera
+//! and a claim by the person holding the device is the only evidence that exists.
+//!
 //! Nothing here is secret: the artifact names, the counts and the digest of the reviewed
 //! bytes are all public, and the signed bytes themselves never cross into this crate.
 
@@ -40,18 +55,31 @@ use embedded_graphics::draw_target::{DrawTarget, DrawTargetExt};
 use embedded_graphics::pixelcolor::Rgb565;
 
 use crate::canvas::{
-    button, panel, text, text_centered, wrap_words, ButtonKind, BODY, HEADING, MONO_SMALL,
+    button, panel, text, text_centered, wrap_words, ButtonKind, BODY, CAPTION, HEADING,
+    MONO_SMALL,
 };
 use crate::components::{draw_bar_no_back, write_notice, write_notice_h, LINE, SMALL_LINE};
 use crate::danger::{Danger, DangerOutcome};
 use crate::layout::{Metrics, Rect, TOUCH_MIN};
+use crate::screens::deliverqr::{self, SignedQr};
 use crate::screens::review::marker;
 use crate::screens::{Answer, Ctx, Env, Nav, Outcome, Screen};
 use crate::theme::*;
-use crate::{Artifact, Region, RegionId, ScreenId, SignedTx, UiRequest, WriteOutcome};
+use crate::{
+    Artifact, Region, RegionId, ScreenId, SignedQrOutcome, SignedTx, UiRequest, WriteOutcome,
+};
+use notyas_core::psbt_qr;
 
 /// Inner padding of the status card.
 const CARD_PAD: i32 = 12;
+
+/// How much of the reviewed file's digest the card prints: 20 hex characters, 80 bits.
+///
+/// A fixed prefix rather than a fitted one, so the two panels print the SAME characters
+/// and a user tying a written file back to what was on the glass is comparing the same
+/// string whichever device they hold. 20 is what the narrower card holds with its
+/// continuation marker (629 px of 648).
+const DIGEST_CHARS: usize = 20;
 
 /// Height of the status card: what was signed, whether it is finished, the gate's own
 /// result, and the digest of the bytes that were reviewed. Four facts, four rows.
@@ -82,6 +110,13 @@ enum Band {
     /// The std side refused to destroy the signed transaction. Stated rather than swallowed:
     /// the alternative is a user who believes it is gone.
     NotDiscarded,
+    /// The user closed S-39 saying their wallet has the transaction. A delivery, recorded
+    /// because they said so and worded so that whose claim it is stays visible.
+    Claimed,
+    /// The encoder refused what this screen offered. A disagreement between the two sides
+    /// of the size rule, or bytes that are not a BIP-174 file; either way it is a defect,
+    /// and a defect that says nothing is a button that does nothing.
+    NotShown(String),
 }
 
 /// Which sheet is open, so that one `Confirmed` can mean two different things.
@@ -134,6 +169,13 @@ pub(crate) struct DeliverState {
     delivered: bool,
     ask: Option<(Ask, Danger)>,
     busy: Option<Busy>,
+    /// S-39, while it is open over this screen.
+    ///
+    /// The ONE extra rendering of the signed transaction that exists on this device, held
+    /// here rather than beside the `Ui` so that it cannot outlive the delivery it belongs
+    /// to: dropping this screen drops the symbol, and there is no path that keeps one
+    /// after the transaction it draws has been discarded.
+    qr: Option<SignedQr>,
     scroll: i32,
 }
 
@@ -147,8 +189,49 @@ impl DeliverState {
             delivered: false,
             ask: None,
             busy: None,
+            qr: None,
             scroll: 0,
         }
+    }
+
+    /// The size of the signed transaction itself, in bytes, or `None` when this build
+    /// produced no file to deliver at all.
+    ///
+    /// The FIRST artifact, by the contract [`crate::SignedTx::artifacts`] states: it is
+    /// the files a write will create, in the order the notice lists them, and the first
+    /// thing a delivery of a signed transaction writes IS the signed transaction. Anything
+    /// a later build adds is derived from those bytes and is listed after them.
+    fn qr_bytes(&self) -> Option<usize> {
+        self.signed.artifacts.first().map(|a| a.bytes as usize)
+    }
+
+    /// Why the transaction cannot go on the glass, or `None` when it can. `None` too when
+    /// there is nothing to show, because then the exit does not exist to be refused.
+    ///
+    /// The rule is asked for BY NAME from the module that owns it rather than restated
+    /// here. A screen carrying its own threshold would eventually draw a control the
+    /// encoder refuses, which is precisely the failure a disabled-with-a-reason button
+    /// exists to prevent - and the sentence carries both numbers for the same reason S-28
+    /// prints sizes: a limit without the measurement beside it is not something a user can
+    /// act on.
+    /// A MONO_SMALL machine-fact row and not `psbt_qr::Refused`'s own sentence, which is
+    /// the one thing here that was not free to choose. That sentence is 1071 px of
+    /// MONO_SMALL and wraps to two lines on both shipped panels, and the second line does
+    /// not exist to be spent: in this screen's worst state - two failed writes, so the C4
+    /// override has taken a full-width row - the 800x480 foot has 54 px of slack over the
+    /// one line of scrolling sheet S-38 guarantees. So the numbers come from the module
+    /// that owns them and the words are cut to the row's budget, which is the same trade
+    /// the status card's gate line already made. The full sentence still reaches the panel
+    /// on the path where the ENCODER refuses ([`Band::NotShown`]), where it is BODY text
+    /// in the scrolling half and has room to wrap.
+    ///
+    /// One line at every geometry for every `u32` size, by construction rather than by
+    /// hope: the fixed text is 18 characters and the two numbers are at most fourteen,
+    /// which is 558 px of the 672 the narrower body has.
+    fn qr_refusal(&self) -> Option<String> {
+        let bytes = self.qr_bytes()?;
+        (!psbt_qr::fits(bytes))
+            .then(|| format!("{bytes} bytes; QR limit {}.", psbt_qr::MAX_PSBT_BYTES))
     }
 
     /// The public name of what is on the panel right now. A request in flight is C3's Busy
@@ -175,11 +258,36 @@ impl DeliverState {
 
     /// The gate's own result, shown because a gate whose result nobody can see is a gate
     /// nobody can tell has stopped running.
+    ///
+    /// The COUNT is the claim, and the count is what this line is cut down to. The sentence
+    /// this replaced ("Every signature was re-checked against a hash recomputed from the
+    /// file: 3 of 3.") was 1343 px of MONO_SMALL drawn into 648 px of card, so what a user
+    /// actually read was half a sentence and no result at all - the mechanism it described
+    /// is in `psbt::checks`, but "3 of 3" is the part only the running device can tell you.
+    /// Shortened rather than shrunk: this row sits with the digest below it as one block of
+    /// machine facts, and mono is what makes two counts line up under each other.
     fn gate_line(&self) -> String {
         format!(
-            "Every signature was re-checked against a hash recomputed from the file: {} of {}.",
+            "Signatures re-checked: {} of {}.",
             self.signed.verified_inputs, self.signed.signed_inputs
         )
+    }
+
+    /// The digest of the bytes that were reviewed, as its leading [`DIGEST_CHARS`]
+    /// characters.
+    ///
+    /// A PREFIX by construction rather than by accident. The card draws through a clip, so
+    /// printing all 64 characters did not print all 64: it printed however many the panel
+    /// happened to hold, cut mid-character, and a different number on each panel.
+    /// [`crate::SignedTx::psbt_id`] describes this line as the digest's leading bytes and
+    /// that is now what it is. The remainder is not shown anywhere on this screen, and the
+    /// trailing marker says so rather than letting a prefix pass for a whole digest.
+    fn reviewed_line(&self) -> String {
+        let id = &self.signed.psbt_id;
+        match id.char_indices().nth(DIGEST_CHARS) {
+            Some((cut, _)) => format!("reviewed file {}...", &id[..cut]),
+            None => format!("reviewed file {id}"),
+        }
     }
 
     /// The C12 band's first half: the files this write will create, named before it runs.
@@ -240,6 +348,23 @@ impl DeliverState {
                 ),
                 DANGER,
             )),
+            // Whose claim it is stays in the sentence. This device saw a symbol drawn and
+            // a button pressed; it did not see a camera, and a band that said "delivered"
+            // flatly would be the device asserting something only the user can know.
+            Band::Claimed => Some((
+                String::from(
+                    "You said your wallet has this transaction. Nothing was written to the \
+                     card, and scanning it does not broadcast it.",
+                ),
+                SUCCESS,
+            )),
+            Band::NotShown(why) => Some((
+                format!(
+                    "The signed transaction was not shown as a QR code. {why}. It is still \
+                     signed and still held on this device."
+                ),
+                DANGER,
+            )),
         }
     }
 
@@ -289,6 +414,13 @@ pub(crate) struct Layout {
     /// newest thing the device has said is the thing visible at rest.
     band: Option<Rect>,
     card: Rect,
+    /// The sentence beside a disabled `Show as QR`, or `None` while the exit is live.
+    ///
+    /// ABOVE the C12 announcement rather than between it and the exits: invariant 2b puts
+    /// nothing between the band that names the files and the button that writes them, and
+    /// a reason for a different control is exactly the sort of thing that would drift in
+    /// there.
+    qr_note: Option<Rect>,
     /// The C12 announcement and the exits, PINNED to the foot of the body.
     ///
     /// Pinned rather than scrolled, and pinned TOGETHER, for the two reasons that decide
@@ -307,6 +439,7 @@ pub(crate) struct Layout {
 fn action_label(id: RegionId, no_card: bool) -> &'static str {
     match id {
         RegionId::DeliverSd => "Write to card",
+        RegionId::DeliverQr => "Show as QR",
         RegionId::DeliverRetry if no_card => "Check again",
         RegionId::DeliverRetry => "Retry",
         RegionId::DeliverDone => "Done",
@@ -330,6 +463,13 @@ impl Screen for DeliverState {
         // row of its own. It is the destructive answer and it is the one control here a
         // finger must not find by accident while reaching for the write.
         let mut ids = vec![RegionId::DeliverSd];
+        // The second exit sits beside the first, because they are the two ways a signed
+        // transaction leaves this device and neither is a fallback for the other. Drawn
+        // even when it is refused - see `qr_refusal` - so that a user whose transaction is
+        // too large learns the fact instead of wondering where the QR option went.
+        if self.qr_bytes().is_some() {
+            ids.push(RegionId::DeliverQr);
+        }
         if matches!(self.band, Band::NoCard | Band::Failed(_)) {
             ids.push(RegionId::DeliverRetry);
         }
@@ -345,8 +485,17 @@ impl Screen for DeliverState {
         let btn_h = m.btn.max(TOUCH_MIN);
         let notice_h = write_notice_h(body.w, &self.write_what(), NOTHING_SECRET);
         let actions_h = rows.len() as i32 * btn_h + (rows.len() as i32 - 1) * g;
-        let foot_h = notice_h + g + actions_h;
-        let notice = Rect::new(body.x, body.bottom() - foot_h, body.w, notice_h);
+        // A disabled control says why it is disabled, in the grammar the unlock screen's
+        // countdown uses: the sentence beside it IS the whole reason, and it is measured
+        // from the same wrap the painter walks so a copy change cannot outgrow its block.
+        let refusal = self.qr_refusal();
+        let note_h = refusal
+            .as_ref()
+            .map_or(0, |why| wrap_words(why, body.w, MONO_SMALL).len() as i32 * SMALL_LINE + g);
+        let foot_h = note_h + notice_h + g + actions_h;
+        let foot_y = body.bottom() - foot_h;
+        let qr_note = refusal.map(|_| Rect::new(body.x, foot_y, body.w, note_h - g));
+        let notice = Rect::new(body.x, foot_y + note_h, body.w, notice_h);
 
         let mut actions = Vec::new();
         let mut y = notice.bottom() + g;
@@ -368,7 +517,7 @@ impl Screen for DeliverState {
         let card = Rect::new(body.x, card_y, body.w, CARD_H);
         let limit = (card.bottom() - viewport.bottom()).max(0);
 
-        Layout { viewport, band, card, notice, actions, limit }
+        Layout { viewport, band, card, qr_note, notice, actions, limit }
     }
 
     fn regions(&self, ctx: &Ctx, out: &mut Vec<Region>) {
@@ -377,13 +526,28 @@ impl Screen for DeliverState {
         if self.busy.is_some() {
             return;
         }
+        // S-39 is hit-tested INSTEAD of this screen, like the sheets: it covers the panel,
+        // and a control still live underneath it would be a control nobody can see.
+        if let Some(qr) = &self.qr {
+            qr.regions(&ctx.m, out);
+            return;
+        }
         if let Some((_, sheet)) = &self.ask {
             sheet.regions(&ctx.m, out);
             return;
         }
         // No Back, ever - see the module docs. Not even in the bar: `draw_bar_no_back` is
         // what makes that visible rather than merely true.
+        //
+        // A refused `Show as QR` is DRAWN and not pushed. That is the house rule for a
+        // disabled control - the passphrase unlock screen's Try again keeps it too - and
+        // it is what stops a tap being answered by a refusal the user has already read
+        // above the button.
+        let refused = self.qr_refusal().is_some();
         for (id, rect) in self.layout(ctx).actions {
+            if id == RegionId::DeliverQr && refused {
+                continue;
+            }
             out.push(Region { id, rect });
         }
     }
@@ -392,6 +556,9 @@ impl Screen for DeliverState {
         let m = &ctx.m;
         if let Some(busy) = self.busy {
             return draw_busy(t, m, busy);
+        }
+        if let Some(qr) = &self.qr {
+            return qr.draw(t, m);
         }
         if let Some((_, sheet)) = &self.ask {
             return sheet.draw(t, m, ctx.press, ctx.hold_released);
@@ -418,7 +585,12 @@ impl Screen for DeliverState {
             let (headline, detail) = self.status();
             let ink = if self.signed.complete { SUCCESS } else { WARNING };
             text(&mut clip, &headline, inner.x, inner.y, HEADING, ink, PAPER_2)?;
-            text(&mut clip, &detail, inner.x, inner.y + LINE, BODY, INK_SECONDARY, PAPER_2)?;
+            // CAPTION, not BODY. The card's height is a constant - four facts, four rows -
+            // so this line cannot have a second one, and at BODY the finished-transaction
+            // sentence is 758 px drawn into 648 px of card on the 720x720 panel. The words
+            // are left exactly as they are: UX-SCREENS S-38 parks this sentence OPEN until
+            // the finalizer decision, and a truncation is not a reason to pre-empt that.
+            text(&mut clip, &detail, inner.x, inner.y + LINE, CAPTION, INK_SECONDARY, PAPER_2)?;
             text(
                 &mut clip,
                 &self.gate_line(),
@@ -430,7 +602,7 @@ impl Screen for DeliverState {
             )?;
             text(
                 &mut clip,
-                &format!("reviewed file {}", self.signed.psbt_id),
+                &self.reviewed_line(),
                 inner.x,
                 inner.y + 2 * LINE + SMALL_LINE,
                 MONO_SMALL,
@@ -446,6 +618,14 @@ impl Screen for DeliverState {
             marker(t, "more below", l.viewport, false)?;
         }
 
+        let refusal = self.qr_refusal();
+        if let (Some(r), Some(why)) = (l.qr_note, &refusal) {
+            let mut y = r.y;
+            for line in wrap_words(why, r.w, MONO_SMALL) {
+                text(t, &line, r.x, y, MONO_SMALL, INK_MUTED, PAPER_1)?;
+                y += SMALL_LINE;
+            }
+        }
         write_notice(t, l.notice, &self.write_what(), NOTHING_SECRET)?;
         let no_card = matches!(self.band, Band::NoCard);
         for (id, rect) in &l.actions {
@@ -453,6 +633,10 @@ impl Screen for DeliverState {
                 RegionId::DeliverSd => ButtonKind::Primary,
                 RegionId::DeliverDone => ButtonKind::Primary,
                 RegionId::DeliverDiscard => ButtonKind::Danger,
+                // Drawn disabled rather than dropped, with the reason above it. The exit
+                // stays where a user who has been told about it expects to find it, and
+                // `regions` does not hit-test it.
+                RegionId::DeliverQr if refusal.is_some() => ButtonKind::Disabled,
                 _ => ButtonKind::Secondary,
             };
             // Pixel-clipped to its own key for the reason the keyboard's control row is:
@@ -466,6 +650,25 @@ impl Screen for DeliverState {
 
     fn activate(&mut self, id: RegionId, _env: &mut Env) -> Outcome {
         if self.busy.is_some() {
+            return Outcome::stay();
+        }
+        // S-39's two answers, which are answers THIS screen records. The symbol is dropped
+        // either way: it is the one extra rendering of the transaction that exists, and
+        // there is no state in which it should outlive the surface that showed it.
+        if let Some(qr) = &self.qr {
+            match qr.activate(id) {
+                deliverqr::Exit::Stay => {}
+                // The panel cannot see the camera, so this claim is the user's and the
+                // band says whose it is. It ungates `Done` exactly as a card write does,
+                // because "delivered" is the same fact however it was reached.
+                deliverqr::Exit::Delivered => {
+                    self.qr = None;
+                    self.delivered = true;
+                    self.scroll = 0;
+                    self.band = Band::Claimed;
+                }
+                deliverqr::Exit::Closed => self.qr = None,
+            }
             return Outcome::stay();
         }
         if let Some((ask, sheet)) = &mut self.ask {
@@ -497,6 +700,14 @@ impl Screen for DeliverState {
             RegionId::DeliverSd | RegionId::DeliverRetry => {
                 self.busy = Some(Busy::Writing);
                 Outcome::ask(UiRequest::WriteSigned { overwrite: false })
+            }
+            // No Busy frame, unlike every other request this screen raises: framing a
+            // 1.4 kB base64 string and laying out a version-31 symbol is arithmetic, not
+            // a flash write, and it lands well inside C3's 150 ms. The guard repeats the
+            // size rule `regions` applied, so a tap dispatched from a stale region list
+            // cannot reach the encoder with a transaction it refuses.
+            RegionId::DeliverQr if self.qr_bytes().is_some() && self.qr_refusal().is_none() => {
+                Outcome::ask(UiRequest::ShowSignedQr)
             }
             // Leaving is a REQUEST, not a screen change: the bytes are on the std side, so
             // the only way this screen can know they are gone is to be told.
@@ -533,6 +744,19 @@ impl Screen for DeliverState {
                 }
                 Outcome::stay()
             }
+            Answer::SignedQr(SignedQrOutcome::Symbol(data)) => {
+                self.qr = Some(SignedQr::new(data));
+                Outcome::stay()
+            }
+            // The encoder disagreed with the rule this screen offered the exit under, or
+            // was handed something that is not a BIP-174 file. Either is a defect on this
+            // device; what must not happen is that it arrives as a button that did
+            // nothing, so it arrives as a band instead.
+            Answer::SignedQr(SignedQrOutcome::Refused(why)) => {
+                self.scroll = 0;
+                self.band = Band::NotShown(why);
+                Outcome::stay()
+            }
             Answer::Discard(gone) => {
                 self.busy = None;
                 if gone {
@@ -555,7 +779,7 @@ impl Screen for DeliverState {
     }
 
     fn scroll_mut(&mut self) -> Option<&mut i32> {
-        if self.busy.is_some() || self.ask.is_some() {
+        if self.busy.is_some() || self.ask.is_some() || self.qr.is_some() {
             return None;
         }
         Some(&mut self.scroll)
@@ -593,8 +817,14 @@ fn draw_busy<D: DrawTarget<Color = Rgb565>>(
 
 #[cfg(test)]
 mod tests {
+    use crate::UnlockGate;
     use super::*;
     use crate::screens::testing::{rows_are_clear_on, Fixture, GEOMETRIES};
+    use notyas_fonts::Atlas;
+
+    pub(super) fn signed_state() -> DeliverState {
+        DeliverState::new(signed(true))
+    }
 
     fn signed(complete: bool) -> SignedTx {
         SignedTx {
@@ -620,13 +850,23 @@ mod tests {
 
     fn drive(s: &mut DeliverState, f: &Fixture, id: RegionId) -> Option<UiRequest> {
         let mut net = crate::Network::Bitcoin;
-        let mut e = Env { network: &mut net, lock: &f.lock, wallets: &f.wallets };
+        let mut e = Env {
+            network: &mut net,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
         s.activate(id, &mut e).request
     }
 
     fn answer(s: &mut DeliverState, f: &Fixture, a: Answer) -> Nav {
         let mut net = crate::Network::Bitcoin;
-        let mut e = Env { network: &mut net, lock: &f.lock, wallets: &f.wallets };
+        let mut e = Env {
+            network: &mut net,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
         s.answered(a, &mut e).nav
     }
 
@@ -852,6 +1092,67 @@ mod tests {
         }
     }
 
+    /// The status card holds every line it draws, at both shipped geometries.
+    ///
+    /// The card draws through the viewport clip, so a line wider than the card is truncated
+    /// INSIDE the panel: the bounds gate cannot see it and only a person holding the device
+    /// can. That is how the gate line shipped 619 px too wide on the 800x480 panel, and how
+    /// the digest line shipped cut mid-character on both. Measured against the WIDEST value
+    /// each line can carry - a four-digit input count and a full 64-character digest - so a
+    /// larger transaction cannot quietly bring it back.
+    #[test]
+    fn the_status_card_holds_every_line_it_draws() {
+        let mut bad: Vec<String> = Vec::new();
+        for (w, h) in GEOMETRIES {
+            let f = Fixture::new(w, h);
+            for complete in [false, true] {
+                let mut tx = signed(complete);
+                tx.signed_inputs = 1000;
+                tx.verified_inputs = 1000;
+                tx.signable_inputs = 1000;
+                let s = DeliverState::new(tx);
+                let inner = s.layout(&f.ctx()).card.inset(CARD_PAD);
+                let (headline, detail) = s.status();
+                let gate = s.gate_line();
+                let reviewed = s.reviewed_line();
+                let rows: [(&str, &'static Atlas); 4] = [
+                    (&headline, HEADING),
+                    (&detail, CAPTION),
+                    (&gate, MONO_SMALL),
+                    (&reviewed, MONO_SMALL),
+                ];
+                for (line, font) in rows {
+                    let lw = font.text_width(line) as i32;
+                    if lw > inner.w {
+                        bad.push(format!(
+                            "{w}x{h} complete={complete}: {line:?} needs {lw} px in {} px",
+                            inner.w
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "the status card truncates its own copy:\n  {}",
+            bad.join("\n  ")
+        );
+    }
+
+    /// The digest line is a deliberate prefix, the same on every panel, and says that it
+    /// is one. A digest silently cut by a clip reads as a whole digest.
+    #[test]
+    fn the_digest_line_is_a_marked_prefix() {
+        let s = DeliverState::new(signed(true));
+        let line = s.reviewed_line();
+        assert_eq!(line, "reviewed file 0123456789abcdef0123...");
+        assert!(s.signed.psbt_id.starts_with("0123456789abcdef0123"), "prefix of the digest");
+        // A digest shorter than the cap is printed whole, with no marker claiming more.
+        let mut short = signed(true);
+        short.psbt_id = String::from("00");
+        assert_eq!(DeliverState::new(short).reviewed_line(), "reviewed file 00");
+    }
+
     fn label_of(id: RegionId) -> &'static str {
         action_label(id, false)
     }
@@ -886,6 +1187,7 @@ mod tests {
         assert!(detail.contains("still needs another cosigner"), "{detail}");
         assert!(!detail.contains("ready to broadcast"));
         assert!(s.gate_line().contains("1 of 1"), "the gate result is always shown");
+        assert!(s.gate_line().starts_with("Signatures re-checked"), "{}", s.gate_line());
     }
 
     /// Every string this screen can put on the panel is ASCII and free of reassurance.

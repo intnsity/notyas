@@ -100,6 +100,10 @@ pub mod psbt;
 /// keeps the default on.
 #[cfg(feature = "qr")]
 pub mod qr;
+/// The signed transaction as a QR payload (0.2.0): the one string a camera is meant to
+/// read, and the panel-derived limit on how large a transaction may be to have one. Not
+/// feature-gated - it produces a string, and `qr` is what turns a string into modules.
+pub mod psbt_qr;
 pub mod report;
 pub mod seedqr;
 // Signing (0.2.0-m2). The module's own docs are the summary; an outer doc comment here

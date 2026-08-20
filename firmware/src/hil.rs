@@ -127,7 +127,7 @@ use crate::signing::{self, Refusal, Review, ReviewedFee};
 use crate::store::{
     self, soft_hmac, FixedKeyMac, PartitionFlash, PsramScratch, Store, SECTOR_BYTES,
 };
-use crate::wallet::record::{SealedWallet, WalletRecord};
+use crate::wallet::record::{SealedWallet, StoredPassphrase, WalletRecord};
 use crate::wallet::{NewWallet, Wallet};
 
 /// UART the ESP-IDF console already owns (`CONFIG_ESP_CONSOLE_UART_NUM`).
@@ -365,6 +365,8 @@ fn dispatch(line: &str, store: &mut Option<Store>, bench: &mut Bench) {
                 "seal" => seal(s, rest),
                 "read" => read(s, rest),
                 "changepin" => change_pin(s, rest),
+                "setpolicy" => set_policy_cmd(s, rest),
+                "removepin" => remove_pin_cmd(s, rest),
                 "wipe" => wipe(s),
                 "scan" => scan(s),
                 "dump" => dump(s, rest),
@@ -411,7 +413,7 @@ fn echo_prefix(cmd: &str, rest: &str) -> Option<usize> {
         // PINs, sanctioned by this module's header: a bench operator has no other way to
         // type one, [`pin_soak`] prints them by design, and a PIN is worth nothing away from
         // the store it unlocks.
-        "format" | "unlock" | "changepin" | "pinsoak" => all,
+        "format" | "unlock" | "changepin" | "pinsoak" | "setpolicy" | "removepin" => all,
 
         // A payload this console wrote itself, which [`read`] hands back in full on purpose.
         // Withholding it on the way in while printing it on the way out would be theatre.
@@ -486,6 +488,8 @@ fn help() {
         "seal <slot> <text>     - seal text into a payload slot",
         "read <slot>            - read a payload slot back; a wallet record is described, never printed",
         "changepin <newpin>     - re-seal every record under a new PIN",
+        "setpolicy <pin> <n|off> - set the wrong-PIN wipe threshold (n=3..=25, off=disable)",
+        "removepin <pin>         - destroy every sealed record and unformat the store",
         "wipe                   - destroy every record and bump the epoch",
         "scan                   - per-sector non-0xff byte counts, both regions",
         "dump <r> <off> <len>   - raw hex, r = rec | led",
@@ -712,6 +716,42 @@ fn change_pin(s: &mut Store, rest: &str) {
     match s.change_pin(&pin) {
         Ok(ms) => log::info!("HIL|changepin|ok=true|ms={ms}"),
         Err(e) => log::error!("HIL|changepin|ok=false|err={e}"),
+    }
+}
+
+fn set_policy_cmd(s: &mut Store, rest: &str) {
+    let mut parts = rest.splitn(2, ' ');
+    let pin_str = parts.next().unwrap_or("");
+    let policy_str = parts.next().unwrap_or("").trim();
+    let Some(pin) = parse_pin(pin_str) else { return };
+    let wipe_after = if policy_str == "off" || policy_str == "0" {
+        0u8
+    } else {
+        match policy_str.parse::<u8>() {
+            Ok(n) if (3..=25).contains(&n) => n,
+            Ok(_) => {
+                log::error!("HIL|setpolicy|err=bad_range|hint=3..=25 or off");
+                return;
+            }
+            Err(_) => {
+                log::error!("HIL|setpolicy|err=bad_arg|hint=<n>|off");
+                return;
+            }
+        }
+    };
+    match s.set_policy(&pin, wipe_after) {
+        Ok(p) => log::info!("HIL|setpolicy|ok=true|wipe_after={}",
+            if p.wipe_after == 0 { "off".to_string() } else { p.wipe_after.to_string() }),
+        Err(e) => log::error!("HIL|setpolicy|ok=false|err={e}"),
+    }
+}
+
+fn remove_pin_cmd(s: &mut Store, rest: &str) {
+    let Some(pin) = parse_pin(rest) else { return };
+    match s.remove_pin(&pin) {
+        Ok(d) => log::info!("HIL|removepin|ok=true|wallets={}|registrations={}|identities={}",
+            d.wallets, d.registrations, d.identities),
+        Err(e) => log::error!("HIL|removepin|ok=false|err={e}"),
     }
 }
 
@@ -1386,7 +1426,15 @@ fn wallet_persist(store: &mut Option<Store>, bench: &Bench, args: &str) {
         log::error!("HIL|wallet|err=store_unavailable");
         return;
     };
-    let new = match SealedWallet::confirmed(label, bench.network, phrase, fingerprint, false) {
+    // The console persists a passphrase-free wallet: it has no way to collect one, and a
+    // record that claimed a passphrase it does not hold could never be reopened.
+    let new = match SealedWallet::confirmed(
+        label,
+        bench.network,
+        phrase,
+        fingerprint,
+        StoredPassphrase::None,
+    ) {
         Ok(new) => new,
         Err(e) => {
             log::error!("HIL|wallet|persist=false|variant={e:?}|reason={e}");

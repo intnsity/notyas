@@ -28,8 +28,12 @@ use crate::screens::setpin::SetPinState;
 use crate::screens::wallet::WalletState;
 use crate::screens::{Ctx, Env, Nav, Outcome, Screen, State};
 use crate::theme::*;
-use crate::{BackupState, Region, RegionId, WalletInfo, WalletKind, PASSPHRASE_NOT_STORED};
+use crate::{
+    BackupState, PassphraseState, Region, RegionId, WalletInfo, WalletKind,
+    PASSPHRASE_NOT_STORED,
+};
 use notyas_core::report::Report;
+use zeroize::Zeroizing;
 
 pub(crate) struct ForkState {
     /// The finished wallet. `Option` because the stateless leg MOVES it into the wallet
@@ -51,17 +55,42 @@ pub(crate) struct ForkState {
     /// buys with the line they would have taken is two cards that fit their own titles at
     /// 800x480.
     fingerprint: String,
-    passphrase: bool,
+    /// The passphrase this wallet was derived with, empty where none was applied.
+    ///
+    /// Two things read it and neither renders it: the layout, which puts the Q22 block on
+    /// the screen exactly when there is a passphrase, and the naming screen this one hands
+    /// it to. `Zeroizing`, and named in the parent module's drop-equals-zeroize check.
+    pub(super) passphrase: Zeroizing<String>,
 }
 
 impl ForkState {
-    pub fn new(report: Report, backup: BackupState) -> ForkState {
+    pub fn new(
+        report: Report,
+        backup: BackupState,
+        passphrase: Zeroizing<String>,
+    ) -> ForkState {
+        // The two must agree: `has_passphrase` is the report's own record of whether the
+        // pipeline was given one, and this screen decides what to warn about from the
+        // value it is holding. A disagreement means a caller lost the passphrase between
+        // the derivation and here, and the wallet would be saved with a flag that does not
+        // describe it.
+        debug_assert_eq!(
+            report.has_passphrase,
+            !passphrase.is_empty(),
+            "the carried passphrase and the derivation must describe the same wallet"
+        );
         ForkState {
             backup,
             fingerprint: report.root_fingerprint.clone(),
-            passphrase: report.has_passphrase,
+            passphrase,
             report: Some(report),
         }
+    }
+
+    /// Whether a passphrase is part of this wallet. The layout's question, and the only
+    /// thing this screen asks of the value it carries.
+    fn has_passphrase(&self) -> bool {
+        !self.passphrase.is_empty()
     }
 
     /// The bar title. The fingerprint rides it rather than the body, exactly as S-19's
@@ -83,7 +112,9 @@ impl ForkState {
     /// `None` only where the report has already been moved out down the stateless leg, which
     /// is a screen that can no longer offer either choice.
     pub fn save_target(&self) -> Option<State> {
-        self.report.as_ref().map(|r| State::Name(NameState::new(r)))
+        self.report
+            .as_ref()
+            .map(|r| State::Name(NameState::new(r, &self.passphrase)))
     }
 }
 
@@ -165,7 +196,7 @@ impl Screen for ForkState {
         // On a passphrase wallet the footer would be the WEAKER of two claims about the
         // same thing - the seed words are the backup, except that here they are not
         // enough - so the accurate one takes the space rather than sitting under it.
-        let (warning, footer) = if self.passphrase {
+        let (warning, footer) = if self.has_passphrase() {
             let lines: i32 = PASSPHRASE_NOT_STORED
                 .iter()
                 .map(|p| wrap_words(p, body.w, BODY).len() as i32)
@@ -276,7 +307,13 @@ impl Screen for ForkState {
                         network: *env.network,
                         registrations: 0,
                         stored: false,
-                        passphrase: report.has_passphrase,
+                        // A session wallet is never `Stored`: nothing is written, so
+                        // there is nothing for a device to remember it in.
+                        passphrase: if report.has_passphrase {
+                            PassphraseState::Required
+                        } else {
+                            PassphraseState::None
+                        },
                     };
                     Outcome::enter(State::Wallet(WalletState::new(info, Some(report))))
                 }
@@ -328,7 +365,7 @@ mod tests {
             report: None,
             backup: BackupState::Verified(String::new()),
             fingerprint: String::from("a1b2c3d4"),
-            passphrase,
+            passphrase: Zeroizing::new(String::from(if passphrase { "x" } else { "" })),
         }
     }
 

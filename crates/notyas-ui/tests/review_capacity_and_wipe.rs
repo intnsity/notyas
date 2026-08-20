@@ -20,6 +20,7 @@ use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::Pixel;
 
 use notyas_ui::{
+    PassphraseState,
     BackupState, LockInfo, Network, Region, RegionId, ScreenId, StoreStatus, TouchEvent, Ui,
     VerifyInfo, WalletInfo, WalletKind, WalletRow, WALLET_SLOTS,
 };
@@ -91,8 +92,7 @@ fn locked(w: u32, h: u32) -> Ui {
     let mut ui = Ui::new(w, h);
     ui.set_lock_info(LockInfo {
         status: StoreStatus::Locked,
-        nickname: String::from("kitchen-desk"),
-        lock_word: String::from("anvil"),
+        device_name: String::from("kitchen-desk"),
         attempts_left: Some(9),
         wipe_after: Some(15),
         ..LockInfo::default()
@@ -115,7 +115,7 @@ fn sample_wallets(n: u8) -> Vec<WalletRow> {
                 network: Network::Bitcoin,
                 registrations: 0,
                 stored: true,
-                passphrase: false,
+                passphrase: PassphraseState::None,
             })
         })
         .collect()
