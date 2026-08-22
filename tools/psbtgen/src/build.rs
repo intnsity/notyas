@@ -3,30 +3,36 @@
 
 //! What the device is handed, and why every field of it is there.
 //!
-//! Two cases, because two are what clause 2's loop needs to be believed: a single-sig
-//! P2WPKH spend, which is the plain path, and a 2-of-3 P2WSH `sortedmulti` spend, which is
-//! the path where a wrong answer costs somebody else's money too.
+//! Three cases the device signs. Two of them are what clause 2's loop needs to be believed:
+//! a single-sig P2WPKH spend, which is the plain path, and a 2-of-3 P2WSH `sortedmulti`
+//! spend, which is the path where a wrong answer costs somebody else's money too. The third
+//! is CORPUS.md P3, the single-sig P2PKH spend: ratified in 0.2.0, unbuildable until the
+//! engine grew a legacy arm, and the only case here whose signature commits to no amount at
+//! all.
 //!
-//! Both are built to satisfy the engine rather than to slip past it. In particular both
-//! carry the FULL previous transaction on every input they spend, not just a `witness_utxo`.
-//! That is ARCHITECTURE.md check 2, and the reason it is not negotiable is a demonstrated
-//! attack: a coordinator that states an input's amount without proving it can make a
-//! hardware wallet display a 1 BTC fee as a 0.001 BTC fee, because a segwit v0 signature
-//! commits to the amount the SIGNER was told, not to the amount the chain holds. The
-//! engine refuses to sign beside an unproven amount, so a fixture that worked around that
-//! rule - by omitting the previous transaction and letting the file assert the value -
-//! would be testing a device that had been asked an easier question than the real one.
+//! All three are built to satisfy the engine rather than to slip past it. In particular
+//! each carries the FULL previous transaction on every input it spends, not just a
+//! `witness_utxo`. That is ARCHITECTURE.md check 2, and the reason it is not negotiable is
+//! a demonstrated attack: a coordinator that states an input's amount without proving it
+//! can make a hardware wallet display a 1 BTC fee as a 0.001 BTC fee, because a segwit v0
+//! signature commits to the amount the SIGNER was told, not to the amount the chain holds.
+//! The legacy case needs the proof more than either segwit one, since its signature commits
+//! to no amount at all. The engine refuses to sign beside an unproven amount, so a fixture
+//! that worked around that rule - by omitting the previous transaction and letting the file
+//! assert the value - would be testing a device that had been asked an easier question than
+//! the real one.
 //!
 //! Everything below is a pure function of the harness wallet, so `generate` and `verify`
 //! rebuild bit-identical cases from the same constants. That is what lets the verifier say
 //! "this is the transaction I asked for, and here is the fee you were promised" instead of
 //! only "these signatures verify".
 //!
-//! [`refused_cases`] is the other half of the set: three shapes 0.2.1's signer cannot sign
-//! at all, built the same way and to the same standard, because the shape that needs a
+//! [`refused_cases`] is the other half of the set: two shapes this signer will not sign at
+//! all, built the same way and to the same standard, because the shape that needs a
 //! hardware refusal to prove itself is exactly as real a fixture as the shape that needs a
-//! hardware signature. `cases` and its two names above are untouched by that addition - a
-//! generated case that signs today must go on signing exactly as it always has.
+//! hardware signature. The two lists say what the DEVICE must do with a file, so a case
+//! moves between them only when that answer changes - which is what happened to `legacy`
+//! when the legacy signer landed, and what must never happen to `legacy-claimed` beside it.
 
 use notyas_core::bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint};
 use notyas_core::bitcoin::hashes::{sha256, Hash as _};
@@ -139,9 +145,17 @@ impl Case {
     }
 }
 
-/// Both cases, in the order the card lists them.
+/// Every case the device signs, in the order the card lists them.
+///
+/// `legacy` is appended rather than inserted: the two segwit cases are addressed by
+/// position from `selftest` and `negatives`, which build their mutations out of the
+/// single-sig file and the multisig one.
 pub fn cases(harness: &Harness) -> Vec<Case> {
-    vec![singlesig_case(harness), multisig_case(harness)]
+    vec![
+        singlesig_case(harness),
+        multisig_case(harness),
+        legacy_case(harness),
+    ]
 }
 
 /// A P2WPKH spend of one output the device's BIP-84 account owns.
@@ -298,36 +312,35 @@ const P2SH_OURS_PREVOUT: Amount = Amount::from_sat(80_000);
 const P2SH_OURS_PAYMENT: Amount = Amount::from_sat(50_000);
 const P2SH_OURS_FEE: Amount = Amount::from_sat(900);
 
-/// Three cases 0.2.1's signer cannot sign, built to the same standard [`cases`] is: a full
-/// previous transaction, a genuine ownership claim at a sane path, nothing this fixture
-/// invented to make the refusal easier to provoke than the real one is. Kept apart from
-/// [`cases`] rather than folded into it because they answer a different question -
-/// `verify::Coordinator` only ever judges a file that reached a signature, and none of
-/// these three do; `selftest` asserts each against `notyas_core::psbt::inspect` directly.
-/// See that module for the expected `CheckFailure` and why it is the same one, check 4, for
-/// all three.
+/// The two cases this signer refuses, built to the same standard [`cases`] is: a full
+/// previous transaction where the shape allows one, a genuine ownership claim at a sane
+/// path, nothing this fixture invented to make the refusal easier to provoke than the real
+/// one is. Kept apart from [`cases`] rather than folded into it because they answer a
+/// different question - `verify::Coordinator` only ever judges a file that reached a
+/// signature, and neither of these does; `selftest` asserts each against
+/// `notyas_core::psbt::inspect` directly.
+///
+/// The two are refused by DIFFERENT rules, and that is the point of having both:
+/// `legacy-claimed` by the amount rule, which is the rule the pair exists to pin, and
+/// `p2sh-ours` by check 4, which is the shape no ownership claim can rescue. See `selftest`
+/// for the exact `CheckFailure` each is held to.
 pub fn refused_cases(harness: &Harness) -> Vec<Case> {
-    vec![
-        legacy_case(harness),
-        legacy_claimed_case(harness),
-        p2sh_ours_case(harness),
-    ]
+    vec![legacy_claimed_case(harness), p2sh_ours_case(harness)]
 }
 
 /// CORPUS.md P3: a single-sig P2PKH spend, "legacy sighash path, and the strictest
-/// `non_witness_utxo` requirement". Ratified in 0.2.0 and never built, because until this
-/// wave nothing in this tree could prove what a device does with it: the signer has no
-/// legacy arm (0.2.1), so this file is REFUSED today, at ARCHITECTURE.md check 4
-/// (`ClaimedInputNotSingleSig`) - the same check, wearing the same wrong name (R-04,
-/// "cosigner keys do not match") that this wave's docs and its refusal-code lift are about.
-/// It stays that way until legacy signing lands; see `selftest`, which pins today's verdict
-/// so that change is a test going from red to green rather than a claim nobody checked.
+/// `non_witness_utxo` requirement". Ratified in 0.2.0 and unbuildable until the engine grew
+/// a legacy arm, because until then nothing in this tree could prove what a device does
+/// with it: the file was refused at ARCHITECTURE.md check 4 (`ClaimedInputNotSingleSig`),
+/// wearing the wrong name (R-04, "cosigner keys do not match") this wave's docs are about.
+/// It signs now, and `selftest` judges it exactly as it judges every other signing case -
+/// which means an ACCEPTED verdict requires that a signature was checked here against a
+/// digest recomputed here, not merely that nothing refused.
 ///
 /// The input is unconditionally proven: CORPUS.md's "strictest requirement" is that a
 /// legacy input never relies on `witness_utxo` alone, because a pre-segwit signature
 /// commits to no amount at all and so has no BIP-143 digest to make a false one costly. See
-/// `legacy_claimed_case`, the negative that pulls this proof and must stay refused even
-/// after legacy signing lands.
+/// `legacy_claimed_case`, the negative that pulls this proof and stays refused.
 fn legacy_case(harness: &Harness) -> Case {
     let device = &harness.device;
     let input_script = device.legacy_script(Keychain::Receive, 0);
@@ -373,8 +386,8 @@ fn legacy_case(harness: &Harness) -> Case {
         name: "legacy",
         file: "legacy.psbt",
         what: "spend 90000 sat from the BIP-44 account, 58200 sat back to change - \
-               CORPUS.md P3; REFUSED today (check 4, no legacy signer yet), must ACCEPT \
-               once legacy signing lands",
+               CORPUS.md P3, the legacy sighash path; the device SIGNS this one, and its \
+               previous transaction is what makes the amount it commits to knowable",
         psbt,
         payment: LEGACY_PAYMENT,
         change,
@@ -391,13 +404,15 @@ fn legacy_case(harness: &Harness) -> Case {
 /// experiment CORPUS.md's "strictest requirement" is about: the only variable that moves is
 /// how the amount is known.
 ///
-/// REFUSED today for the same reason `legacy_case` is (check 4 fires before amount proof is
-/// even considered, for a single-input file). The two diverge only once legacy signing
-/// lands: `legacy_case` starts signing, and this file MUST NOT, because a legacy signature
-/// commits to no amount at all and so can never take the single-input exemption
-/// ARCHITECTURE.md check 2 grants a segwit v0 spend of one input. Pinning that divergence in
-/// advance - one file that starts passing, an adjacent one built to fail the same way
-/// forever - is this case's whole purpose.
+/// The divergence this case was built for has arrived: `legacy_case` signs, and this file
+/// is REFUSED - by the amount rule itself, ARCHITECTURE.md check 2, as
+/// `UnprovenAmountBesideOurSignature`. A legacy signature commits to no amount at all, so
+/// this input can never take the single-input exemption check 2 grants a segwit v0 spend of
+/// one input, and `binds_the_whole_transaction` denies it on the script kind before the
+/// sighash whitelist is consulted at all. One file that starts passing beside an adjacent
+/// one built to fail forever, each pinned by name in `selftest`, is this case's whole
+/// purpose - and until P2PKH was admitted to that whitelist it was refused at check 7
+/// instead, which is a pin that measures nothing about amounts.
 fn legacy_claimed_case(harness: &Harness) -> Case {
     let legacy = legacy_case(harness);
     let mut psbt = legacy.psbt.clone();
@@ -410,8 +425,8 @@ fn legacy_claimed_case(harness: &Harness) -> Case {
         name: "legacy-claimed",
         file: "legacy-claimed.psbt",
         what: "the 'legacy' spend with its previous transaction stripped and a witness_utxo \
-               claim left in its place - REFUSED today, and must STAY refused after legacy \
-               signing lands: a legacy signature proves no amount",
+               claim left in its place - REFUSED, and must stay refused now that legacy \
+               signing has landed: a legacy signature proves no amount",
         psbt,
         ..legacy
     }
@@ -424,13 +439,14 @@ fn legacy_claimed_case(harness: &Harness) -> Case {
 /// refusal from the opposite direction - an artificial non-P2WPKH redeem script supplied,
 /// rather than none supplied at all - but bound to the HARNESS wallet's key, so it is a file
 /// a human can actually load: a device holding this seed proves the claim, the same way it
-/// would for `legacy`.
+/// does for `legacy`.
 ///
-/// REFUSED today at the same check 4 as `legacy` (a P2SH with no redeem script classifies as
-/// `ScriptKind::P2sh`, which `is_single_sig` also answers no for). Unlike `legacy`, this stays
-/// refused after legacy signing lands - admitting P2PKH does nothing for a script this
-/// device can never classify at all - which is what makes it the one file on the card that
-/// can still provoke the lifted refusal band (R-26, once T4 lands) on a product image.
+/// REFUSED at check 4: a P2SH with no redeem script classifies as `ScriptKind::P2sh`, which
+/// `is_single_sig` answers no for. That is the check `legacy` used to be refused by too, and
+/// admitting P2PKH did nothing for this file - a script this device cannot classify at all
+/// is not made classifiable by a sibling shape being admitted - which is what makes it the
+/// one file on the card that can still provoke the lifted refusal band (R-26, once T4
+/// lands) on a product image.
 fn p2sh_ours_case(harness: &Harness) -> Case {
     let device = &harness.device;
     let input_script = device.nested_script(Keychain::Receive, 0);

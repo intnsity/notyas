@@ -379,6 +379,13 @@ enum Ownership {
     /// Not ours. Nothing is expected of it, and the coordinator would be getting its
     /// signature from somewhere else.
     Foreign,
+    /// A pre-segwit coin. The key hash sits in the scriptPubKey itself, with no witness
+    /// program and no redeem script in between, and the digest that authorises it commits
+    /// to no amount at all - which is why the amount an input like this pays has to be
+    /// proven by a previous transaction rather than asserted by the file.
+    P2pkh {
+        pubkey: CompressedPublicKey,
+    },
     P2wpkh {
         pubkey: CompressedPublicKey,
     },
@@ -803,17 +810,29 @@ struct Resolved {
     proven: bool,
 }
 
-/// Which script BIP-143 hashes into a segwit v0 digest for a given spend.
+/// Which digest an ECDSA signature on a given spend has to verify against, and everything
+/// that goes into computing it.
 ///
-/// Two constructors rather than a bare `&Script` because the two are not interchangeable
-/// and passing the wrong one produces a digest that is wrong in a way nothing else catches:
-/// every signature simply fails to verify, and the finding reads as a broken signer.
-enum ScriptCode<'s> {
-    /// The P2WPKH witness program. `p2wpkh_signature_hash` expands it into the
+/// One variant per algorithm rather than a bare `&Script`, because the scripts are not
+/// interchangeable and passing the wrong one produces a digest that is wrong in a way
+/// nothing else catches: every signature simply fails to verify, and the finding reads as a
+/// broken signer. The amount is carried by the two variants that hash one and is absent
+/// from the one that does not, so the difference between the algorithms is in the type
+/// rather than in a parameter somebody has to remember is ignored.
+enum Digest<'s> {
+    /// BIP-143 over the P2WPKH witness program. `p2wpkh_signature_hash` expands it into the
     /// `OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG` scriptCode BIP-143 specifies.
-    P2wpkh(&'s Script),
-    /// The witness script itself, which BIP-143 uses as the scriptCode for a P2WSH spend.
-    P2wsh(&'s Script),
+    P2wpkh { program: &'s Script, value: Amount },
+    /// BIP-143 over the witness script itself, which is the scriptCode for a P2WSH spend.
+    P2wsh {
+        witness_script: &'s Script,
+        value: Amount,
+    },
+    /// The pre-segwit algorithm over the subscript, and no amount: a legacy signature
+    /// commits to what it spends but never to what that input is worth. That absence is
+    /// the whole reason a legacy input's amount has to arrive proven by a previous
+    /// transaction rather than claimed by the file.
+    Legacy { subscript: &'s Script },
 }
 
 impl<'a> Verification<'a> {
@@ -1182,6 +1201,13 @@ impl<'a> Verification<'a> {
             if derived.0 == *pubkey && p2wpkh == *spk {
                 return Ownership::P2wpkh { pubkey: derived };
             }
+            // The pre-segwit shape, decided the same way and from the same seed. The
+            // COMPRESSED key is the only form this wallet locks a BIP-44 leaf to, so an
+            // uncompressed P2PKH coin of the same secret hashes to a different script and
+            // is correctly not ours.
+            if derived.0 == *pubkey && ScriptBuf::new_p2pkh(&derived.pubkey_hash()) == *spk {
+                return Ownership::P2pkh { pubkey: derived };
+            }
             if derived.0 == *pubkey
                 && spk.is_p2sh()
                 && input.redeem_script.as_ref() == Some(&p2wpkh)
@@ -1256,10 +1282,13 @@ impl<'a> Verification<'a> {
                 self.verify_schnorr(index, hash.to_byte_array(), &signature, *output_key)
             }
             _ => {
-                let (pubkey, code) = match ownership {
+                let (pubkey, digest) = match ownership {
                     Ownership::P2wpkh { pubkey } => (
                         *pubkey,
-                        ScriptCode::P2wpkh(resolved.txout.script_pubkey.as_script()),
+                        Digest::P2wpkh {
+                            program: resolved.txout.script_pubkey.as_script(),
+                            value: resolved.txout.value,
+                        },
                     ),
                     // BIP-143's scriptCode for a P2SH-wrapped P2WPKH is built from the
                     // witness program inside the redeem script, not from the P2SH
@@ -1267,11 +1296,33 @@ impl<'a> Verification<'a> {
                     Ownership::P2shP2wpkh {
                         pubkey,
                         redeem_script,
-                    } => (*pubkey, ScriptCode::P2wpkh(redeem_script.as_script())),
+                    } => (
+                        *pubkey,
+                        Digest::P2wpkh {
+                            program: redeem_script.as_script(),
+                            value: resolved.txout.value,
+                        },
+                    ),
                     Ownership::P2wsh {
                         our_key,
                         witness_script,
-                    } => (*our_key, ScriptCode::P2wsh(witness_script.as_script())),
+                    } => (
+                        *our_key,
+                        Digest::P2wsh {
+                            witness_script: witness_script.as_script(),
+                            value: resolved.txout.value,
+                        },
+                    ),
+                    // The pre-segwit algorithm hashes the SUBSCRIPT, and for a P2PKH coin
+                    // the subscript is the previous output's own scriptPubKey - the script
+                    // `classify` has just proven this key builds. There is no redeem script
+                    // and no witness program here to pick the wrong one of.
+                    Ownership::P2pkh { pubkey } => (
+                        *pubkey,
+                        Digest::Legacy {
+                            subscript: resolved.txout.script_pubkey.as_script(),
+                        },
+                    ),
                     Ownership::Foreign | Ownership::P2trKeyPath { .. } => unreachable!(),
                 };
                 let Some(signature) = signature_for(&input, pubkey) else {
@@ -1288,8 +1339,7 @@ impl<'a> Verification<'a> {
                     });
                     return false;
                 }
-                let Some(hash) = self.segwit_v0_digest(index, cache, code, resolved.txout.value)
-                else {
+                let Some(hash) = self.ecdsa_digest(index, cache, digest) else {
                     return false;
                 };
                 self.verify_ecdsa(index, hash, &signature, pubkey.0)
@@ -1297,31 +1347,44 @@ impl<'a> Verification<'a> {
         }
     }
 
-    /// The BIP-143 digest for a segwit v0 input, `SIGHASH_ALL`.
+    /// The digest an ECDSA signature on this input has to verify against, `SIGHASH_ALL`.
     ///
     /// Straight to `SighashCache`, which is what makes the independence this module claims
     /// real rather than stated: the device recomputes its digest through
     /// `notyas_core::sign`, and a defect shared between the signer and a verifier that
     /// called the same function would cancel out and be reported as agreement. `bitcoin`'s
-    /// own implementation of BIP-143 section "Specification" is the second opinion.
+    /// own implementations - of BIP-143 section "Specification", and of the pre-segwit
+    /// algorithm - are the second opinion, and every argument handed to them here comes
+    /// from this module's own reading of the file rather than from anything notyas-core
+    /// concluded about it.
     ///
     /// `SIGHASH_ALL` is not a parameter. Every caller has already refused anything else -
     /// only `SIGHASH_ALL` commits to every output - so taking the type from the signature
-    /// here would let the file choose the digest it is checked against.
-    fn segwit_v0_digest(
+    /// here would let the file choose the digest it is checked against. That matters more
+    /// for the legacy algorithm than for BIP-143, because `SIGHASH_SINGLE` over an input
+    /// with no matching output is where the pre-segwit index-overflow bug lives.
+    fn ecdsa_digest(
         &mut self,
         index: usize,
         cache: &mut SighashCache<&Transaction>,
-        code: ScriptCode<'_>,
-        value: Amount,
+        digest: Digest<'_>,
     ) -> Option<[u8; 32]> {
-        let hash = match code {
-            ScriptCode::P2wpkh(program) => cache
+        let hash = match digest {
+            Digest::P2wpkh { program, value } => cache
                 .p2wpkh_signature_hash(index, program, value, EcdsaSighashType::All)
                 .map(|h| h.to_byte_array())
                 .map_err(|e| e.to_string()),
-            ScriptCode::P2wsh(witness_script) => cache
+            Digest::P2wsh {
+                witness_script,
+                value,
+            } => cache
                 .p2wsh_signature_hash(index, witness_script, value, EcdsaSighashType::All)
+                .map(|h| h.to_byte_array())
+                .map_err(|e| e.to_string()),
+            // `to_u32` because the pre-segwit algorithm hashes four bytes of the flag while
+            // only the low one is ever appended to a signature.
+            Digest::Legacy { subscript } => cache
+                .legacy_signature_hash(index, subscript, EcdsaSighashType::All.to_u32())
                 .map(|h| h.to_byte_array())
                 .map_err(|e| e.to_string()),
         };
@@ -1394,11 +1457,13 @@ impl<'a> Verification<'a> {
             });
             return Vec::new();
         };
-        let Some(digest) = self.segwit_v0_digest(
+        let Some(digest) = self.ecdsa_digest(
             index,
             cache,
-            ScriptCode::P2wsh(witness_script.as_script()),
-            resolved.txout.value,
+            Digest::P2wsh {
+                witness_script: witness_script.as_script(),
+                value: resolved.txout.value,
+            },
         ) else {
             return Vec::new();
         };
@@ -1497,6 +1562,20 @@ impl<'a> Verification<'a> {
         let input = self.psbt.inputs[index].clone();
         let witness = match ownership {
             Ownership::Foreign => return,
+            // The one shape here with no witness, so it finishes and returns rather than
+            // falling through to the assignment below: `<signature> <pubkey>` is the whole
+            // of the input script that P2PKH's OP_DUP OP_HASH160 ... OP_CHECKSIG runs
+            // against, and an empty witness left behind as well would serialise the
+            // transaction under BIP-141 for an input with no witness data to carry.
+            Ownership::P2pkh { pubkey } => {
+                let Some(signature) = signature_for(&input, *pubkey) else {
+                    return;
+                };
+                self.psbt.inputs[index].final_script_sig =
+                    Some(legacy_script_sig(&signature, *pubkey));
+                self.authorized[index] = true;
+                return;
+            }
             Ownership::P2wpkh { pubkey } | Ownership::P2shP2wpkh { pubkey, .. } => {
                 let Some(signature) = signature_for(&input, *pubkey) else {
                     return;
@@ -1646,14 +1725,17 @@ fn consensus_shape(tx: &Transaction, prevouts: &[Option<Resolved>]) -> Vec<Strin
             ));
         }
     }
-    // A segwit input's scriptSig must be empty, except for the P2SH wrapper's single push
-    // of the redeem script. A non-empty one anywhere else means the witness is not what
-    // authorises the spend, and the signature checked above is not the thing being run.
+    // A NATIVE segwit input's scriptSig must be empty. A non-empty one there means the
+    // witness is not what authorises the spend, and the signature checked above is not the
+    // thing being run. The test is on the witness program rather than on "anything but
+    // P2SH", because the two shapes that are not native segwit carry a scriptSig
+    // legitimately: the P2SH wrapper pushes its redeem script, and a pre-segwit input is
+    // authorised by its scriptSig and by nothing else.
     for (index, input) in tx.input.iter().enumerate() {
         let Some(Some(resolved)) = prevouts.get(index) else {
             continue;
         };
-        if !input.script_sig.is_empty() && !resolved.txout.script_pubkey.is_p2sh() {
+        if !input.script_sig.is_empty() && resolved.txout.script_pubkey.is_witness_program() {
             problems.push(format!(
                 "input {index} spends a native segwit output but carries a scriptSig"
             ));
@@ -1678,6 +1760,22 @@ fn ecdsa_verifies(digest: [u8; 32], signature: &ecdsa::Signature, pubkey: Public
     Secp256k1::verification_only()
         .verify_ecdsa(&Message::from_digest(digest), &signature.signature, &pubkey)
         .is_ok()
+}
+
+/// The scriptSig that authorises a P2PKH spend: the signature, then the key it sits under.
+///
+/// A free function beside the witness stacks `finalize` builds, and for the same reason
+/// they are spelled out there: the order is consensus rather than preference.
+/// `OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG` hashes the top of the stack and
+/// then checks the signature beneath it, so the key is what has to be pushed last.
+fn legacy_script_sig(signature: &ecdsa::Signature, pubkey: CompressedPublicKey) -> ScriptBuf {
+    let mut sig = PushBytesBuf::new();
+    sig.extend_from_slice(signature.serialize().as_ref())
+        .expect("a DER-encoded ECDSA signature is at most 73 bytes");
+    let mut key = PushBytesBuf::new();
+    key.extend_from_slice(&pubkey.to_bytes())
+        .expect("a compressed public key is 33 bytes");
+    Builder::new().push_slice(sig).push_slice(key).into_script()
 }
 
 /// The signature this input carries for `key`, if any.
@@ -1722,6 +1820,7 @@ fn read_multisig(script: &ScriptBuf) -> Option<(u8, Vec<CompressedPublicKey>)> {
 /// How a verdict line names an input's script type.
 fn kind_of(ownership: &Ownership, prevout: &TxOut) -> &'static str {
     match ownership {
+        Ownership::P2pkh { .. } => "p2pkh",
         Ownership::P2wpkh { .. } => "p2wpkh",
         Ownership::P2shP2wpkh { .. } => "p2sh-p2wpkh",
         Ownership::P2wsh { .. } => "p2wsh-multisig",

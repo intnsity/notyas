@@ -23,6 +23,7 @@
 //! | a truncated DER blob | strict DER, BIP-66 | the file does not decode at all |
 //! | a witness the file finished for itself | see [`crate::verify`] | `witness-unverified` |
 //! | a multisig leg that is not the device's, forged | ECDSA verification | `signature-invalid` |
+//! | a bit flipped in a LEGACY signature | ECDSA verification over the pre-segwit digest | `signature-invalid` |
 //!
 //! The last two are the ones this module was written for. Before the authorisation rule,
 //! both were ACCEPTED with exit 0: an input whose `bip32_derivation` was absent classified
@@ -53,6 +54,15 @@ const GROUP_ORDER: [u8; 32] = [
 fn signed_single() -> (Harness, Psbt) {
     let harness = Harness::new();
     let psbt = build::cases(&harness).swap_remove(0).psbt;
+    let signed = host_sign(&harness, &psbt);
+    (harness, signed)
+}
+
+/// The generated legacy case, host-signed. The pre-segwit path: no witness, and a digest
+/// that commits to no amount.
+fn signed_legacy() -> (Harness, Psbt) {
+    let harness = Harness::new();
+    let psbt = build::cases(&harness).swap_remove(2).psbt;
     let signed = host_sign(&harness, &psbt);
     (harness, signed)
 }
@@ -123,6 +133,42 @@ fn the_unmodified_file_is_accepted() {
     let outcome = Coordinator::for_harness(&harness).verify(&signed);
     assert!(outcome.accepted(), "{outcome}");
     assert_eq!(outcome.signatures_checked, 1);
+}
+
+/// The same baseline for the legacy path, and it asserts what the file was CLASSIFIED as
+/// rather than only that something verified. A P2PKH input that the coordinator failed to
+/// recognise as its own is reported foreign, and a foreign input is never signature-checked
+/// at all, so "accepted" alone would not distinguish the legacy arm working from the legacy
+/// arm being absent - which is exactly the state this verifier was in before it had one.
+#[test]
+fn the_unmodified_legacy_file_is_accepted_as_a_legacy_spend() {
+    let (harness, signed) = signed_legacy();
+    let outcome = Coordinator::for_harness(&harness).verify(&signed);
+    assert!(outcome.accepted(), "{outcome}");
+    assert_eq!(outcome.signatures_checked, 1);
+    assert_eq!(outcome.inputs[0].kind, "p2pkh", "{outcome}");
+    assert!(outcome.inputs[0].verified, "{outcome}");
+    // The amount rule's own precondition, stated here because a legacy signature is the one
+    // kind that cannot carry it: the file has to PROVE what this input is worth.
+    assert!(outcome.inputs[0].proven, "{outcome}");
+}
+
+/// The legacy digest, checked in the direction acceptance cannot check it. An accepted file
+/// proves this side computes the same digest the device did; only a refusal proves it is
+/// verifying anything at all, rather than waving a pre-segwit input through the way it
+/// waved one through when it had no arm for the shape.
+#[test]
+fn a_bit_flipped_in_a_legacy_signature_is_refused() {
+    let (harness, mut signed) = signed_legacy();
+    let (_, signature) = only_signature(&signed);
+    let mut compact = signature.serialize_compact();
+    compact[8] ^= 0x01;
+    let mutated = ecdsa::Signature::from_compact(&compact).expect("still a pair of scalars");
+    replace_signature(&mut signed, mutated, EcdsaSighashType::All);
+    refuses_with(
+        &Coordinator::for_harness(&harness).verify(&signed),
+        "signature-invalid",
+    );
 }
 
 /// SEC 1 4.1.4: verification recomputes `R` from `(r, s)` and the digest and compares. A

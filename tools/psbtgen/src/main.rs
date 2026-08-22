@@ -128,8 +128,8 @@ pub enum Failure {
 fn generate(args: &[&str]) -> Result<Verdict, Failure> {
     let out = PathBuf::from(option(args, "--out")?.unwrap_or("psbtgen-out"));
     let harness = Harness::new();
-    // The two the device can sign today, then the three built to be refused: `generate`
-    // hands out every artifact the card promises, not only the ones that succeed. See
+    // The three the device signs, then the two built to be refused: `generate` hands out
+    // every artifact the card promises, not only the ones that succeed. See
     // `build::refused_cases`.
     let mut cases = build::cases(&harness);
     cases.extend(build::refused_cases(&harness));
