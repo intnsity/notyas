@@ -250,8 +250,8 @@ pitfall 8).
 **Stale-artifact hazard:** the IDF build dir bakes in the merged sdkconfig; switching
 boards inside one CARGO_TARGET_DIR risks flashing a stale bootloader for the wrong
 flash size (flash.ps1's existing warning, squared). Therefore the target dir is
-per-board: `C:\nb\ws` and `C:\nb\e5` (short, per the path-length constraint in
-build.ps1). Switching boards never requires a clean.
+per-board: `C:\notyas-build\w` and `C:\notyas-build\e` (short, per the path-length
+constraint in build.ps1). Switching boards never requires a clean.
 
 ## The airgap invariant, per board (normative)
 
@@ -435,8 +435,8 @@ exists; until then defaults to `waveshare-4b`):
 param([ValidateSet("waveshare-4b", "elecrow-5")] [string]$Board = "waveshare-4b")
 
 $boardMap = @{
-    "waveshare-4b" = @{ Feature = "board-waveshare-4b"; TargetDir = "C:\nb\ws" }
-    "elecrow-5"    = @{ Feature = "board-elecrow-5";    TargetDir = "C:\nb\e5" }
+    "waveshare-4b" = @{ Feature = "board-waveshare-4b"; TargetDir = "C:\notyas-build\w" }
+    "elecrow-5"    = @{ Feature = "board-elecrow-5";    TargetDir = "C:\notyas-build\e" }
 }
 $b = $boardMap[$Board]
 $env:CARGO_TARGET_DIR = if ($env:NOTYAS_TARGET_DIR) { $env:NOTYAS_TARGET_DIR } else { $b.TargetDir }
@@ -452,8 +452,9 @@ newest-bootloader-under-esp-idf-sys search is unchanged and now runs inside the
 per-board target dir, which removes the wrong-board-bootloader hazard by construction.
 
 Implemented as designed, extended to the full roster in build.ps1 (scaffold
-target dirs C:\nb\e7 / C:\nb\e9 / C:\nb\e101 / C:\nb\w5 / C:\nb\w7b /
-C:\nb\w7x / C:\nb\w8x / C:\nb\w101; scaffolds get a build.ps1 UNTESTED
+target dirs C:\notyas-build\e7 / C:\notyas-build\e9 / C:\notyas-build\e101 /
+C:\notyas-build\w5 / C:\notyas-build\w7b / C:\notyas-build\w7x /
+C:\notyas-build\w8x / C:\notyas-build\w101; scaffolds get a build.ps1 UNTESTED
 warning - plus a PORTRAIT warning where it applies). flash.ps1 knows the Elecrow
 scaffolds (no default flash port - `-Port` must be passed explicitly) but not
 yet the Waveshare ones: extending it is deliberately deferred until a physical

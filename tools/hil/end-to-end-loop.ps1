@@ -27,7 +27,7 @@ param(
     [int]    $Baud   = 115200,
     [string] $Pin    = '1234',
     [int]    $Slot   = 1,
-    [string] $OutDir = 'C:\nb\hil',
+    [string] $OutDir = 'C:\notyas-build\hil',
     # A 2-of-3 P2WSH sortedmulti descriptor. Supplied rather than generated: the point of
     # step 5 is that THIS device agrees with cosigners it did not create, so a descriptor
     # the device produced itself would prove nothing.

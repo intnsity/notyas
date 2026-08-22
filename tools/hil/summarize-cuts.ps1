@@ -22,7 +22,7 @@
 param(
     # Defaults to the newest run under the evidence root.
     [string] $RunDir,
-    [string] $EvidenceRoot = 'C:\nb\hil'
+    [string] $EvidenceRoot = 'C:\notyas-build\hil'
 )
 
 $ErrorActionPreference = 'Stop'

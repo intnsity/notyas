@@ -11,7 +11,7 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
 
 # Never build onto the NAS share: sources live on UNC, artifacts go to local disk
 # (same rule as tools/build.ps1).
-if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = 'C:\nb\nyt-fonts\target' }
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = 'C:\notyas-build\fonts' }
 
 cargo run --release --locked --manifest-path (Join-Path $root 'tools\fonts\atlasgen\Cargo.toml')
 if ($LASTEXITCODE -ne 0) { throw "atlasgen failed with exit code $LASTEXITCODE" }

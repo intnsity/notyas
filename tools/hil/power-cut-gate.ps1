@@ -90,7 +90,7 @@ param(
     # evidence comes from. Two attempts per cut, plus one for the operator to make a
     # mistake with.
     [int]    $WipeMargin  = 3,
-    [string] $OutDir      = 'C:\nb\hil',
+    [string] $OutDir      = 'C:\notyas-build\hil',
     [switch] $DryRun,
     # Preflight, and the operator's first step of the evening. Runs the capability probe
     # and nothing else: no cut, no command that changes the device, no run-shaped

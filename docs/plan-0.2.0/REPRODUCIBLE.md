@@ -157,8 +157,8 @@ this bench does today that would break a byte-comparison.
 
 **1. The source tree lives on a UNC share, the target dir is machine-local.
 [live problem]**
-`tools/build.ps1` sets `CARGO_TARGET_DIR` to `C:\nb\ws` (Waveshare) or
-`C:\nb\e5` (Elecrow) while the sources sit on a UNC network share
+`tools/build.ps1` sets `CARGO_TARGET_DIR` to `C:\notyas-build\w` (Waveshare) or
+`C:\notyas-build\e` (Elecrow) while the sources sit on a UNC network share
 (`\\<host>\<share>\...\notyas`). So a single build mixes two unrelated
 absolute path roots, one of them a host name and a share name. Both reach the
 binary: the source root through `file!()` in panic locations and DWARF, the
@@ -169,7 +169,7 @@ to `/build/src`, `CARGO_TARGET_DIR=/build/target` - plus `trim-paths` so even
 those fixed paths do not appear. Jade learned the same lesson the hard way and
 mandates a specific mount path (`/builds/blockstream/jade`) "because it gets
 encoded into build artifacts"; we prefer remapping over mandating, and get both.
-Check: `strings app.bin | grep -Ei '172\.16|/build/|C:|nyt-|Users'` returns
+Check: `strings app.bin | grep -Ei '172\.16|/build/|C:|Users'` returns
 nothing.
 
 **2. `CARGO_HOME` / registry sources.**
@@ -199,7 +199,7 @@ Check: `strings` grep; `readelf --debug-dump=info` shows `/IDF`, `/IDF_BUILD`,
 **5. `OUT_DIR` inside the generated esp-idf-sys bindings. [live problem]**
 esp-idf-sys generates `bindings.rs` into `OUT_DIR` and includes it with
 `include!(concat!(env!("OUT_DIR"), "/bindings.rs"))`. Any code generated there
-that can panic carries `C:\nb\ws\...\out\bindings.rs` as its `file!()`. Our
+that can panic carries `C:\notyas-build\w\...\out\bindings.rs` as its `file!()`. Our
 `firmware/Cargo.toml` declares seven `bindings_header` entries, so this is a
 large generated surface, not a corner case.
 Fix: `trim-paths` remaps build output to `/cargo/build-dir`.
@@ -1034,7 +1034,7 @@ publication.
 1. **M-REPRO-1 - inventory and baseline.** Build both boards twice on this bench
    with today's toolchain; `cmp` the outputs. Record what already differs. Gate:
    a written baseline in the tracking issue (expected: differs, with a `strings`
-   grep naming the UNC path and `C:\nb\nyt-*`).
+   grep naming the UNC path and `C:\notyas-build\*`).
 2. **M-REPRO-2 - sdkconfig pins.** Add to `firmware/sdkconfig.base.defaults`:
    `CONFIG_APP_REPRODUCIBLE_BUILD=y`, `CONFIG_APP_PROJECT_VER_FROM_CONFIG=y`,
    `CONFIG_APP_PROJECT_VER="0.2.0"`. Gate: both boards still boot and the Verify
@@ -1043,7 +1043,7 @@ publication.
 3. **M-REPRO-3 - path remapping.** Enable cargo `trim-paths` for the release
    profile; add `-ffile-prefix-map` to the `CFLAGS_riscv32imafc_esp_espidf` set
    in build.ps1 and the container script. Gate:
-   `strings app.bin | grep -Ei '172\.16|nyt-|Users|\.cargo|\.espressif|rustlib'`
+   `strings app.bin | grep -Ei '172\.16|C:|notyas-build|Users|\.cargo|\.espressif|rustlib'`
    is empty, and the `/rustc/<hash>` prefix matches `rustc -vV`.
 4. **M-REPRO-4 - toolchain lock + container.** `tools/repro/Dockerfile`
    (digest-pinned `espressif/idf:v5.5.4`, nightly-2026-07-27 + rust-src, pinned

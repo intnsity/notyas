@@ -106,8 +106,9 @@ tools\flash.ps1 -Board elecrow-5 -Monitor
 ```
 
 `-Board` drives the cargo feature, the sdkconfig pair, the per-board
-CARGO_TARGET_DIR (C:\nb\ws, C:\nb\e5, C:\nb\e7, C:\nb\e9, C:\nb\e101,
-C:\nb\w5, C:\nb\w7b, C:\nb\w7x, C:\nb\w8x, C:\nb\w101), espflash
+CARGO_TARGET_DIR (C:\notyas-build\w, C:\notyas-build\e, C:\notyas-build\e7,
+C:\notyas-build\e9, C:\notyas-build\e101, C:\notyas-build\w5, C:\notyas-build\w7b,
+C:\notyas-build\w7x, C:\notyas-build\w8x, C:\notyas-build\w101), espflash
 `--flash-size` (32mb/16mb) and the default port (COM3/COM6; port letters
 drift - override with `-Port COMx`). flash.ps1 does not know the Waveshare
 scaffold boards yet (no hardware exists to flash); build.ps1 knows the full
@@ -120,7 +121,11 @@ Notes the scripts encode:
 - Sources build fine directly from the UNC share, but CARGO_TARGET_DIR must be
   a **short local path**. esp-idf-sys hard-fails with "Too long output
   directory" otherwise - Windows path-length limits in the IDF CMake/ninja
-  build. Override with NOTYAS_TARGET_DIR (keep it short AND per-board).
+  build. Override with NOTYAS_TARGET_DIR (keep it short AND per-board). Even
+  the shortest leaf under C:\notyas-build trips esp-idf-sys's own 88-character
+  canonicalized-OUT_DIR check by a few characters (pitfall 3), so build.ps1
+  sets ESP_IDF_PATH_ISSUES=warn by default to downgrade that self-check to a
+  warning; it does not relax the real filesystem path ceiling underneath it.
 - `LIBCLANG_PATH` must point at a dir containing libclang.dll. The esp-clang
   tool embuild installs does not ship one on Windows; the `libclang` pip wheel
   does (`%APPDATA%\Python\Python312\site-packages\clang\native`).
@@ -364,7 +369,10 @@ the only operation slow enough to need the `Deriving` interstitial.
    dir instead - and since the refactor, per-board target dirs make a
    wrong-board bootloader impossible by construction.
 3. Long target paths: esp-idf-sys refuses CARGO_TARGET_DIR paths that are too
-   long ("Too long output directory") - hence C:\nb\ws / C:\nb\e5 / ...
+   long ("Too long output directory") - hence C:\notyas-build\w /
+   C:\notyas-build\e / ... - and even those single-letter leaves land 4
+   characters over the crate's own 88-character canonicalized-OUT_DIR limit
+   (measured 2026-08-21), which is why build.ps1 sets ESP_IDF_PATH_ISSUES=warn.
 4. Pre-v3 eFuse table differences: `esp_chip_info` is not in the default
    esp-idf-sys binding allowlist, and on the pre-v3 table the wafer major
    version is split into LO(2b)/HI(1b) fields - compose `(HI << 2) | LO`

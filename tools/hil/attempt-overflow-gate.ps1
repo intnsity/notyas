@@ -42,7 +42,7 @@ param(
     # "the decrement survives a reboot" - inside the same run. 0 skips it. The operator is
     # prompted once, and the count is compared across the reboot.
     [int]    $RebootAt = 0,
-    [string] $OutDir   = 'C:\nb\hil',
+    [string] $OutDir   = 'C:\notyas-build\hil',
     [switch] $DryRun,
     # Preflight. Reads the board's command surface and stops there: no wrong PIN, no
     # policy read that changes anything, no run-shaped directory left behind.

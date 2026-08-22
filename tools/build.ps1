@@ -15,10 +15,24 @@
 # Sources live on the NAS share; build artifacts MUST go to a local disk
 # (UNC paths + the heavy IDF/CMake build do not mix). The esp-idf-sys build
 # additionally hard-fails when the target path is long (Windows path-length
-# limits in the CMake/ninja IDF build), so the defaults are very short
-# (C:\nb\ws etc). Override by setting NOTYAS_TARGET_DIR before calling -
-# keep it SHORT (the build errors out with "Too long output directory"
-# otherwise), and keep it per-board yourself.
+# limits in the CMake/ninja IDF build), so the defaults are very short leaves
+# under C:\notyas-build (C:\notyas-build\w etc). Override by setting
+# NOTYAS_TARGET_DIR before calling - keep it SHORT (the build errors out with
+# "Too long output directory" otherwise), and keep it per-board yourself.
+#
+# C:\notyas-build itself already spends most of the esp-idf-sys length budget:
+# that crate's own build script bails (policy err, the default) when its
+# canonicalized OUT_DIR exceeds 88 characters, and OUT_DIR is
+# "<target-dir>\riscv32imafc-esp-espidf\release\build\esp-idf-sys-<16-hex>\out"
+# plus the "\\?\" prefix Rust's canonicalize() always adds on Windows - 75
+# fixed characters before the target dir is even counted. A single-character
+# leaf (C:\notyas-build\w, 17 chars) still lands at 92, four over the limit,
+# so every per-board build here needs ESP_IDF_PATH_ISSUES=warn to downgrade
+# that self-check to a warning (measured 2026-08-21; see the migration report
+# for the full numbers). That does not relax the real NTFS/toolchain 260-char
+# ceiling: the deepest object file measured under the old C:\nb\ws was 248
+# characters, which becomes 257 under a single-letter leaf here - 3 characters
+# of headroom, not a margin to build on.
 
 param(
     # Position 0 is declared explicitly, which makes every OTHER parameter
@@ -43,16 +57,16 @@ param(
 $ErrorActionPreference = "Stop"
 
 $boardMap = @{
-    "waveshare-4b"   = @{ Feature = "board-waveshare-4b";   TargetDir = "C:\nb\ws";    Untested = $false }
-    "waveshare-5"    = @{ Feature = "board-waveshare-5";    TargetDir = "C:\nb\w5";    Untested = $true; Portrait = $true }
-    "waveshare-7b"   = @{ Feature = "board-waveshare-7b";   TargetDir = "C:\nb\w7b";   Untested = $true }
-    "waveshare-7x"   = @{ Feature = "board-waveshare-7x";   TargetDir = "C:\nb\w7x";   Untested = $true; Portrait = $true }
-    "waveshare-8x"   = @{ Feature = "board-waveshare-8x";   TargetDir = "C:\nb\w8x";   Untested = $true; Portrait = $true }
-    "waveshare-101x" = @{ Feature = "board-waveshare-101x"; TargetDir = "C:\nb\w101"; Untested = $true; Portrait = $true }
-    "elecrow-5"      = @{ Feature = "board-elecrow-5";      TargetDir = "C:\nb\e5";    Untested = $false }
-    "elecrow-7"      = @{ Feature = "board-elecrow-7";      TargetDir = "C:\nb\e7";    Untested = $true }
-    "elecrow-9"      = @{ Feature = "board-elecrow-9";      TargetDir = "C:\nb\e9";    Untested = $true }
-    "elecrow-101"    = @{ Feature = "board-elecrow-101";    TargetDir = "C:\nb\e101";  Untested = $true }
+    "waveshare-4b"   = @{ Feature = "board-waveshare-4b";   TargetDir = "C:\notyas-build\w";    Untested = $false }
+    "waveshare-5"    = @{ Feature = "board-waveshare-5";    TargetDir = "C:\notyas-build\w5";   Untested = $true; Portrait = $true }
+    "waveshare-7b"   = @{ Feature = "board-waveshare-7b";   TargetDir = "C:\notyas-build\w7b";  Untested = $true }
+    "waveshare-7x"   = @{ Feature = "board-waveshare-7x";   TargetDir = "C:\notyas-build\w7x";  Untested = $true; Portrait = $true }
+    "waveshare-8x"   = @{ Feature = "board-waveshare-8x";   TargetDir = "C:\notyas-build\w8x";  Untested = $true; Portrait = $true }
+    "waveshare-101x" = @{ Feature = "board-waveshare-101x"; TargetDir = "C:\notyas-build\w101"; Untested = $true; Portrait = $true }
+    "elecrow-5"      = @{ Feature = "board-elecrow-5";      TargetDir = "C:\notyas-build\e";    Untested = $false }
+    "elecrow-7"      = @{ Feature = "board-elecrow-7";      TargetDir = "C:\notyas-build\e7";   Untested = $true }
+    "elecrow-9"      = @{ Feature = "board-elecrow-9";      TargetDir = "C:\notyas-build\e9";   Untested = $true }
+    "elecrow-101"    = @{ Feature = "board-elecrow-101";    TargetDir = "C:\notyas-build\e101"; Untested = $true }
 }
 $b = $boardMap[$Board]
 
@@ -80,8 +94,20 @@ if ($env:NOTYAS_TARGET_DIR) {
 } else {
     $env:CARGO_TARGET_DIR = $b.TargetDir
 }
-Write-Host "Board            = $Board (feature $($b.Feature))"
-Write-Host "CARGO_TARGET_DIR = $env:CARGO_TARGET_DIR"
+
+# See the header comment: even the shortest leaf under C:\notyas-build puts
+# esp-idf-sys's own canonicalized-OUT_DIR self-check (limit 88 characters,
+# policy "err" by default) a measured 4 characters over, which bails the
+# build before CMake/ninja ever runs. "warn" downgrades that specific bail to
+# a printed warning; it does not touch the real NTFS/toolchain path ceiling,
+# which this project's own numbers (see header) leave only a few characters
+# of headroom against. Only set a default - an operator's own choice, or a
+# tighter policy from CI, always wins.
+if (-not $env:ESP_IDF_PATH_ISSUES) { $env:ESP_IDF_PATH_ISSUES = 'warn' }
+
+Write-Host "Board              = $Board (feature $($b.Feature))"
+Write-Host "CARGO_TARGET_DIR   = $env:CARGO_TARGET_DIR"
+Write-Host "ESP_IDF_PATH_ISSUES = $env:ESP_IDF_PATH_ISSUES"
 
 # Per-board sdkconfig pair: shared base + board overlay (later file wins).
 # Passed as absolute paths so there is no ambiguity about what the IDF build
