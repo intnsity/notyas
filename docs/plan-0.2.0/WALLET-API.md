@@ -1339,6 +1339,18 @@ Notes that are part of the contract, not commentary:
   deterministic-nonce decision rests on; a refactor that merges the two paths defeats the
   control and is a review-blocking change. The m6 mutation test (break a signature, watch
   the gate catch it) is the standing proof.
+- Gate 3 has been narrowed exactly once, in 0.2.1, and the narrowing is scoped to segwit v0:
+  a segwit-v0 input's amount may rest on `witness_utxo` alone when the unsigned transaction
+  has exactly ONE input, because BIP-143 binds that input's own amount and a one-input
+  transaction has no second amount for a file to lie about (`docs/RELEASE-0.2.1.md` section
+  0). **It does not extend to legacy, and it must never be extended to legacy.** A legacy
+  (pre-BIP-143) signature commits to NO input amount, not even its own, so a legacy input is
+  strictly weaker than the case that narrowing was reasoned about: every legacy input's
+  amount must be proven by a txid-checked full previous transaction, or the file is refused.
+  This needs no special case in code and has none - `binds_the_whole_transaction(P2pkh)` is
+  false, which is precisely what puts the single-input escape out of reach for legacy - and
+  that arm stays false. Ratified 2026-08-22; the reasoning is `docs/RELEASE-0.2.2.md`
+  section 2.
 - The whole pipeline runs before any key derivation because `evaluate` takes a
   `WalletView`, which has no path to a seed. This is enforced by the type system, not by
   code review.

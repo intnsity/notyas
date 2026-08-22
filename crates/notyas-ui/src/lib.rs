@@ -2657,6 +2657,17 @@ pub enum RefusalCode {
     NoCard,
     NoPsbtFiles,
     WriteFailed,
+    /// An input claims this device's key and its script is not one this device signs.
+    ///
+    /// NOT in the ratified table and outside its numbering, exactly like R-20..R-25, because
+    /// it is a per-variant LIFT rather than a check: the engine still files the failure under
+    /// check 4 and still writes the same "what happened" line. What it lifts is the copy. The
+    /// failure used to render R-04, so an ordinary single-sig spend of the user's own legacy
+    /// coins was described as a cosigner substitution and the reader was told to compare
+    /// registrations he did not have (KNOWN-ISSUES K31). R-04 stays reserved for a genuine
+    /// mismatch in a cosigner SET - the 2021 substitution attack's own code, and the one
+    /// refusal here that has to be believed the instant it appears.
+    UnsupportedScript,
     /// The device cannot do this at all - not because of anything in the file.
     ///
     /// NOT in the ratified table, and deliberately outside its numbering. Every code above
@@ -2688,6 +2699,7 @@ impl RefusalCode {
             RefusalCode::NoCard => "R-23",
             RefusalCode::NoPsbtFiles => "R-24",
             RefusalCode::WriteFailed => "R-25",
+            RefusalCode::UnsupportedScript => "R-26",
             RefusalCode::NotInThisBuild => "R-00",
         }
     }
@@ -2711,6 +2723,7 @@ impl RefusalCode {
             RefusalCode::NoCard => "No card detected",
             RefusalCode::NoPsbtFiles => "No PSBT files on this card",
             RefusalCode::WriteFailed => "Card write failed",
+            RefusalCode::UnsupportedScript => "Not a script this device signs",
             RefusalCode::NotInThisBuild => "This build cannot do that",
         }
     }
@@ -2764,6 +2777,10 @@ impl RefusalCode {
             }
             RefusalCode::NoCard | RefusalCode::NoPsbtFiles => None,
             RefusalCode::WriteFailed => Some("The file on the card is incomplete."),
+            RefusalCode::UnsupportedScript => Some(
+                "This device signs only script types it can verify end to end. Anything \
+                 else is refused rather than signed blind.",
+            ),
             RefusalCode::NotInThisBuild => Some(
                 "A device that quietly does nothing teaches you that an operation \
                  succeeded.",
@@ -2809,6 +2826,15 @@ impl RefusalCode {
             RefusalCode::NoPsbtFiles => "Copy the transaction onto the card, or show all files.",
             RefusalCode::WriteFailed => {
                 "Delete that file, then retry - or show the signed transaction as a QR instead."
+            }
+            // Two sentences because two situations reach this code and they have different
+            // remedies. The second is the one a sender can act on today: a wrapped-segwit
+            // input of ours whose redeem script the coordinator left out of the file looks
+            // like a bare P2SH here, and re-exporting it with the field restores it.
+            RefusalCode::UnsupportedScript => {
+                "Spend these coins from a wallet that supports this script type. If this is \
+                 a wrapped-segwit coin, re-export the transaction with its redeem script \
+                 included."
             }
             RefusalCode::NotInThisBuild => {
                 "Update to a firmware release that carries this screen."

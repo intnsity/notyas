@@ -20,8 +20,8 @@ use notyas_core::bitcoin::absolute::LockTime;
 use notyas_core::bitcoin::secp256k1::PublicKey;
 use notyas_core::bitcoin::{Amount, Network, OutPoint, ScriptBuf};
 use notyas_core::psbt::{
-    AmountProof, Check, Claim, ClaimedKey, InputFacts, Malformed, OutputFacts, OutputRole,
-    ScriptKind,
+    AmountProof, Check, CheckFailure, Claim, ClaimedKey, InputFacts, Malformed, OutputFacts,
+    OutputRole, ScriptKind,
 };
 use notyas_firmware_hostcheck::model;
 use notyas_ui::{RefusalCode, ReviewedFee, TxReview};
@@ -162,6 +162,94 @@ fn every_check_carries_its_ratified_code() {
     for (check, code, number) in table {
         assert_eq!(model::code_for(check), code, "{check:?} maps to the wrong code");
         assert_eq!(code.code(), number, "{code:?} is not {number}");
+    }
+}
+
+/// A script this device does not sign is not a cosigner attack, and does not wear R-04.
+///
+/// What this pins is a defect a user met (KNOWN-ISSUES K31): spending his own single-sig
+/// legacy coins, he was told his cosigner keys did not match, that a substituted cosigner key
+/// was sending his coins to someone else's multisig, and to compare registrations he did not
+/// have. The refusal was correct and every sentence the screen wrote around it was false.
+///
+/// The lift is presentation only, which is why `check()` is asserted alongside: the engine
+/// still files this under check 4 and the panel still prints its sentence verbatim.
+///
+/// Broken version: delete the `ClaimedInputNotSingleSig` arm from `check_refusal`. The
+/// failure falls back to `code_for(Check::MultisigBinding)` and the first assertion trips.
+#[test]
+fn a_script_this_device_does_not_sign_gets_its_own_code() {
+    let kinds = [
+        ScriptKind::P2pkh,
+        ScriptKind::P2sh,
+        ScriptKind::OpReturn,
+        ScriptKind::Other,
+    ];
+    for kind in kinds {
+        let e = CheckFailure::ClaimedInputNotSingleSig { index: 0, kind };
+        let notice = model::check_refusal(&e);
+        assert_eq!(notice.code, RefusalCode::UnsupportedScript, "{kind:?}");
+        assert_eq!(notice.code.code(), "R-26", "{kind:?}");
+        assert_eq!(e.check(), Check::MultisigBinding, "{kind:?}");
+        assert!(
+            notice.happened.contains("is not a script this device spends"),
+            "{}",
+            notice.happened
+        );
+        assert!(!notice.after_signing, "this refusal happens at load");
+    }
+
+    // The three frozen sentences, pinned here rather than only in notyas-ui: the section gate
+    // in `screens/refusal.rs` iterates a hand-listed array of codes that this one is not in,
+    // so without this assertion the copy of the newest code is the only copy nothing reads.
+    let code = RefusalCode::UnsupportedScript;
+    assert_eq!(code.headline(), "Not a script this device signs");
+    assert_eq!(
+        code.matters(),
+        Some(
+            "This device signs only script types it can verify end to end. Anything else is \
+             refused rather than signed blind."
+        )
+    );
+    assert_eq!(
+        code.todo(),
+        "Spend these coins from a wallet that supports this script type. If this is a \
+         wrapped-segwit coin, re-export the transaction with its redeem script included."
+    );
+
+    // The whole point of the code: none of the three sentences may name a situation the
+    // reader is not in. This is the assertion the old copy would have failed on all three.
+    let shown = [code.headline(), code.matters().expect("R-26 says why"), code.todo()];
+    for text in shown {
+        let lower = text.to_lowercase();
+        for word in ["multisig", "cosigner", "registration"] {
+            assert!(!lower.contains(word), "R-26 says {word:?}: {text}");
+        }
+    }
+}
+
+/// A genuine multisig failure still carries R-04, the 2021 substitution attack's own code.
+///
+/// The lift above must not widen into a general escape from check 4. These four variants are
+/// exactly what R-04's copy was written for - a cosigner set that does not match what this
+/// device has registered, or a witness script the registration does not build - and for them
+/// "compare the registration on all your devices" is the right instruction.
+///
+/// Broken version: match the whole check rather than the variant (`_ if e.check() ==
+/// Check::MultisigBinding => RefusalCode::UnsupportedScript`). Every case here trips.
+#[test]
+fn a_genuine_multisig_failure_still_carries_the_cosigner_code() {
+    let cases = [
+        CheckFailure::MultisigStatelessUnverifiable { index: 0 },
+        CheckFailure::MultisigNotRegistered { index: 1 },
+        CheckFailure::MultisigWitnessScriptMissing { index: 2 },
+        CheckFailure::MultisigWitnessScriptMismatch { index: 3 },
+    ];
+    for e in cases {
+        let notice = model::check_refusal(&e);
+        assert_eq!(notice.code, RefusalCode::CosignerMismatch, "{e:?}");
+        assert_eq!(notice.code.code(), "R-04", "{e:?}");
+        assert_eq!(e.check(), Check::MultisigBinding, "{e:?}");
     }
 }
 

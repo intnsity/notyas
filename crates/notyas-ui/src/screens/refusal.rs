@@ -292,7 +292,7 @@ mod tests {
         }
     }
 
-    const CODES: [RefusalCode; 17] = [
+    const CODES: [RefusalCode; 18] = [
         RefusalCode::NotOurInputs,
         RefusalCode::MissingPrevTx,
         RefusalCode::ChangeNotProven,
@@ -310,6 +310,7 @@ mod tests {
         RefusalCode::NoPsbtFiles,
         RefusalCode::WriteFailed,
         RefusalCode::NotInThisBuild,
+        RefusalCode::UnsupportedScript,
     ];
 
     fn ids(s: &RefusalState, f: &Fixture) -> Vec<RegionId> {

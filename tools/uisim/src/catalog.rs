@@ -1899,6 +1899,16 @@ pub const CATALOG: &[Frame] = &[
         },
     },
     Frame {
+        name: "refusal/unsupported-script",
+        variant: "unsupported-script",
+        screen: ScreenId::Refusal,
+        doc: Doc::Both("134-refusal-unsupported-script", "135-refusal-unsupported-script-800x480"),
+        // Pictured on both panels because this band is what a user meets instead of a false
+        // multisig-attack accusation (KNOWN-ISSUES K31), and the thing worth checking by eye
+        // is that no sentence on it names a cosigner or a registration.
+        build: |ui| refused(ui, RefusalCode::UnsupportedScript),
+    },
+    Frame {
         name: "refusal/post-sign",
         variant: "post-sign",
         screen: ScreenId::Refusal,
@@ -2198,7 +2208,7 @@ pub fn required_variants(screen: ScreenId) -> &'static [&'static str] {
             "discard-sheet",
         ],
         ScreenId::Refusal => {
-            &["missing-prevtx", "change-not-proven", "details", "post-sign"]
+            &["missing-prevtx", "change-not-proven", "details", "unsupported-script", "post-sign"]
         }
         // C3 is one screen for every blocking request in the product, so its variants are
         // named for the OPERATION that raised them and each lane adds its own.

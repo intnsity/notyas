@@ -72,15 +72,28 @@ pub fn file_refusal(e: &Malformed) -> RefusalNotice {
 /// One of the ten checks refused.
 ///
 /// The code comes from `CheckFailure::check` and nowhere else, because the ratified table
-/// numbers R-01..R-10 in exactly the order ARCHITECTURE.md 5.3 numbers the checks. Two
-/// global-sanity failures are lifted out of R-09 first: a file over the structural cap and
-/// a PSBT version this device does not implement are the same two facts gate 0 already has
-/// codes for, and a user must not get a different code for the same file depending on which
-/// of the two bounds caught it.
+/// numbers R-01..R-10 in exactly the order ARCHITECTURE.md 5.3 numbers the checks. Three
+/// failures are lifted out of their group first, and a lift is warranted only where the
+/// group's three sentences answer a DIFFERENT situation than the variant is in:
+///
+/// - a file over the structural cap and a PSBT version this device does not implement are
+///   the same two facts gate 0 already has codes for, and a user must not get a different
+///   code for the same file depending on which of the two bounds caught it;
+/// - a script type this device does not sign is filed under check 4 because that is where
+///   the multisig binding lives, but it is not a cosigner mismatch. Rendered as R-04 it told
+///   a user spending his own single-sig legacy coins that a cosigner key had been
+///   substituted and to compare registrations he did not have (KNOWN-ISSUES K31). R-04 stays
+///   reserved for a genuine mismatch in a cosigner SET - the 2021 substitution attack's
+///   front door, and the one refusal on this device that has to be believed instantly.
+///
+/// The lift is presentation and nothing else: the check that refused, its number, and the
+/// engine's own sentence are unchanged, so `code_for` and the ratified ten-check table below
+/// stay exactly as they are.
 pub fn check_refusal(e: &CheckFailure) -> RefusalNotice {
     let code = match e {
         CheckFailure::PsbtTooLarge { .. } => RefusalCode::FileTooLarge,
         CheckFailure::PsbtVersionUnsupported { .. } => RefusalCode::PsbtVersion2,
+        CheckFailure::ClaimedInputNotSingleSig { .. } => RefusalCode::UnsupportedScript,
         _ => code_for(e.check()),
     };
     notice(code, sentence(&e.to_string()), format!("{e:?}"))

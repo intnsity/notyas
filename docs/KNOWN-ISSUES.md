@@ -1029,6 +1029,96 @@ Closing it: wire `read_sd_file` to `crate::sd::with_card` and the bounded read i
 `notyas_wallet::sd`, which is the same call the flow layer already makes, and either fix or
 withdraw the help line until it is done.
 
+### K29. Receive and Export hand out legacy addresses this device cannot spend from
+
+**Found:** 2026-08-22, from a user report that a spend of his own coins was refused. Tracing
+where the coins came from found the device itself, not his wallet software.
+
+Every wallet on this device derives all four schemes with no user choice, and `Scheme::ALL`
+puts BIP-44 first (`crates/notyas-core/src/derive.rs:106`). Three screens take that order at
+face value:
+
+- Receive shows exactly one scheme and picks it with `report.schemes.first()?`
+  (`crates/notyas-ui/src/screens/receive.rs:39`), so the addresses it offers for deposit are
+  `1...` legacy P2PKH, for every wallet, with no warning anywhere. The word "legacy" appears
+  in `notyas-ui`'s user-facing copy exactly once, as a review-row label
+  (`crates/notyas-ui/src/screens/review.rs:263`), and never on Receive.
+- Export opens preselected on the BIP44 tab (`crates/notyas-ui/src/screens/schemes.rs:123`,
+  `tab: 0`), again for every wallet.
+- On every tab the first and most prominent block is the bare account xpub
+  (`schemes.rs:407`). BIP-44 and BIP-86 have no SLIP-132 form (`derive.rs:148`), so both
+  render as a plain `xpub...`, and BlueWallet's documented default builds a LEGACY
+  `m/44'/0'/0'` wallet from any bare xpub. The origin-carrying descriptor - the artifact the
+  screen's own `DESCRIPTOR_HELP` tells the reader to use - is the LAST block, below five
+  address rows (`schemes.rs:460`). The layout contradicts its own help text.
+
+Meanwhile the signer cannot spend any of it: `ScriptKind::is_single_sig` excludes P2pkh
+(`crates/notyas-core/src/psbt/checks.rs:846`), `whitelisted_sighashes(P2pkh)` is empty, and
+`sign::SpendKind` has no legacy arm. So the device derives, displays, exports and solicits
+deposits for a scheme it will then refuse to spend, and `export::descriptor` even emits a
+`pkh()` descriptor for it (`crates/notyas-core/src/export.rs:256`).
+
+The demonstration is the user's own file: a PSBT with one legacy P2PKH input at
+`m/44'/0'/0'/0/0` of this device's own seed, full previous transaction present, refused at
+load. The device proves the input is its own by derivation and then refuses to sign it. The
+refusal he was shown, and the false multisig alarm it wore, is K31.
+
+Funds are not lost - the recovery phrase re-derives `m/44'` in any standard wallet - but the
+device can never move them, while actively inviting more of them. BIP-49 and BIP-86 are
+spendable end to end; only BIP-44 is stranded.
+
+**Does it block 0.2.2? Yes**, and it is what 0.2.2 is for. `docs/RELEASE-0.2.2.md` sections 1
+and 4 carry the two halves: implement P2PKH signing, which the design record already
+ratified (`ARCHITECTURE.md:550`, `WALLET-API.md:1325` and `:1330`, `CORPUS.md:274`,
+`MILESTONES.md:877`), and change the Receive and Export defaults so legacy becomes something
+a user asks for rather than something the device hands out. Closing this entry needs both,
+plus the two-board hardware pass in that document's section 5.
+
+### K30. Ten more refusal rows render copy that is false for a situation they cover
+
+**Found:** 2026-08-22, by auditing every `CheckFailure` row after K31 was traced. K31 was the
+worst row of a set, not a lone defect: the codes are assigned per CHECK, and a check groups
+failures that do not share a remedy.
+
+`RefusalCode` carries three frozen sentences and the engine supplies a fourth
+(`crates/notyas-ui/src/lib.rs`, `firmware/src/flow/model.rs::code_for`). Where a check covers
+two unrelated situations, at most one of them can own the copy. The rows, worst first:
+
+| Failure | Code shown | Why it is wrong for that row |
+|---|---|---|
+| `MultisigStatelessUnverifiable` | R-04 Cosigner keys do not match | No comparison happened: the registry is empty. This is the FIRST screen a real multisig user meets, before registering, and it accuses him of a key mismatch. The honest instruction is "register this wallet on this device first". |
+| `ClaimedKeyNotInScript` | R-01 These inputs are not from this wallet | Fires when an account of OURS locks the exact script and the file lies about which key sits there - the code's own doc calls it tamper evidence. The screen says the opposite and sends the user to open a wallet that cannot exist. |
+| `PrevoutIndexOutOfRange`, `PrevTxidMismatch`, `PrevAmountMismatch`, `PrevScriptMismatch` | R-02 Missing the previous transaction | The previous transaction is PRESENT and contradicts the input's own claim. The headline states the one thing that is not true, and the remedy tells the user to attach what the file already has. `PrevAmountMismatch` is the 2020 Trezor fee-attack tripwire. |
+| `MultisigWitnessScriptMissing` | R-04 Cosigner keys do not match | A required BIP-174 field is absent; nothing matched or mismatched. The remedy is to re-export with `witness_script` included, not to compare registrations. |
+| `AmbiguousOwnershipClaim` | R-01 These inputs are not from this wallet | The input names THIS device twice, so it may be exactly from this wallet. Only the coordinator can fix a duplicate-origin file; "open that wallet" cannot. |
+| `PathTooShallow`, `PathTooDeep`, `PathHardenedShapeInvalid`, `PathOutsidePurposeWhitelist` | R-01 These inputs are not from this wallet | The file names OUR fingerprint at a path shape no wallet should produce (the 2019 Coldcard ransom defence). There is no other wallet to open, and foreign ownership is asserted by a check that never determined it. |
+| `RedeemScriptDoesNotMatchInput` | R-01 These inputs are not from this wallet | A P2SH input of ours whose redeem script does not hash to its own scriptPubKey: corruption or tampering on a coin that IS ours. |
+| `InputAlreadyFinalized` | R-09 This file is malformed | The common benign trigger is re-loading a file the coordinator already finalized, which is a perfectly well-formed file. The honest sentence is "this transaction is already complete". |
+| `TaprootInternalKeyMissing`, `TaprootInternalKeyMismatch`, `TaprootTweakMismatch` | R-08 Unexpected taproot data | For the first, the data is MISSING rather than unexpected and "rebuild the transaction without it" names no "it". The two mismatches are tamper-shaped and get the same impossible instruction. |
+| `SignFailure::OriginDoesNotDeriveScript`, `SignFailure::Derivation` | R-01 These inputs are not from this wallet | The derive-and-compare tripwire ("every forged origin ends here") shown as a wrong-wallet mixup. The appended "Nothing was signed and nothing was written." is the one load-bearing sentence. |
+
+Three adjacent faults outside `CheckFailure` have the same shape: a card I/O failure
+(`Fault::Unreadable`) renders under "This file is malformed" with the steering-attack matters
+line; a sealed-store write failure with no card involved renders under R-25 "Card write
+failed" whose body says "The file on the card is incomplete."; and a multisig REGISTRATION
+that this release does not store (`ScriptTypeNotP2wsh`, a legitimate P2SH-P2WSH or taproot
+multisig) is called malformed and told to "re-export the transaction", which misnames a
+wallet description as a transaction.
+
+Carried here as well, from 0.2.2: **the engine sentence under an R-26 band still opens "Check
+4 (multisig binding)"**, because the ten-check numbering is ratified and the sentence is the
+engine's own words. The band above it says nothing about multisig, so the two disagree in
+front of the user.
+
+**Does it block 0.2.2? No.** Every refusal in this table refuses the right file for the right
+reason; what is wrong is what the user is told to do next. R-26 was lifted out of the set
+because it fires on an ordinary spend of the user's own coins, which none of these do.
+
+Closing it: one decision per row about what the honest sentence is, then the codes to carry
+them. Not a bulk rewrite - frozen copy that gets rewritten in bulk is copy nobody has read -
+and `crates/notyas-ui/src/screens/refusal.rs`'s `CODES` array is hand-listed, so any code
+added for this must be added there too or it is uncovered by the section gate.
+
 ---
 
 ## CLOSED
@@ -1338,3 +1428,78 @@ described as "real" was not weakened to make the UI reachable.
 
 No registration has been created on a board, and the 2-of-3 that MILESTONES clause 2 names has
 never been signed on hardware on any interface; both are K24.
+
+### K31. A single-sig spend of the user's own coins was refused as a cosigner-substitution attack
+
+**Found:** 2026-08-22, by a user, on a device holding his own wallet. He loaded a PSBT and
+was told his cosigner keys did not match and to compare the registration on all his devices.
+He has no multisig wallet, no cosigners and no registration on the device. He was right and
+the device was wrong.
+
+The demonstration is his file, decoded off the card: one input, one output. The input is a
+legacy P2PKH prevout with the full previous transaction present, so its amount is proven
+rather than claimed, and its `bip32_derivation` names `m/44'/0'/0'/0/0` with a public key
+whose hash160 is exactly the pubkey hash in the input's own script. The device derived that
+leaf, rebuilt the script, and PROVED the input was its own (`Ownership::Proven` ->
+`Claim::Ours`, `crates/notyas-core/src/psbt/checks.rs:2218`) before showing him a multisig
+attack alarm.
+
+The chain, every link of it correct in isolation (the two firmware line numbers are omitted
+because the fix below moves them):
+
+    checks.rs:1456   P2pkh is outside is_single_sig  -> ClaimedInputNotSingleSig
+    checks.rs:630    that variant is filed under     -> Check::MultisigBinding (check 4)
+    model.rs         code_for(check 4) mapped to     -> RefusalCode::CosignerMismatch
+    notyas-ui        which rendered                  -> "R-04 Cosigner keys do not match"
+                                                       "A substituted cosigner key sends your
+                                                        coins to someone else's multisig."
+                                                       "Compare the registration on all your
+                                                        devices."
+
+Exactly one sentence on the screen was true, and it was the engine's own: "input 0 is a
+legacy address, which is not a script this device spends". Everything the UI wrote around it
+described an attack that had not happened, and the instruction named an action he could not
+perform.
+
+Reproduced on hardware before any edit, over the HIL console, against a wallet that does NOT
+own the coin: the same file inspects clean and refuses honestly at check 1, "none of these
+inputs belongs to this wallet". The false alarm appears only once ownership PROVES, which is
+half of why it survived every gate. The other half is what the gates assert: the one fixture
+for this row (`p2sh_psbt_claiming_our_key`) checks the engine's `CheckFailure` and its check
+number and never the copy a screen builds from them, the `RefusalCode` table test asserted
+exactly the ratified check-to-code mapping that produced the wrong screen, and the ratified
+legacy corpus group (CORPUS.md P3) was never built - `P2pkh` appears in no test in
+`crates/notyas-core/tests/`. Nothing in the suite had ever read the sentence a user would.
+
+The refusal itself was load-bearing and stays. At `ccc85c7` there is no legacy signing path
+(`sign::SpendKind` has four arms, none legacy) and the post-sign gate computes a BIP-143
+digest for any prevout that is not P2WSH, so admitting the input without building that path
+would have moved the same refusal to after he held to sign and shown him R-01 instead. What
+was defective was the copy, not the decision.
+
+**Resolved:** 2026-08-22. `ClaimedInputNotSingleSig` has its own refusal code, R-26 "Not a
+script this device signs", with a body that names no multisig, no cosigner and no
+registration, and an instruction the reader can act on. The lift is one arm in
+`firmware/src/flow/model.rs::check_refusal` matched before the fallback to the `Check`-based
+table, which is the same per-variant lift that file already performs for `PsbtTooLarge` and
+`PsbtVersionUnsupported`. No `Check` numbering, no `CheckFailure` variant, no `Display`
+string and no security check changed: R-04 is still what every genuine multisig failure
+carries - `MultisigStatelessUnverifiable`, `MultisigNotRegistered`,
+`MultisigWitnessScriptMissing`, `MultisigWitnessScriptMismatch` - and the check-to-code table
+pin in `firmware/hostcheck/tests/review_model.rs` is untouched and green. Both directions are
+pinned by new tests in that file, and a uisim frame puts the new band on both panels.
+
+Two residuals, both deliberate and both recorded rather than quietly carried:
+
+- The "What happened" line under the band is the engine's sentence and still opens "Check 4
+  (multisig binding)", because the ten-check numbering is ratified (`ARCHITECTURE.md` 5.3)
+  and that line is what a bug report is photographed from. It is tracked in K30 with the rest
+  of the copy audit.
+- `crates/notyas-ui/src/screens/refusal.rs` holds a hand-listed `CODES` array that the
+  "every code fills the sections it claims to" gate iterates. R-26 is not in it, so that gate
+  does not cover the new code; its three strings are pinned in `review_model.rs` instead.
+  Adding it to `CODES` is a one-line change and belongs with the next edit to that file.
+
+What this entry does NOT close is why his coins were on a legacy address in the first place,
+or that the device still cannot spend them: that is K29, and `docs/RELEASE-0.2.2.md` sections
+1 and 4 carry the decision.

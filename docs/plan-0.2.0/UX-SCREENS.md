@@ -3124,7 +3124,13 @@ Verbs, never "OK". One label per concept across the product.
 
 Codes are stable, printed on the refusal screen, and asserted in CI with the
 rendered text (`MILESTONES.md` m6/m7 gates). Numbers 01-10 track the policy checks in
-`ARCHITECTURE.md` 5.3 one-to-one; 20+ are transport and device conditions.
+`ARCHITECTURE.md` 5.3 one-to-one; 20+ sit outside that numbering. Most of the 20s are
+transport and device conditions, and the rest are refusals LIFTED out of a check group
+because the group's copy is about a different situation: R-21 and R-22 (a version and a size
+a user must not be told two different things about depending on which bound caught the file)
+and R-26 (a script type this device does not sign, which is not a cosigner mismatch and must
+not wear R-04's words). A lift changes which sentences are shown and nothing else - the
+check that refused, its number, and the engine's own "what happened" line are unchanged.
 
 | Code | Headline | What happened (template) | Why this matters | What to do |
 |---|---|---|---|---|
@@ -3144,6 +3150,7 @@ rendered text (`MILESTONES.md` m6/m7 gates). Numbers 01-10 track the policy chec
 | R-23 | No card detected | "No card is in the slot, or it cannot be read." | - | "Insert a FAT32-formatted card and try again." |
 | R-24 | No PSBT files on this card | "The card has 12 files and none of them is a .psbt." | - | "Copy the transaction onto the card, or show all files." |
 | R-25 | Card write failed | "Writing psbt-signed.psbt stopped after 1.2 kB." | "The file on the card is incomplete." | "Delete that file, then retry - or show the signed transaction as a QR instead." |
+| R-26 | Not a script this device signs | "Input 0 is a legacy address, which is not a script this device spends." | "This device signs only script types it can verify end to end. Anything else is refused rather than signed blind." | "Spend these coins from a wallet that supports this script type. If this is a wrapped-segwit coin, re-export the transaction with its redeem script included." |
 | R-30 | No wallet is open | "This action needs an unlocked wallet." | - | "Open a wallet from the list." |
 | R-31 | Multisig needs a registration | "This wallet has no stored multisig registration, so change cannot be verified." | "Without the registration the device cannot tell your change from an attacker's address." | "Import the registration, or sign from the stored wallet that has it." |
 | R-32 | Storage is unreadable | "Both copies of wallet slot 4 failed their integrity check." | "The record is damaged or was written by a different device." | "Restore from your dice rolls or seed words. Erasing the device clears the damaged slot." |
@@ -3171,6 +3178,16 @@ rendered text (`MILESTONES.md` m6/m7 gates). Numbers 01-10 track the policy chec
 8. **The backup sentence is one sentence, everywhere it appears**: "Your dice rolls
    or seed words are the only way back." It appears on every destructive screen, word
    for word, so it reads as a device-level fact rather than per-screen boilerplate.
+9. **Two failures share a code only when one instruction answers both.** R-26 exists
+   because `ClaimedInputNotSingleSig` used to render R-04: a single-sig spend of the user's
+   own legacy coins was described as a cosigner-substitution attack, and he was told to
+   compare registrations he did not have (`docs/KNOWN-ISSUES.md` K31, 2026-08-22). R-04
+   stays reserved for a genuine mismatch in a cosigner SET, which is the 2021 substitution
+   attack's own code and the one refusal on this device that has to be believed the instant
+   it appears; spending its credibility on a script-type refusal is how it stops being
+   believed. The residual is recorded rather than hidden: the engine's "what happened" line
+   under an R-26 band still names check 4, because the check numbering above is ratified and
+   that line is the engine's own words.
 
 ---
 

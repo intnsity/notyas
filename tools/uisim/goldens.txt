@@ -438,6 +438,11 @@ refusal/post-sign                  720x1280  f14cc6f9c0092739 ink=0,0,720,1256  
 refusal/post-sign                  800x480   e86f3df5a83119ce ink=0,0,800,454         px=159493   reg=3:cdc8f0a4
 refusal/post-sign                  800x1280  c315fcf904eaa9d9 ink=0,0,800,1254        px=211627   reg=3:bc537da8
 refusal/post-sign                  1024x600  d1f9448eb8743ae4 ink=0,0,1024,568        px=205554   reg=3:343f7a0a
+refusal/unsupported-script         720x720   ee2ee42ec06195d2 ink=0,0,720,696         px=183521   reg=3:ed5beda0
+refusal/unsupported-script         720x1280  836412323ba397fa ink=0,0,720,1256        px=195982   reg=3:8fe9b761
+refusal/unsupported-script         800x480   c9a280252151adb3 ink=0,0,800,454         px=156433   reg=3:ca099895
+refusal/unsupported-script         800x1280  b8edb86ae49ddf36 ink=0,0,800,1254        px=209094   reg=3:fb6dd0aa
+refusal/unsupported-script         1024x600  d6f34835487b315d ink=0,0,1024,568        px=200540   reg=3:40ada938
 review-transaction/claimed-change  720x720   b1fa6d01511fff0f ink=0,0,720,696         px=173351   reg=3:919fa459
 review-transaction/claimed-change  720x1280  dcc4eb76ee161350 ink=0,0,720,1256        px=182791   reg=3:060d37d6
 review-transaction/claimed-change  800x480   f7eeac0e4b3ba967 ink=0,0,800,454         px=143746   reg=3:8387bb45
