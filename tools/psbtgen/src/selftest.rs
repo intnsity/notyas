@@ -63,7 +63,7 @@ use notyas_core::bitcoin::hashes::Hash as _;
 use notyas_core::bitcoin::psbt::Psbt;
 use notyas_core::bitcoin::secp256k1::ecdsa;
 use notyas_core::bitcoin::{Amount, PublicKey, ScriptBuf, WPubkeyHash, Witness};
-use notyas_core::psbt::{self, fixture, Context, StructuralLimits};
+use notyas_core::psbt::{self, fixture, CheckFailure, Context, ScriptKind, StructuralLimits};
 
 use crate::build;
 use crate::harness::{self, Harness};
@@ -155,6 +155,26 @@ pub fn run() -> Result<Verdict, Failure> {
             &format!("generated '{}', host-signed", case.name),
             run_case(&coordinator, &case.psbt, &context, &seed),
             Wants::Accepted,
+        );
+    }
+
+    // The three shapes 0.2.1's signer has no arm for at all - see `build::refused_cases`.
+    // Each is refused by `psbt::inspect` before a signature ever exists to hand
+    // `verify::Coordinator`, so `report_inspect_refused` asserts against notyas-core's own
+    // `CheckFailure`, not the coordinator-side codes every other case in this file is
+    // judged by.
+    for case in build::refused_cases(&harness) {
+        ran += 1;
+        let kind = match case.name {
+            "legacy" | "legacy-claimed" => ScriptKind::P2pkh,
+            "p2sh-ours" => ScriptKind::P2sh,
+            other => panic!("selftest has no expected refusal kind for generated case '{other}'"),
+        };
+        failures += report_inspect_refused(
+            &format!("generated '{}'", case.name),
+            &case.psbt,
+            &context,
+            kind,
         );
     }
 
@@ -294,6 +314,47 @@ fn report(label: &str, outcome: Result<Outcome, String>, wants: Wants) -> usize 
     };
     println!(
         "  [{}] {label}\n        wanted {wanted}, got {detail}",
+        if ok { "ok" } else { "XX" }
+    );
+    if ok {
+        0
+    } else {
+        1
+    }
+}
+
+/// Assert that `psbt::inspect` itself refuses `psbt` with
+/// `CheckFailure::ClaimedInputNotSingleSig` naming `kind`, before the file ever reaches a
+/// signature.
+///
+/// A third pattern, beside `report`/`run_case` above and the post-sign mutation loop below:
+/// the three cases this is for never get that far. `sign.rs` has no legacy arm (0.2.1) and
+/// no arm for a P2SH whose redeem script never arrived, so `run_case`'s `host_sign` would
+/// return `Err` for every one of them, and `report` calls any `Err` a failure regardless of
+/// what was wanted - correct for every OTHER case in this file, where an unsignable
+/// generated case is a bug, and wrong for exactly these three, which are unsignable on
+/// purpose. The refusal worth pinning is notyas-core's own, in notyas-core's own
+/// vocabulary: check 4 (`Check::MultisigBinding`), fired because `ScriptKind::is_single_sig`
+/// answers no for both a legacy P2PKH and a bare P2SH. That is the exact false alarm this
+/// wave's docs name - R-04's cosigner-substitution copy, read over an input that has never
+/// seen a cosigner - and lifting it to an honest code (T4) changes the CODE a human sees on
+/// a device, not this check number or this kind, which is why this assertion is written
+/// against `CheckFailure` rather than against the string "R-04".
+fn report_inspect_refused(label: &str, psbt: &Psbt, context: &Context<'_>, kind: ScriptKind) -> usize {
+    let wanted = CheckFailure::ClaimedInputNotSingleSig { index: 0, kind };
+    let (ok, detail) = match psbt::inspect(psbt, context) {
+        Err(failure) if failure == wanted => (true, format!("refused, {}", failure.check())),
+        Err(failure) => (
+            false,
+            format!("refused for a different reason: {} ({failure})", failure.check()),
+        ),
+        Ok(_) => (
+            false,
+            "ACCEPTED: notyas-core signed a shape this wave must not admit".to_string(),
+        ),
+    };
+    println!(
+        "  [{}] {label}\n        wanted refuse: {wanted:?}, got {detail}",
         if ok { "ok" } else { "XX" }
     );
     if ok {

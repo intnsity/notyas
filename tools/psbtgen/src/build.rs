@@ -21,6 +21,12 @@
 //! rebuild bit-identical cases from the same constants. That is what lets the verifier say
 //! "this is the transaction I asked for, and here is the fee you were promised" instead of
 //! only "these signatures verify".
+//!
+//! [`refused_cases`] is the other half of the set: three shapes 0.2.1's signer cannot sign
+//! at all, built the same way and to the same standard, because the shape that needs a
+//! hardware refusal to prove itself is exactly as real a fixture as the shape that needs a
+//! hardware signature. `cases` and its two names above are untouched by that addition - a
+//! generated case that signs today must go on signing exactly as it always has.
 
 use notyas_core::bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint};
 use notyas_core::bitcoin::hashes::{sha256, Hash as _};
@@ -277,6 +283,204 @@ fn multisig_case(harness: &Harness) -> Case {
         first_receive_address: registration
             .first_receive_address()
             .expect("the registered wallet builds its own first receive address"),
+    }
+}
+
+/// The `legacy` and `legacy-claimed` cases' fixed amounts.
+const LEGACY_PREVOUT: Amount = Amount::from_sat(150_000);
+const LEGACY_PAYMENT: Amount = Amount::from_sat(90_000);
+const LEGACY_FEE: Amount = Amount::from_sat(1_800);
+
+/// The `p2sh-ours` negative's fixed amounts. Its own constants, not `LEGACY_*`: reusing
+/// those would make an unrelated coincidence between two cases' fees look like a deliberate
+/// one to a reader of the card.
+const P2SH_OURS_PREVOUT: Amount = Amount::from_sat(80_000);
+const P2SH_OURS_PAYMENT: Amount = Amount::from_sat(50_000);
+const P2SH_OURS_FEE: Amount = Amount::from_sat(900);
+
+/// Three cases 0.2.1's signer cannot sign, built to the same standard [`cases`] is: a full
+/// previous transaction, a genuine ownership claim at a sane path, nothing this fixture
+/// invented to make the refusal easier to provoke than the real one is. Kept apart from
+/// [`cases`] rather than folded into it because they answer a different question -
+/// `verify::Coordinator` only ever judges a file that reached a signature, and none of
+/// these three do; `selftest` asserts each against `notyas_core::psbt::inspect` directly.
+/// See that module for the expected `CheckFailure` and why it is the same one, check 4, for
+/// all three.
+pub fn refused_cases(harness: &Harness) -> Vec<Case> {
+    vec![
+        legacy_case(harness),
+        legacy_claimed_case(harness),
+        p2sh_ours_case(harness),
+    ]
+}
+
+/// CORPUS.md P3: a single-sig P2PKH spend, "legacy sighash path, and the strictest
+/// `non_witness_utxo` requirement". Ratified in 0.2.0 and never built, because until this
+/// wave nothing in this tree could prove what a device does with it: the signer has no
+/// legacy arm (0.2.1), so this file is REFUSED today, at ARCHITECTURE.md check 4
+/// (`ClaimedInputNotSingleSig`) - the same check, wearing the same wrong name (R-04,
+/// "cosigner keys do not match") that this wave's docs and its refusal-code lift are about.
+/// It stays that way until legacy signing lands; see `selftest`, which pins today's verdict
+/// so that change is a test going from red to green rather than a claim nobody checked.
+///
+/// The input is unconditionally proven: CORPUS.md's "strictest requirement" is that a
+/// legacy input never relies on `witness_utxo` alone, because a pre-segwit signature
+/// commits to no amount at all and so has no BIP-143 digest to make a false one costly. See
+/// `legacy_claimed_case`, the negative that pulls this proof and must stay refused even
+/// after legacy signing lands.
+fn legacy_case(harness: &Harness) -> Case {
+    let device = &harness.device;
+    let input_script = device.legacy_script(Keychain::Receive, 0);
+    let change_address = device.legacy_address(Keychain::Change, 0);
+    let prev = funding(
+        "notyas psbtgen legacy",
+        &harness.decoy_script(),
+        &input_script,
+        LEGACY_PREVOUT,
+    );
+    let change = LEGACY_PREVOUT - LEGACY_PAYMENT - LEGACY_FEE;
+
+    let unsigned = spend(
+        &prev,
+        &[
+            TxOut {
+                value: LEGACY_PAYMENT,
+                script_pubkey: harness.payee_script(),
+            },
+            TxOut {
+                value: change,
+                script_pubkey: change_address.script_pubkey(),
+            },
+        ],
+    );
+    let mut psbt = Psbt::from_unsigned_tx(unsigned).expect("a freshly built unsigned tx is clean");
+
+    psbt.inputs[0].non_witness_utxo = Some(prev);
+    psbt.inputs[0].sighash_type = Some(PsbtSighashType::from(EcdsaSighashType::All));
+    let key = device.key_at(&harness::legacy_path(Keychain::Receive, 0));
+    psbt.inputs[0].bip32_derivation.insert(
+        key.public_key().0,
+        (device.fingerprint(), harness::legacy_path(Keychain::Receive, 0)),
+    );
+
+    let change_key = device.key_at(&harness::legacy_path(Keychain::Change, 0));
+    psbt.outputs[1].bip32_derivation.insert(
+        change_key.public_key().0,
+        (device.fingerprint(), harness::legacy_path(Keychain::Change, 0)),
+    );
+
+    Case {
+        name: "legacy",
+        file: "legacy.psbt",
+        what: "spend 90000 sat from the BIP-44 account, 58200 sat back to change - \
+               CORPUS.md P3; REFUSED today (check 4, no legacy signer yet), must ACCEPT \
+               once legacy signing lands",
+        psbt,
+        payment: LEGACY_PAYMENT,
+        change,
+        fee: LEGACY_FEE,
+        payment_address: harness.payee(),
+        change_address,
+        first_receive_address: device.legacy_address(Keychain::Receive, 0),
+    }
+}
+
+/// `legacy_case`'s file with its ownership proof pulled and a bare claim left standing:
+/// `non_witness_utxo` removed, `witness_utxo` supplied in its place. Everything else -
+/// version, locktime, every input and every output - is untouched, so this is the exact
+/// experiment CORPUS.md's "strictest requirement" is about: the only variable that moves is
+/// how the amount is known.
+///
+/// REFUSED today for the same reason `legacy_case` is (check 4 fires before amount proof is
+/// even considered, for a single-input file). The two diverge only once legacy signing
+/// lands: `legacy_case` starts signing, and this file MUST NOT, because a legacy signature
+/// commits to no amount at all and so can never take the single-input exemption
+/// ARCHITECTURE.md check 2 grants a segwit v0 spend of one input. Pinning that divergence in
+/// advance - one file that starts passing, an adjacent one built to fail the same way
+/// forever - is this case's whole purpose.
+fn legacy_claimed_case(harness: &Harness) -> Case {
+    let legacy = legacy_case(harness);
+    let mut psbt = legacy.psbt.clone();
+    let prev = psbt.inputs[0]
+        .non_witness_utxo
+        .take()
+        .expect("legacy_case always carries its own previous transaction");
+    psbt.inputs[0].witness_utxo = Some(prev.output[OUR_VOUT as usize].clone());
+    Case {
+        name: "legacy-claimed",
+        file: "legacy-claimed.psbt",
+        what: "the 'legacy' spend with its previous transaction stripped and a witness_utxo \
+               claim left in its place - REFUSED today, and must STAY refused after legacy \
+               signing lands: a legacy signature proves no amount",
+        psbt,
+        ..legacy
+    }
+}
+
+/// A P2SH input the harness wallet's own BIP-49 leaf genuinely unlocks - the scriptPubKey is
+/// exactly what that leaf's P2WPKH program wraps into - claimed without the one field
+/// (`redeem_script`) a device needs to tell this apart from a P2SH of any other shape.
+/// Mirrors `notyas_core::psbt::fixture::p2sh_psbt_claiming_our_key`, which reaches the same
+/// refusal from the opposite direction - an artificial non-P2WPKH redeem script supplied,
+/// rather than none supplied at all - but bound to the HARNESS wallet's key, so it is a file
+/// a human can actually load: a device holding this seed proves the claim, the same way it
+/// would for `legacy`.
+///
+/// REFUSED today at the same check 4 as `legacy` (a P2SH with no redeem script classifies as
+/// `ScriptKind::P2sh`, which `is_single_sig` also answers no for). Unlike `legacy`, this stays
+/// refused after legacy signing lands - admitting P2PKH does nothing for a script this
+/// device can never classify at all - which is what makes it the one file on the card that
+/// can still provoke the lifted refusal band (R-26, once T4 lands) on a product image.
+fn p2sh_ours_case(harness: &Harness) -> Case {
+    let device = &harness.device;
+    let input_script = device.nested_script(Keychain::Receive, 0);
+    let change_address = device.nested_address(Keychain::Change, 0);
+    let prev = funding(
+        "notyas psbtgen p2sh-ours",
+        &harness.decoy_script(),
+        &input_script,
+        P2SH_OURS_PREVOUT,
+    );
+    let change = P2SH_OURS_PREVOUT - P2SH_OURS_PAYMENT - P2SH_OURS_FEE;
+
+    let unsigned = spend(
+        &prev,
+        &[
+            TxOut {
+                value: P2SH_OURS_PAYMENT,
+                script_pubkey: harness.payee_script(),
+            },
+            TxOut {
+                value: change,
+                script_pubkey: change_address.script_pubkey(),
+            },
+        ],
+    );
+    let mut psbt = Psbt::from_unsigned_tx(unsigned).expect("a freshly built unsigned tx is clean");
+
+    // Proven, and no redeem script - deliberately: the amount is not the defect this case
+    // is for, and leaving it claimed-only would let a reader wonder whether check 2 or
+    // check 4 is what actually refused this file. Only check 4 does.
+    psbt.inputs[0].non_witness_utxo = Some(prev);
+    psbt.inputs[0].sighash_type = Some(PsbtSighashType::from(EcdsaSighashType::All));
+    let key = device.key_at(&harness::nested_path(Keychain::Receive, 0));
+    psbt.inputs[0].bip32_derivation.insert(
+        key.public_key().0,
+        (device.fingerprint(), harness::nested_path(Keychain::Receive, 0)),
+    );
+
+    Case {
+        name: "p2sh-ours",
+        file: "p2sh-ours.psbt",
+        what: "a P2SH input at the harness wallet's own BIP-49 key, redeem_script withheld - \
+               REFUSED (check 4), and stays refused even after legacy signing lands",
+        psbt,
+        payment: P2SH_OURS_PAYMENT,
+        change,
+        fee: P2SH_OURS_FEE,
+        payment_address: harness.payee(),
+        change_address,
+        first_receive_address: device.nested_address(Keychain::Receive, 0),
     }
 }
 

@@ -61,6 +61,17 @@ pub const PASSPHRASE: &str = "TREZOR";
 /// The BIP-84 account the single-sig case spends from.
 pub const ACCOUNT_84: &str = "m/84'/0'/0'";
 
+/// The BIP-44 account the `legacy` and `legacy-claimed` cases spend from: CORPUS.md P3's
+/// single-sig P2PKH, the shape 0.2.1 ratified and never built because the signer has no
+/// legacy arm.
+pub const ACCOUNT_44: &str = "m/44'/0'/0'";
+
+/// The BIP-49 account the `p2sh-ours` negative claims a leaf of. Nested segwit rather than
+/// another legacy path on purpose: check 4 (`ClaimedInputNotSingleSig`) is not a P2PKH-only
+/// refusal, and a P2SH input whose redeem script never arrived is unclassifiable regardless
+/// of what the redeem script it is missing would have unwrapped to.
+pub const ACCOUNT_49: &str = "m/49'/0'/0'";
+
 /// The BIP-48 P2WSH account each cosigner of the multisig case sits on.
 ///
 /// Taken from the crate's own fixtures rather than restated, so the harness wallet has the
@@ -190,6 +201,36 @@ impl Wallet {
         let key = self.key_at(&singlesig_path(keychain, index));
         ScriptBuf::new_p2wpkh(&key.public_key().wpubkey_hash())
     }
+
+    /// The BIP-44 legacy leaf address: CORPUS.md P3's `legacy` case.
+    pub fn legacy_address(&self, keychain: Keychain, index: u32) -> Address {
+        let key = self.key_at(&legacy_path(keychain, index));
+        address::for_key(Scheme::Bip44, key.public_key(), NETWORK)
+            .expect("BIP-44 renders a P2PKH address")
+    }
+
+    /// The scriptPubKey behind [`Wallet::legacy_address`].
+    pub fn legacy_script(&self, keychain: Keychain, index: u32) -> ScriptBuf {
+        let key = self.key_at(&legacy_path(keychain, index));
+        ScriptBuf::new_p2pkh(&key.public_key().pubkey_hash())
+    }
+
+    /// The BIP-49 nested-segwit leaf address. Used only to build `p2sh-ours`: a real P2SH
+    /// scriptPubKey this wallet's key genuinely unlocks, claimed without the redeem script a
+    /// device would need to tell it apart from any other P2SH.
+    pub fn nested_address(&self, keychain: Keychain, index: u32) -> Address {
+        let key = self.key_at(&nested_path(keychain, index));
+        address::for_key(Scheme::Bip49, key.public_key(), NETWORK)
+            .expect("BIP-49 renders a P2SH-P2WPKH address")
+    }
+
+    /// The scriptPubKey behind [`Wallet::nested_address`], built the same way BIP-49 itself
+    /// does: P2SH wrapping this leaf's P2WPKH program.
+    pub fn nested_script(&self, keychain: Keychain, index: u32) -> ScriptBuf {
+        let key = self.key_at(&nested_path(keychain, index));
+        let redeem = ScriptBuf::new_p2wpkh(&key.public_key().wpubkey_hash());
+        ScriptBuf::new_p2sh(&redeem.script_hash())
+    }
 }
 
 /// Parse a path this tool wrote itself. A failure here is a bug in this file, not input.
@@ -200,6 +241,16 @@ pub fn path(s: &str) -> DerivationPath {
 /// `m/84'/0'/0'/{0,1}/{index}`.
 pub fn singlesig_path(keychain: Keychain, index: u32) -> DerivationPath {
     path(&format!("{ACCOUNT_84}/{}/{index}", chain_of(keychain)))
+}
+
+/// `m/44'/0'/0'/{0,1}/{index}`.
+pub fn legacy_path(keychain: Keychain, index: u32) -> DerivationPath {
+    path(&format!("{ACCOUNT_44}/{}/{index}", chain_of(keychain)))
+}
+
+/// `m/49'/0'/0'/{0,1}/{index}`.
+pub fn nested_path(keychain: Keychain, index: u32) -> DerivationPath {
+    path(&format!("{ACCOUNT_49}/{}/{index}", chain_of(keychain)))
 }
 
 /// `m/48'/0'/0'/2'/{0,1}/{index}`, in the spelling a PSBT's `bip32_derivation` carries.
