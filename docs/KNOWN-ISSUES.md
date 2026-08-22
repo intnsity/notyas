@@ -1073,6 +1073,20 @@ specifically, and says what a coordinator has to do about it. That disclosure is
 condition on which this entry is closed; the refusal itself is not negotiable, because it
 buys the closure of a demonstrated one-coin loss.
 
+**Narrowed:** 2026-08-22, in 0.2.1. The refusal above still stands wherever both halves of
+the pair are present, with exactly one case removed from it: a transaction with a single
+input. There is no other amount in such a file to substitute, and no second signature
+anywhere for a later round to combine a harvested one with, so the two-round probe that
+opened this entry has nothing to work with. The interop regression narrows with it - a
+single-input spend from a coordinator that omits `non_witness_utxo`, which is every
+BlueWallet spend, is now accepted, and its fee is shown as an exact figure rather than a
+lower bound. Two or more inputs stays refused, and the reason is that no stateless rule
+can admit it: a coordinator can prove one input's amount and merely claim another's,
+rotating which is which between rounds, so every file he presents carries a single
+unproven amount and still yields one valid signature per round, and S-35 leaves this
+device nothing with which to notice the second presentation. `docs/RELEASE-0.2.1.md`
+section 0 states the narrowed rule, what it admits, what it still refuses, and the remedy.
+
 ### K12. Board B stopped enumerating over USB after a camera module was inserted reversed
 
 **Found:** 2026-08-18, on the bench. An OV2640 module was seated into FPC3 end-for-end
