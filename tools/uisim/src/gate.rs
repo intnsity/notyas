@@ -273,6 +273,7 @@ fn screen_slug(s: ScreenId) -> &'static str {
         ScreenId::PassphraseUnlock => "passphrase-unlock",
         ScreenId::Deriving => "deriving",
         ScreenId::Schemes => "schemes",
+        ScreenId::Receive => "receive",
         ScreenId::VerifyDevice => "verify-device",
         ScreenId::ScanningFlash => "scanning-flash",
         ScreenId::Lock => "lock",

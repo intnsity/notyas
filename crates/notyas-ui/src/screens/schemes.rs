@@ -4,9 +4,10 @@
 //! Schemes: the finished wallet, one tab per derivation scheme, and the QR modal.
 //!
 //! Only PUBLIC values are drawn and only public values can be offered as a QR: the
-//! account xpub, its SLIP-132 rendering, and the receive addresses. There is deliberately
-//! no private-key path on this screen at all - no mnemonic, xprv, seed or WIF renders
-//! here or leaves the device any other way - which is stronger than masking them.
+//! account xpub, the origin-carrying BIP-380 descriptor built from that same xpub
+//! ([`export::descriptor`]), its SLIP-132 rendering, and the receive addresses. There is
+//! deliberately no private-key path on this screen at all - no mnemonic, xprv, seed or WIF
+//! renders here or leaves the device any other way - which is stronger than masking them.
 //!
 //! The UI never COMPUTES a QR (the encoder needs std): a tap returns [`UiRequest::Qr`]
 //! naming the payload, the embedder encodes it, and the finished matrix comes back
@@ -27,12 +28,14 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::str::FromStr;
 
 use embedded_graphics::draw_target::{DrawTarget, DrawTargetExt};
 use embedded_graphics::pixelcolor::Rgb565;
 
 use crate::canvas::{
-    button, fill, frame, mono_wrapped, tabs, text, text_centered, ButtonKind, HEADING, MONO_SMALL,
+    button, fill, frame, mono_wrapped, tabs, text, text_centered, wrap_words, ButtonKind, BODY,
+    HEADING, MONO_SMALL,
 };
 use crate::components::{back_rect, draw_bar, LINE, SMALL_LINE};
 use crate::layout::{Metrics, Rect};
@@ -40,9 +43,21 @@ use crate::screens::wallet::WalletState;
 use crate::screens::{Ctx, Env, Nav, Outcome, Screen, State};
 use crate::theme::*;
 use crate::{NullTarget, QrData, QrTarget, Region, RegionId, UiRequest, WalletInfo};
+use notyas_core::bitcoin::bip32::Fingerprint;
 use notyas_core::bitcoin::Network;
 use notyas_core::derive::Scheme;
+use notyas_core::export;
 use notyas_core::report::{Report, SchemeReport};
+
+/// [`Report::root_fingerprint`] parsed back into the typed form [`export::descriptor`]
+/// wants. `Report` only carries the hex string this screen already prints on the info
+/// line (`derive::root_fingerprint`'s own rendering) - not attacker input, and never a
+/// value this crate did not compute itself - so a failed parse would mean a bug in this
+/// crate's own formatting, not a malformed input this screen has to refuse.
+fn root_fingerprint(report: &Report) -> Fingerprint {
+    Fingerprint::from_str(&report.root_fingerprint)
+        .expect("Report::root_fingerprint is always this crate's own 8 lowercase hex chars")
+}
 
 /// The QR modal, open over this screen: a finished symbol plus its title.
 pub(crate) struct QrModal {
@@ -133,6 +148,19 @@ pub(crate) struct Layout {
 /// with the panel (same reasoning as [`crate::layout::DICE_KEY_MIN`]).
 const QR_BTN_W: i32 = 96;
 const QR_BTN_H: i32 = 56;
+
+/// Why the descriptor block exists, printed under it. A coordinator that only ever sees
+/// the bare xpub above has no fingerprint to put in the PSBTs it builds, so it writes
+/// `00000000` - indistinguishable from every OTHER signer that got the same bare key -
+/// and every downstream signer is left guessing whose key that was. BlueWallet in
+/// particular parses this exact bracketed form (its `AbstractHDElectrumWallet.setSecret`
+/// accepts a `wpkh([fp/path]xpub...)` descriptor, and reads the fingerprint straight out
+/// of the brackets), so naming it by that coordinator is concrete rather than generic
+/// advice.
+const DESCRIPTOR_HELP: &str = "Give BlueWallet this descriptor, not the xpub above. \
+    BlueWallet reads the fingerprint in the brackets and writes it into every PSBT it \
+    builds; handed the bare xpub, it has none to write, and every signer downstream has \
+    to guess whose key made each signature.";
 
 impl Screen for SchemesState {
     type Layout = Layout;
@@ -248,6 +276,22 @@ impl Screen for SchemesState {
                     _ => Outcome::stay(),
                 }
             }
+            // The origin-carrying twin of `QrXpub`: same public account key, wrapped with
+            // the key-origin path and this wallet's root fingerprint so a coordinator that
+            // reads it (BlueWallet's descriptor parser among them) has a real fingerprint to
+            // write into the PSBTs it builds, instead of `00000000`.
+            RegionId::QrDescriptor => {
+                let (Some(report), Some(sr)) = (self.report.as_ref(), self.active()) else {
+                    return Outcome::stay();
+                };
+                match export::descriptor(sr.scheme, root_fingerprint(report), &sr.derived.account) {
+                    Some(desc) => Outcome::ask(UiRequest::Qr(QrTarget {
+                        label: format!("Descriptor {}", sr.derived.account.path),
+                        payload: desc,
+                    })),
+                    None => Outcome::stay(),
+                }
+            }
             RegionId::QrAddress(i) => match self
                 .active()
                 .and_then(|sr| sr.derived.rows.get(i as usize))
@@ -300,29 +344,60 @@ impl Screen for SchemesState {
         }
     }
 
+    /// The true bottom of the content would let a drag push the last address row clean
+    /// off the TOP of the viewport once the descriptor block and its BlueWallet
+    /// explainer (`DESCRIPTOR_HELP`) run past a viewport's worth of content below the
+    /// address rows on a short panel - see [`ContentEnd::last_address_row`]. Clamp to
+    /// whichever is smaller: the true content end, or the point at which the last
+    /// address row's top is flush with the viewport's. A tab with no address rows (or
+    /// no report yet) has no row to protect and falls back to the true end unchanged.
     fn scroll_limit(&self, ctx: &Ctx) -> i32 {
         let l = self.layout(ctx);
-        let end = self.content(&mut NullTarget, &ctx.m, l.viewport.y, None).unwrap_or_default();
-        (end - l.viewport.y - l.viewport.h).max(0)
+        let content =
+            self.content(&mut NullTarget, &ctx.m, l.viewport.y, None).unwrap_or_default();
+        let true_limit = (content.y - l.viewport.y - l.viewport.h).max(0);
+        match content.last_address_row {
+            Some(top) => true_limit.min((top - l.viewport.y).max(0)),
+            None => true_limit,
+        }
     }
+}
+
+/// Where a [`SchemesState::content`] walk ended, and - when the active tab drew any
+/// receive-address rows - the y of the TOP of the last one.
+///
+/// [`SchemesState::scroll_limit`] reads `last_address_row` alone; `y` is the true
+/// bottom, kept for the ordinary "how far can this scroll" measurement. Splitting the
+/// two out of a bare `i32` is what makes the clamp below possible at all: the total
+/// height of the content is not the fact the clamp needs.
+#[derive(Default)]
+struct ContentEnd {
+    y: i32,
+    last_address_row: Option<i32>,
 }
 
 impl SchemesState {
     /// Draws (or measures, against [`NullTarget`]) the active tab's content starting at
-    /// `y0`; returns the y after the last line. When `buttons` is given the QR buttons'
-    /// regions are collected in content coordinates - the caller filters by viewport.
+    /// `y0`; returns the y after the last line, and the top of the last address row (see
+    /// [`ContentEnd`]). When `buttons` is given the QR buttons' regions are collected in
+    /// content coordinates - the caller filters by viewport.
     fn content<D: DrawTarget<Color = Rgb565>>(
         &self,
         t: &mut D,
         m: &Metrics,
         y0: i32,
         mut buttons: Option<&mut Vec<Region>>,
-    ) -> Result<i32, D::Error> {
+    ) -> Result<ContentEnd, D::Error> {
         let body = m.body();
         let g = m.gap;
         // Nothing to measure or draw while the report is on its way back to the wallet (see
         // the field); the caller reads this as "the content ended where it began".
-        let Some(sr) = self.active() else { return Ok(y0) };
+        let Some(report) = self.report.as_ref() else {
+            return Ok(ContentEnd { y: y0, last_address_row: None });
+        };
+        let Some(sr) = self.active() else {
+            return Ok(ContentEnd { y: y0, last_address_row: None });
+        };
         let acct = &sr.derived.account;
         let mut y = y0;
 
@@ -330,6 +405,7 @@ impl SchemesState {
         y += LINE + g;
 
         y = qr_block(t, m, y, "Account xpub", &acct.xpub, RegionId::QrXpub, &mut buttons)?;
+
         if let (Some(slip), Some((_, label))) = (&acct.slip132_pub, sr.scheme.slip132_labels()) {
             y += g;
             y = qr_block(
@@ -346,7 +422,13 @@ impl SchemesState {
         y += g * 2;
         text(t, "Receive addresses", body.x, y, HEADING, INK_PRIMARY, PAPER_1)?;
         y += LINE + g;
+        // The top of each row, captured before `qr_block` advances `y`: after the loop
+        // this holds the LAST row's top, which is exactly what `scroll_limit` needs to
+        // keep in reach (see `ContentEnd`). `None` stays correct for a scheme with no
+        // rows to show, though every shipped scheme derives `ADDRESS_ROWS` of them.
+        let mut last_address_row = None;
         for (i, row) in sr.derived.rows.iter().enumerate() {
+            last_address_row = Some(y);
             y = qr_block(
                 t,
                 m,
@@ -358,7 +440,33 @@ impl SchemesState {
             )?;
             y += g;
         }
-        Ok(y)
+
+        // Last on the screen, not under the xpub block: wrapped, this string plus its
+        // explanation run to several times an ordinary QR block's height (it carries the
+        // wallet's own key-origin path and fingerprint on top of the xpub every other
+        // block already prints), and putting that ahead of the SLIP-132 rendering or the
+        // address rows would shove both below a fold a finger has to find blind. On a
+        // short panel this block plus DESCRIPTOR_HELP below it runs past a viewport's
+        // worth of content on its own, past the last address row - `scroll_limit`'s
+        // `last_address_row` clamp is what keeps that row reachable regardless; this
+        // block and its prose are free to run long because nothing below the last
+        // address row is load-bearing the way that row's own QR button is.
+        //
+        // Offered beside the bare xpub above, never in place of it: some coordinators
+        // still want the bare key, and swapping what that button has always emitted would
+        // break an established workflow. `None` only for Bip48 (module docs on
+        // `export::descriptor` - multisig needs cosigner keys this crate does not accept),
+        // which is exactly the scheme with no key-origin story to tell here.
+        if let Some(desc) = export::descriptor(sr.scheme, root_fingerprint(report), acct) {
+            y += g;
+            y = qr_block(t, m, y, "Descriptor", &desc, RegionId::QrDescriptor, &mut buttons)?;
+            y += g;
+            for line in wrap_words(DESCRIPTOR_HELP, body.w, BODY) {
+                text(t, &line, body.x, y, BODY, INK_SECONDARY, PAPER_1)?;
+                y += LINE;
+            }
+        }
+        Ok(ContentEnd { y, last_address_row })
     }
 }
 
@@ -486,8 +594,8 @@ fn draw_qr_modal<D: DrawTarget<Color = Rgb565>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::testing::GEOMETRIES;
-    use crate::{BackupState, PassphraseState, WalletKind};
+    use crate::screens::testing::{Fixture, GEOMETRIES};
+    use crate::{BackupState, PassphraseState, UnlockGate, WalletKind};
 
     /// The 12-word all-`abandon` vector: a real derivation with nothing in it, so a test
     /// can hold keys without inventing a wallet worth stealing.
@@ -566,14 +674,85 @@ mod tests {
         assert!(s.report.is_some(), "the question is not the move: nothing may leave yet");
     }
 
+    /// This is the test that would have caught the upstream bug: a coordinator that only
+    /// ever sees `QrXpub` never learns this wallet's root fingerprint, so it writes
+    /// `00000000` into every PSBT it builds and every signer downstream has to guess whose
+    /// key that was. It drives the screen the way a finger would -
+    /// `activate(RegionId::QrDescriptor)` on the BIP84 tab, not a direct call into
+    /// `notyas_core::export` - and checks the resulting payload against BIP-380's own
+    /// grammar (https://github.com/bitcoin/bips/blob/master/bip-0380.mediawiki) and the
+    /// exact shape BlueWallet's `AbstractHDElectrumWallet.setSecret` accepts for a
+    /// descriptor - `wpkh([fingerprint/path]xpub.../<0;1>/*)`, reading `fingerprint` as
+    /// `MasterFingerprint` - rather than against memory: the `wpkh(...)` wrapper, hardened
+    /// steps spelled with `h` and not `'`, the bracketed origin starting with the real
+    /// master fingerprint in lowercase hex (not the wallet-info fixture's, and not
+    /// zeroes), the plain account xpub, and the `<0;1>/*` multipath suffix. The checksum's
+    /// own validity is `export::checksum::create`'s independently-tested property, not
+    /// re-proven here.
+    #[test]
+    fn qr_descriptor_carries_the_real_fingerprint_bluewallet_can_parse() {
+        assert_eq!(Scheme::ALL[2], Scheme::Bip84, "test assumes tab index 2 is BIP84");
+        let r = report();
+        let expected_fp = r.root_fingerprint.clone();
+        let expected_xpub = r.schemes[2].derived.account.xpub.clone();
+
+        let f = Fixture::new(720, 720);
+        let mut network = Network::Bitcoin;
+        let mut env = Env {
+            network: &mut network,
+            lock: &f.lock,
+            wallets: &f.wallets,
+            gate: &mut UnlockGate::default(),
+        };
+        let mut s = SchemesState::new(r, Origin::Fresh);
+        s.tab = 2;
+
+        let outcome = s.activate(RegionId::QrDescriptor, &mut env);
+        let Some(UiRequest::Qr(target)) = outcome.request else {
+            panic!("QrDescriptor on a BIP84 tab must raise a Qr request");
+        };
+        let desc = target.payload;
+
+        let (body, checksum) =
+            desc.rsplit_once('#').expect("a BIP-380 descriptor carries a checksum");
+        assert_eq!(checksum.len(), 8, "checksum length: {checksum}");
+        assert!(body.starts_with("wpkh(["), "not a wpkh() descriptor: {body}");
+        assert!(body.ends_with(')'), "wpkh(...) wrapper unclosed: {body}");
+
+        let origin_start = body.find('[').expect("key origin present");
+        let origin_end = body.find(']').expect("key origin closed");
+        let origin = &body[origin_start + 1..origin_end];
+        let (fp, path) = origin.split_once('/').expect("fingerprint/path in the key origin");
+        assert_eq!(fp, expected_fp, "must be the WALLET's own root fingerprint, not a stand-in");
+        assert_ne!(fp, "00000000", "the bug this screen exists to fix");
+        assert_eq!(fp.len(), 8, "fingerprint length: {fp}");
+        assert!(
+            fp.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "fingerprint must be lowercase hex: {fp}"
+        );
+        assert_eq!(path, "84h/0h/0h", "hardened steps must use h, not the report's own '");
+
+        let key_and_suffix = &body[origin_end + 1..];
+        assert!(
+            key_and_suffix.starts_with(&expected_xpub),
+            "must carry the plain xpub, not a SLIP-132 alias: {key_and_suffix}"
+        );
+        assert!(
+            key_and_suffix.ends_with("/<0;1>/*)"),
+            "must carry the multipath receive/change suffix: {key_and_suffix}"
+        );
+    }
+
     /// The QR modal at every real symbol size the 0.1.0 targets produce (v3 addresses
-    /// through v7 zpubs) plus the format extremes: integer scale, largest fit, symbol
+    /// through v7 zpubs), the v9 the BIP-380 descriptor (0.2.1) lands at - byte mode, no
+    /// lowercase-to-alphanumeric trick (module docs), so its ~150 bytes cost more than
+    /// twice a bare xpub's - plus the format extremes: integer scale, largest fit, symbol
     /// centered between label and Close, everything inside the panel.
     #[test]
     fn qr_modal_scales_integer_and_fits() {
         for (w, h) in GEOMETRIES {
             let m = Metrics::new(w, h);
-            for size in [21, 29, 33, 45, 57, 177] {
+            for size in [21, 29, 33, 45, 53, 57, 177] {
                 let l = qr_modal_layout(&m, size);
                 let total = size + 2 * QR_QUIET;
                 assert!(l.scale >= 1, "{w}x{h} size {size}: scale floor");

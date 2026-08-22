@@ -7,8 +7,9 @@
 //! TEST IS THE REAL ONE, byte for byte. This file is a crate root that supplies the two
 //! module paths `signing.rs` names - `crate::flow::model`, which is the firmware's own file
 //! again, and `crate::wallet`, which cannot be: `Wallet` owns an ESP-IDF partition. What
-//! stands in for it here is a struct with the four accessors `signing.rs` calls and no
-//! behaviour of its own, and nothing in this suite asserts anything about it.
+//! stands in for it here is a struct with the four accessors `signing.rs` calls, plus
+//! `for_test` so `signing.rs`'s own tests can build one from a fixture seed - nothing in
+//! this suite asserts anything about `Wallet` itself.
 //!
 //! The assertions live in `signing.rs`'s own `#[cfg(test)] mod tests`. An integration test
 //! binary is compiled with `--test`, so `cfg(test)` holds for every module of this crate,
@@ -56,6 +57,18 @@ mod wallet {
                 fingerprint: self.fingerprint,
                 limits: StructuralLimits::DEFAULT,
                 registry: &self.registrations,
+            }
+        }
+
+        /// A single-sig wallet with an empty registry - what `signing.rs`'s own encoding
+        /// tests need to call `review`/`sign` against a fixture PSBT, and all any of them
+        /// ask for.
+        pub fn for_test(network: Network, fingerprint: Fingerprint, seed: [u8; 64]) -> Wallet {
+            Wallet {
+                network,
+                fingerprint,
+                registrations: Vec::new(),
+                seed,
             }
         }
     }

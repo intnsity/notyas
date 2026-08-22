@@ -34,6 +34,7 @@ use crate::components::{draw_bar_no_back, LINE, SMALL_LINE};
 use crate::layout::{Metrics, Rect, TOUCH_MIN};
 use crate::screens::dice::DiceState;
 use crate::screens::phrase::PhraseState;
+use crate::screens::review::marker;
 use crate::screens::settings::SettingsState;
 use crate::screens::{Ctx, Env, Nav, Outcome, Screen, State};
 use crate::theme::*;
@@ -305,9 +306,25 @@ impl Screen for WalletsState {
                 y += SMALL_LINE;
             }
         } else {
-            let mut clip = t.clipped(&l.viewport.to_eg());
-            for (i, entry) in ctx.wallets.iter().enumerate() {
-                row(&mut clip, row_rect(&l.viewport, i, self.scroll), entry, m.gap)?;
+            {
+                let mut clip = t.clipped(&l.viewport.to_eg());
+                for (i, entry) in ctx.wallets.iter().enumerate() {
+                    row(&mut clip, row_rect(&l.viewport, i, self.scroll), entry, m.gap)?;
+                }
+            }
+            // A row below the fold is invisible, not clipped - the viewport is a whole
+            // number of rows (`whole_rows`) so a row that does not fully fit is not drawn
+            // at all. On the short panel two rows fit and a third stored wallet is common,
+            // so the capacity line's word count is not what tells a reader there is more:
+            // it is this mark, over the one edge that still has content past it. Same
+            // mechanism as the review flow's C6 markers (`marker`), so a scroll affordance
+            // does not look like a different control from one screen to the next.
+            let limit = self.scroll_limit(ctx);
+            if self.scroll > 0 {
+                marker(t, "more above", l.viewport, true)?;
+            }
+            if self.scroll < limit {
+                marker(t, "more below", l.viewport, false)?;
             }
         }
 

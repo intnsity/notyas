@@ -295,6 +295,7 @@ pub enum ScreenId {
     /// tappable regions: the compute is synchronous and cannot be cancelled.
     Deriving,
     Schemes,
+    Receive,
     VerifyDevice,
     /// The C3 Busy frame S-46 shows while the reserved-space scan runs (ratified Q57).
     /// A distinct id rather than a flag on `VerifyDevice`, because what is on the panel
@@ -428,7 +429,7 @@ impl ScreenId {
     /// the unit test below maps every variant to its index through an exhaustive `match`,
     /// so a new variant breaks compilation twice - at the array length and at the match -
     /// and cannot be added without saying where it belongs.
-    pub const ALL: [ScreenId; 34] = [
+    pub const ALL: [ScreenId; 35] = [
         ScreenId::Home,
         ScreenId::DiceEntry,
         ScreenId::MnemonicDisplay,
@@ -463,6 +464,7 @@ impl ScreenId {
         ScreenId::MultisigDetail,
         ScreenId::FormatCard,
         ScreenId::PassphraseUnlock,
+        ScreenId::Receive,
     ];
 }
 
@@ -508,6 +510,7 @@ mod screen_id_tests {
             ScreenId::MultisigDetail => 31,
             ScreenId::FormatCard => 32,
             ScreenId::PassphraseUnlock => 33,
+            ScreenId::Receive => 34,
         };
         for (i, s) in ScreenId::ALL.into_iter().enumerate() {
             assert_eq!(index(s), i, "{s:?} is at the wrong index of ScreenId::ALL");
@@ -567,6 +570,13 @@ pub enum RegionId {
     QrXpub,
     /// QR button beside the SLIP-132 rendering (BIP49/84 mainnet only).
     QrSlip132,
+    /// QR button beside the origin-carrying BIP-380 descriptor
+    /// (`wpkh([fingerprint/path]xpub.../<0;1>/*)`, UX-SCREENS.md S-26), offered beside
+    /// `QrXpub` rather than instead of it: the descriptor is the form a coordinator needs
+    /// to learn this wallet's root fingerprint (BlueWallet's importer among them), and the
+    /// bare xpub some coordinators still ask for carries none. Absent for BIP48
+    /// (multisig) - see `export::descriptor`'s doc comment for why.
+    QrDescriptor,
     /// QR button beside receive address row `n` (0-based).
     QrAddress(u8),
     ModalCancel,
@@ -664,6 +674,8 @@ pub enum RegionId {
     RememberPassphraseAck,
     /// "Export public keys" on the wallet home.
     ActExport,
+    ActReceive,
+    NextAddr,
     /// "Remember passphrase on this device" / "Forget the passphrase" on the wallet home
     /// of an open passphrase wallet. ONE region for the two directions, because it is one
     /// row whose state decides which sheet opens - a second region could be drawn in the
@@ -825,6 +837,8 @@ pub enum RegionId {
     /// button that is not drawn. "Check again" on that screen is [`RegionId::FileRefresh`],
     /// which is the same affordance with the same label everywhere a card might not be
     /// there.
+    ActWords,
+    SaveAddr,
     CardFormat,
 }
 
@@ -1106,6 +1120,14 @@ pub enum UiRequest {
         /// word the user typed back.
         card: String,
     },
+    /// Write a receive address to a text file on the SD card. Answer with
+    /// [`Ui::save_addr_result`]. The address is public data.
+    ///
+    /// `overwrite` is true only on the second raise, behind the confirm that a
+    /// [`SaveAddrResult::Collision`] opens - the same shape [`UiRequest::WriteSigned`]
+    /// uses for the same reason: an existing file is a question for the user, not
+    /// something this device deletes on its own say-so.
+    SaveAddress { address: String, overwrite: bool },
 }
 
 /// A secret on its way from a screen to the embedder: a PIN, or the prefix of one.
@@ -1245,6 +1267,7 @@ impl WalletKind {
 /// Two states and no third: a wallet is either backed by words the owner demonstrably
 /// holds or it is not, and the screens say which in the same two words everywhere.
 #[derive(Debug, Clone, PartialEq, Eq)]
+
 pub enum BackupState {
     /// The check was passed. The string is what the embedder recorded (a date); empty
     /// when the record carries none, which renders as the bare badge rather than a
@@ -2260,7 +2283,6 @@ pub struct Press {
     pub held_ms: u32,
 }
 
-
 // ---------------------------------------------------------------------------------------
 // The card, as the ingress screens read it (S-27, S-28)
 // ---------------------------------------------------------------------------------------
@@ -2703,8 +2725,9 @@ impl RefusalCode {
         match self {
             RefusalCode::NotOurInputs => Some("Signing needs the wallet that owns the coins."),
             RefusalCode::MissingPrevTx => Some(
-                "Without it the amount cannot be checked. A wrong amount is how a signer \
-                 is tricked into paying its balance as a fee.",
+                "Without it, nothing proves what these coins are worth. Telling a signer a \
+                 false amount is how it is tricked into paying its balance as a fee, and \
+                 with more than one input this device cannot rule that out.",
             ),
             RefusalCode::ChangeNotProven => {
                 Some("This is exactly what an attacker does to redirect your change.")
@@ -2752,8 +2775,15 @@ impl RefusalCode {
     pub fn todo(self) -> &'static str {
         match self {
             RefusalCode::NotOurInputs => "Open that wallet and load the file again.",
+            // The old sentence named one remedy, and it was one the wallet that most often
+            // raises this refusal cannot perform: a watch-only BlueWallet import has no
+            // previous transactions to attach. Coin control is the remedy that wallet does
+            // have, and it is first because a single-input spend is a file this device now
+            // signs.
             RefusalCode::MissingPrevTx => {
-                "Re-export with full previous transactions included, then load it again."
+                "Spend a single coin - use coin control to select one - or re-export from \
+                 software that includes full previous transactions (Sparrow, Electrum, \
+                 Bitcoin Core), then load it again."
             }
             RefusalCode::ChangeNotProven => {
                 "Do not sign. Check the transaction in your wallet software."
@@ -2825,8 +2855,9 @@ pub struct RefusalNotice {
 /// can grow a third state without the other refusing to compile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewedFee {
-    /// Every input amount was proven against its own previous transaction, or this
-    /// device's signature commits to all of them at once (BIP-341).
+    /// No input amount is left resting on the file's word: each was either proven against
+    /// its own previous transaction or made binding by a signature this device is about to
+    /// add ([`AmountProof::BoundByOurSignature`]).
     Enforced(Amount),
     /// At least one input's amount is the file's word and no signature of ours makes it
     /// binding. A lower bound on what this transaction costs, never a measurement, and it
@@ -2938,7 +2969,13 @@ impl TxReview {
         sum_sats(self.outputs.iter().filter(|o| o.role.is_change()).map(|o| o.value))
     }
 
-    /// Inputs whose amount rests on the file's word alone.
+    /// Inputs whose amount rests on the file's word and nothing else.
+    ///
+    /// [`AmountProof::BoundByOurSignature`] is deliberately NOT counted here, and the
+    /// comparison is a `==` rather than a `!=` for that reason: an amount a signature of
+    /// ours makes binding is not one the reader has to discount, so the warning band this
+    /// number raises stays silent on an ordinary single-input spend. Only the file's bare
+    /// word counts.
     pub fn unproven_amounts(&self) -> usize {
         self.inputs
             .iter()
@@ -3059,6 +3096,27 @@ pub enum WriteOutcome {
     NoCard,
     /// R-25. The sentence names how far the write got, because the file on the card is
     /// incomplete and has to be deleted before the name is reused.
+    Failed(String),
+}
+
+// ---------------------------------------------------------------------------------------
+// Save address to SD (receive screen)
+// ---------------------------------------------------------------------------------------
+
+/// What the std side made of a [`UiRequest::SaveAddress`].
+///
+/// The file name on success, or the reason it failed. Neither is secret: a receive
+/// address is public data and a file name is what the user looks for on the card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveAddrResult {
+    /// The file that was written, as the card sees it.
+    Saved(String),
+    /// This name is already on the card and the write was refused rather than silently
+    /// replacing it. Tapping Save again raises [`UiRequest::SaveAddress`] with
+    /// `overwrite` set, which is the confirm.
+    Collision(String),
+    /// Why nothing was written. "No card" is the common one on hardware without a
+    /// card-detect line.
     Failed(String),
 }
 

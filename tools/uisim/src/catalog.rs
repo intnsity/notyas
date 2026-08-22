@@ -38,7 +38,8 @@ use crate::fixtures::{
     dummy_empty_card, dummy_flash_scan, dummy_format_target, dummy_lock_info,
     dummy_long_psbt_card, dummy_multisig_card, dummy_psbt_card, dummy_refusal,
     dummy_registration_review, dummy_registrations, dummy_report, dummy_saved_registration, dummy_signed,
-    dummy_single_psbt_card, dummy_tx_review, dummy_verify_info, dummy_wallets, ReviewShape,
+    dummy_bluewallet_review, dummy_single_psbt_card, dummy_tx_review, dummy_verify_info,
+    dummy_wallets, ReviewShape,
     DUMMY_DEVICE_NAME,
     ELEVEN_SIXES_WORDS, SIXES, SIXES_PHRASE,
 };
@@ -200,7 +201,8 @@ fn session_wallet(ui: &mut Ui) {
 /// somebody made the typed sheet skippable.
 fn erase_offer(ui: &mut Ui) {
     stored_wallet(ui);
-    tap(ui, RegionId::WalletDelete);
+    scroll_to(ui, RegionId::WalletDelete);
+            tap(ui, RegionId::WalletDelete);
     tap(ui, RegionId::DangerConfirm);
     // "DUMMY savings", exactly, case included - the sheet accepts nothing else.
     type_shifted(ui, "DUMMY");
@@ -283,7 +285,8 @@ fn multisig_registry(ui: &mut Ui, claims: u8, held: Vec<notyas_ui::RegistrationI
     ui.set_wallets(rows);
     ui.wallet_opened(info);
     ui.set_registrations(held);
-    tap(ui, RegionId::ActMultisig);
+    scroll_to(ui, RegionId::ActMultisig);
+            tap(ui, RegionId::ActMultisig);
 }
 
 /// A STORED wallet the embedder unsealed AND handed its derivation to.
@@ -344,6 +347,16 @@ fn loading(ui: &mut Ui) {
 fn review_at(ui: &mut Ui, shape: ReviewShape, page: usize) {
     loading(ui);
     ui.psbt_result(PsbtOutcome::Reviewed(dummy_tx_review(shape)));
+    page_forward(ui, page);
+}
+
+/// ...-> the single-input BlueWallet review, paged to `page`.
+///
+/// Six pages rather than ten, because this fixture has one input and two outputs. It is a
+/// separate recipe for that reason: the input count is the fact the file is about.
+fn bluewallet_review_at(ui: &mut Ui, page: usize) {
+    loading(ui);
+    ui.psbt_result(PsbtOutcome::Reviewed(dummy_bluewallet_review()));
     page_forward(ui, page);
 }
 
@@ -693,6 +706,8 @@ pub const CATALOG: &[Frame] = &[
         // the wallet the user came from, and that what it makes is a different wallet.
         build: |ui| {
             wallet_home_with(ui, PassphraseState::None);
+            scroll_to(ui, RegionId::ActPassphraseDerive);
+            
             tap(ui, RegionId::ActPassphraseDerive);
         },
     },
@@ -750,6 +765,17 @@ pub const CATALOG: &[Frame] = &[
         build: wallet_home_signable,
     },
     Frame {
+        name: "receive/address",
+        variant: "receive",
+        screen: ScreenId::Receive,
+        doc: Doc::Both("90-receive", "91-receive-800x480"),
+        build: |ui| {
+            wallet_home_signable(ui);
+            scroll_to(ui, RegionId::ActReceive);
+            tap(ui, RegionId::ActReceive);
+        },
+    },
+    Frame {
         name: "wallet-home/passphrase-required",
         variant: "passphrase-required",
         screen: ScreenId::WalletHome,
@@ -772,6 +798,7 @@ pub const CATALOG: &[Frame] = &[
         // C4b. The two dangers that are true whichever way the toggle goes.
         build: |ui| {
             wallet_home_with(ui, PassphraseState::Required);
+            scroll_to(ui, RegionId::ActPassphraseStore);
             tap(ui, RegionId::ActPassphraseStore);
         },
     },
@@ -784,6 +811,7 @@ pub const CATALOG: &[Frame] = &[
         // on the short panel, and this needs five.
         build: |ui| {
             wallet_home_with(ui, PassphraseState::Stored);
+            scroll_to(ui, RegionId::ActPassphraseStore);
             tap(ui, RegionId::ActPassphraseStore);
         },
     },
@@ -795,6 +823,7 @@ pub const CATALOG: &[Frame] = &[
         // C4c. A tap must not be able to destroy a secret this device can never show back.
         build: |ui| {
             wallet_home_with(ui, PassphraseState::Stored);
+            scroll_to(ui, RegionId::ActPassphraseStore);
             tap(ui, RegionId::ActPassphraseStore);
             tap(ui, RegionId::DangerConfirm);
         },
@@ -808,6 +837,7 @@ pub const CATALOG: &[Frame] = &[
         // FLASH is in, which here is the state it was in before.
         build: |ui| {
             wallet_home_with(ui, PassphraseState::Required);
+            scroll_to(ui, RegionId::ActPassphraseStore);
             tap(ui, RegionId::ActPassphraseStore);
             tap(ui, RegionId::DangerConfirm);
             ui.passphrase_storage_result(StorageOutcome::Refused(String::from(
@@ -837,6 +867,7 @@ pub const CATALOG: &[Frame] = &[
         doc: Doc::Portrait("47-delete-consequence"),
         build: |ui| {
             stored_wallet(ui);
+            scroll_to(ui, RegionId::WalletDelete);
             tap(ui, RegionId::WalletDelete);
         },
     },
@@ -847,6 +878,7 @@ pub const CATALOG: &[Frame] = &[
         doc: Doc::Both("48-delete-typed-name", "72-delete-typed-name-800x480"),
         build: |ui| {
             stored_wallet(ui);
+            scroll_to(ui, RegionId::WalletDelete);
             tap(ui, RegionId::WalletDelete);
             tap(ui, RegionId::DangerConfirm);
             type_keys(ui, "dummy");
@@ -1664,6 +1696,17 @@ pub const CATALOG: &[Frame] = &[
         build: |ui| review_at(ui, ReviewShape::Stated, 2),
     },
     Frame {
+        name: "review-transaction/input-bound",
+        variant: "input-bound",
+        screen: ScreenId::ReviewTransaction,
+        doc: Doc::None,
+        // The amount a BlueWallet spend states and this device's own signature binds. STATED
+        // is still on the number, because it did come out of the file - but there is no
+        // caveat band, no amber, and the row underneath says what the signature does. Beside
+        // "input-stated", which is the same prefix over an amount nothing binds.
+        build: |ui| bluewallet_review_at(ui, 1),
+    },
+    Frame {
         name: "review-transaction/output-external",
         variant: "output-external",
         screen: ScreenId::ReviewTransaction,
@@ -2063,6 +2106,7 @@ pub fn required_variants(screen: ScreenId) -> &'static [&'static str] {
         ScreenId::PassphraseUnlock => &["prompt", "typed", "refused"],
         ScreenId::Deriving => &["running"],
         ScreenId::Schemes => &["bip44", "bip84", "qr"],
+        ScreenId::Receive => &["receive"],
         ScreenId::VerifyDevice => {
             &["pre-pin", "digests", "unlocked", "reserved-space", "acknowledge"]
         }
@@ -2133,6 +2177,7 @@ pub fn required_variants(screen: ScreenId) -> &'static [&'static str] {
             "overview",
             "input-proven",
             "input-stated",
+            "input-bound",
             "output-external",
             "output-change",
             "output-data",

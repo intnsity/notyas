@@ -94,8 +94,10 @@ pub enum Malformed {
     /// Too short to even carry the magic.
     Truncated { len: usize },
     /// The magic is wrong. Almost always the wrong file, or a base64/hex wrapper that the
-    /// caller was supposed to strip first (that autodetect is notyas-wallet's
-    /// `transport::decode`, WALLET-API.md 2.10).
+    /// caller was supposed to strip first. That autodetect is `firmware::signing::PsbtEncoding`
+    /// (`firmware/src/signing.rs`) - the plan this crate's own doc once pointed at,
+    /// `notyas-wallet`'s `transport::decode` (WALLET-API.md 2.10), was never built; the
+    /// device's own transport layer took the job instead.
     NotAPsbt,
     /// More bytes than [`MAX_PSBT_BYTES`], caught before the parser sees any of them.
     TooLarge { len: usize, max: usize },
@@ -149,11 +151,12 @@ impl core::error::Error for Malformed {}
 
 /// Parse a binary PSBT.
 ///
-/// Binary only. Base64 and hex are transport encodings and are autodetected one layer up,
-/// where the file name also lives; teaching the parser about them would put three ways to
-/// reach the same bytes inside the component that reads untrusted input. The size cap is
-/// applied there too and again here, because a cap only the transport applies is a cap
-/// that a second reader walks around.
+/// Binary only. Base64 and hex are transport encodings and are autodetected one layer up
+/// (`firmware::signing::PsbtEncoding`, sniffed off the file as it comes off the card, where
+/// the file name also lives) rather than here; teaching the parser about them would put
+/// three ways to reach the same bytes inside the component that reads untrusted input. The
+/// size cap is applied there too and again here, because a cap only the transport applies
+/// is a cap that a second reader walks around.
 ///
 /// The order of what follows is the whole of what this function decides, and it is the
 /// order it is in because everything ahead of `Psbt::deserialize` exists to make sure no

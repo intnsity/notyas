@@ -1,6 +1,6 @@
 [package]
 name = "notyas-core"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 # 1.85 is the floor imposed by the RustCrypto 2026 generation (sha2 0.11 / hmac 0.13 / pbkdf2 0.13),
 # same as the desktop crate this is ported from.

@@ -463,6 +463,13 @@ fn fee_warning(review: &TxReview, out: &mut Vec<TxWarning>) {
 ///
 /// On this page as well as in the band the overview leads with, because this is where the
 /// user is asked to decide, and the fee they are judging is a sum over these.
+///
+/// "Nothing proves" is the whole of it, and it is narrower than "came off `witness_utxo`":
+/// an amount a signature of this device makes binding is not counted
+/// (`AmountProof::BoundByOurSignature`), so this band does not fire on an ordinary
+/// single-input spend. It used to, on every taproot file, standing beside a fee the same
+/// screen called exact - which is a contradiction a reader can only resolve by ignoring one
+/// of the two.
 fn unproven_warning(review: &TxReview, out: &mut Vec<TxWarning>) {
     let n = review.unproven_amounts();
     if n == 0 {

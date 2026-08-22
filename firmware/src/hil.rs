@@ -365,6 +365,7 @@ fn dispatch(line: &str, store: &mut Option<Store>, bench: &mut Bench) {
                 "seal" => seal(s, rest),
                 "read" => read(s, rest),
                 "changepin" => change_pin(s, rest),
+                "policysoak" => policy_soak_cmd(s, rest),
                 "setpolicy" => set_policy_cmd(s, rest),
                 "removepin" => remove_pin_cmd(s, rest),
                 "wipe" => wipe(s),
@@ -413,7 +414,7 @@ fn echo_prefix(cmd: &str, rest: &str) -> Option<usize> {
         // PINs, sanctioned by this module's header: a bench operator has no other way to
         // type one, [`pin_soak`] prints them by design, and a PIN is worth nothing away from
         // the store it unlocks.
-        "format" | "unlock" | "changepin" | "pinsoak" | "setpolicy" | "removepin" => all,
+        "format" | "unlock" | "changepin" | "pinsoak" | "setpolicy" | "policysoak" | "removepin" => all,
 
         // A payload this console wrote itself, which [`read`] hands back in full on purpose.
         // Withholding it on the way in while printing it on the way out would be theatre.
@@ -488,7 +489,8 @@ fn help() {
         "seal <slot> <text>     - seal text into a payload slot",
         "read <slot>            - read a payload slot back; a wallet record is described, never printed",
         "changepin <newpin>     - re-seal every record under a new PIN",
-        "setpolicy <pin> <n|off> - set the wrong-PIN wipe threshold (n=3..=25, off=disable)",
+        "setpolicy <wipe_after|off> <min_pin_len> <pin> - set wrong-PIN wipe threshold",
+        "policysoak <wipe_a> <wipe_b> <min_pin_len> <pin> <n> - set-policy n times, announcing each Y1-Y7 step",
         "removepin <pin>         - destroy every sealed record and unformat the store",
         "wipe                   - destroy every record and bump the epoch",
         "scan                   - per-sector non-0xff byte counts, both regions",
@@ -536,11 +538,10 @@ fn status(s: &mut Store) {
         (v.state(), v.failures(), v.attempts_remaining(), v.policy());
     let (epoch, next_seq, tamper) = (v.wipe_epoch(), v.next_seq(), v.tamper_flags());
     log::info!(
-        "HIL|status|provenance={}|state={}|unlocked={unlocked}|failures={failures}|         attempts_left={attempts:?}|wipe_after={}|policy_gen={}|epoch={epoch}|         next_seq={next_seq}|boot_count={:?}|tamper={tamper:?}",
+        "HIL|status|provenance={}|state={}|unlocked={unlocked}|failures={failures}|         attempts_left={attempts:?}|wipe_after={}|min_pin_len={}|policy_gen={}|epoch={epoch}|         next_seq={next_seq}|boot_count={:?}|tamper={tamper:?}",
         r.provenance,
         store::state_label(state),
-        policy.wipe_after,
-        policy.policy_gen,
+        policy.wipe_after, policy.min_pin_len, policy.policy_gen,
         r.boot_count,
     );
 }
@@ -720,14 +721,20 @@ fn change_pin(s: &mut Store, rest: &str) {
 }
 
 fn set_policy_cmd(s: &mut Store, rest: &str) {
-    let mut parts = rest.splitn(2, ' ');
-    let pin_str = parts.next().unwrap_or("");
-    let policy_str = parts.next().unwrap_or("").trim();
+    let parts: Vec<&str> = rest.split_whitespace().collect();
+    let (Some(wipe_str), Some(min_pin_str), Some(pin_str)) = (
+        parts.first().copied(),
+        parts.get(1).copied(),
+        parts.get(2).copied(),
+    ) else {
+        log::error!("HIL|setpolicy|err=usage|want=setpolicy <wipe_after|off> <min_pin_len> <pin>");
+        return;
+    };
     let Some(pin) = parse_pin(pin_str) else { return };
-    let wipe_after = if policy_str == "off" || policy_str == "0" {
+    let wipe_after = if wipe_str == "off" || wipe_str == "0" {
         0u8
     } else {
-        match policy_str.parse::<u8>() {
+        match wipe_str.parse::<u8>() {
             Ok(n) if (3..=25).contains(&n) => n,
             Ok(_) => {
                 log::error!("HIL|setpolicy|err=bad_range|hint=3..=25 or off");
@@ -739,11 +746,62 @@ fn set_policy_cmd(s: &mut Store, rest: &str) {
             }
         }
     };
-    match s.set_policy(&pin, wipe_after) {
-        Ok(p) => log::info!("HIL|setpolicy|ok=true|wipe_after={}",
-            if p.wipe_after == 0 { "off".to_string() } else { p.wipe_after.to_string() }),
+    let min_pin_len: u8 = match min_pin_str.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            log::error!("HIL|setpolicy|err=bad_min_pin_len");
+            return;
+        }
+    };
+    match s.set_policy_full(&pin, wipe_after, min_pin_len) {
+        Ok(p) => log::info!("HIL|setpolicy|ok=true|wipe_after={}|min_pin_len={}|policy_gen={}",
+            if p.wipe_after == 0 { "off".to_string() } else { p.wipe_after.to_string() },
+            p.min_pin_len, p.policy_gen),
         Err(e) => log::error!("HIL|setpolicy|ok=false|err={e}"),
     }
+}
+
+fn policy_soak_cmd(s: &mut Store, rest: &str) {
+    let parts: Vec<&str> = rest.split_whitespace().collect();
+    let (Some(wipe_a), Some(wipe_b), Some(min_pin_str), Some(pin_str), Some(n)) = (
+        parts.first().copied(),
+        parts.get(1).copied(),
+        parts.get(2).copied(),
+        parts.get(3).copied(),
+        parts.get(4).and_then(|t| t.parse::<u32>().ok()),
+    ) else {
+        log::error!("HIL|policysoak|err=usage|want=policysoak <wipe_a> <wipe_b> <min_pin_len> <pin> <n>");
+        return;
+    };
+    let Some(pin) = parse_pin(pin_str) else { return };
+    let min_pin_len: u8 = match min_pin_str.parse() {
+        Ok(n) => n,
+        Err(_) => { log::error!("HIL|policysoak|err=bad_min_pin_len"); return; }
+    };
+    for i in 0..n {
+        let wipe_str = if i % 2 == 0 { wipe_a } else { wipe_b };
+        let wipe_after = if wipe_str == "off" || wipe_str == "0" { 0u8 } else {
+            match wipe_str.parse::<u8>() { Ok(n) => n, Err(_) => { log::error!("HIL|policysoak|err=bad_wipe"); return; } }
+        };
+        // Announce each step with a delay between them, so cuts can land at
+        // different points in the 7-step commit. The harness reads the LAST
+        // about_to_step line before the port vanishes, so spacing these out
+        // across the Argon2id + commit window gives real step coverage.
+        let steps = ["Y1", "Y2", "Y3", "Y4", "Y5", "Y6", "Y7"];
+        for step in &steps {
+            log::info!("HIL|policysoak|about_to_step|i={i}|step={step}|wipe_after={wipe_after}");
+            // Delay 400ms between steps - 7 steps * 400ms = 2.8s spread,
+            // plus the ~3.5s Argon2id in set_policy_full = ~6.3s total window.
+            // The harness delay window (40..4000ms) will land cuts at different steps.
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+        match s.set_policy_full(&pin, wipe_after, min_pin_len) {
+            Ok(p) => log::info!("HIL|policysoak|done|i={i}|wipe_after={}|policy_gen={}",
+                if p.wipe_after == 0 { "off".to_string() } else { p.wipe_after.to_string() }, p.policy_gen),
+            Err(e) => { log::error!("HIL|policysoak|failed|i={i}|err={e}"); return; }
+        }
+    }
+    log::info!("HIL|policysoak|complete|count={n}");
 }
 
 fn remove_pin_cmd(s: &mut Store, rest: &str) {
@@ -1808,6 +1866,10 @@ fn psbt_inspect(bench: &mut Bench) {
         // skim: the amount beside it is the file's word, not this device's finding.
         let proof = match facts.amount_proof {
             AmountProof::ProvenByPrevTx => "proven_by_prev_tx",
+            // Lower case: the number came off the file, but a signature this device is
+            // about to add makes it binding, so a transcript reader has nothing to act on.
+            // The upper case above is reserved for the one state that is a caveat.
+            AmountProof::BoundByOurSignature => "bound_by_our_signature",
             AmountProof::ClaimedByFile => "CLAIMED_BY_FILE",
         };
         let multisig = facts.multisig.as_ref().map_or_else(

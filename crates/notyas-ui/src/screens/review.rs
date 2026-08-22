@@ -192,14 +192,39 @@ fn one_decimal(numer: u64, denom: u64) -> String {
 
 /// What an input's amount reads as, qualifier included.
 ///
-/// The ONE place an input amount becomes text. [`AmountProof::ClaimedByFile`] cannot be
-/// rendered without [`STATED`] in front of it, because there is no other function that
-/// turns [`InputFacts::value`] into a string. That is the property this screen rests on;
-/// `an_unproven_amount_never_renders_like_a_proven_one` is the test that says so.
+/// The ONE place an input amount becomes text. An amount that did not come out of a
+/// previous transaction cannot be rendered without [`STATED`] in front of it, because there
+/// is no other function that turns [`InputFacts::value`] into a string. That is the property
+/// this screen rests on; `an_unproven_amount_never_renders_like_a_proven_one` says so.
+///
+/// [`AmountProof::BoundByOurSignature`] renders IDENTICALLY to
+/// [`AmountProof::ClaimedByFile`], and that is deliberate rather than an omission. The
+/// number still came from the file rather than from the transaction the coin came from,
+/// which is what this prefix is about. What a signature of ours makes of it is a different
+/// sentence, and it is carried by the caveat row further down the page - a THIRD qualifier
+/// on the amount line of the commonest spend there is would be exactly the qualifier
+/// fatigue this screen's own header rails against.
 fn input_amount_text(f: &InputFacts) -> String {
     match f.amount_proof {
         AmountProof::ProvenByPrevTx => btc(f.value),
-        AmountProof::ClaimedByFile => format!("{STATED}{}", btc(f.value)),
+        AmountProof::BoundByOurSignature | AmountProof::ClaimedByFile => {
+            format!("{STATED}{}", btc(f.value))
+        }
+    }
+}
+
+/// [`STATED`] again, for the Script type and Address rows further down this same input
+/// page - the amount is not the only value `resolve_prevout` reads out of an unproven
+/// `witness_utxo`; the scriptPubKey it derives Script type and Address FROM is the exact
+/// same unverified bytes. Worth spelling out for segwit v0: BIP-143 hashes the
+/// scriptCode, not the scriptPubKey, so a native P2WPKH/P2WSH coin and its P2SH-wrapped
+/// form sign identically, and this device cannot tell which one the file is even naming.
+/// The prefix on these two rows is the same "the file's word, not the previous
+/// transaction's" caveat as the amount's, not a new one.
+fn witness_utxo_prefix(proof: AmountProof) -> &'static str {
+    match proof {
+        AmountProof::ProvenByPrevTx => "",
+        AmountProof::BoundByOurSignature | AmountProof::ClaimedByFile => STATED,
     }
 }
 
@@ -965,7 +990,10 @@ impl ReviewState {
             value: input_amount_text(f),
             mono: true,
             ink: match f.amount_proof {
-                AmountProof::ProvenByPrevTx => INK_PRIMARY,
+                // Bound is not a warning colour. An ordinary single-input spend carries a
+                // stated amount that this device's own signature makes binding, and
+                // painting it amber would spend the alarm on the commonest file there is.
+                AmountProof::ProvenByPrevTx | AmountProof::BoundByOurSignature => INK_PRIMARY,
                 AmountProof::ClaimedByFile => WARNING,
             },
         });
@@ -994,19 +1022,23 @@ impl ReviewState {
                 });
             }
         }
-        rows.push(Row::plain("Script type", kind_label(f.kind)));
+        rows.push(Row::plain(
+            "Script type",
+            format!("{}{}", witness_utxo_prefix(f.amount_proof), kind_label(f.kind)),
+        ));
         if let Some(b) = &f.multisig {
             rows.push(Row::pair("Registration", b.registration.to_string()));
         }
 
         rows.push(Row::Gap);
+        let prefix = witness_utxo_prefix(f.amount_proof);
         match address_of(&f.script_pubkey, self.review.network) {
             Some(a) => {
-                rows.push(Row::Caption(String::from("Address")));
+                rows.push(Row::Caption(format!("{prefix}Address")));
                 rows.push(Row::Mono(a));
             }
             None => {
-                rows.push(Row::Caption(String::from("Script (hex)")));
+                rows.push(Row::Caption(format!("{prefix}Script (hex)")));
                 rows.push(Row::Mono(hex(f.script_pubkey.as_bytes())));
             }
         }
@@ -1016,21 +1048,30 @@ impl ReviewState {
         rows.push(Row::pair("Output index", f.outpoint.vout.to_string()));
 
         rows.push(Row::Gap);
-        rows.push(match (f.amount_proof, self.review.fee) {
-            (AmountProof::ProvenByPrevTx, _) => Row::Prose {
+        // The proof alone decides this row, and it did not always: until the third
+        // [`AmountProof`] state landed, "the file states it and our signature binds it" was
+        // a fact the FEE had to supply, so this matched the pair. It no longer has to, and
+        // it must not - a row about one input has no business reading a total over all of
+        // them, and the two could disagree.
+        rows.push(match f.amount_proof {
+            AmountProof::ProvenByPrevTx => Row::Prose {
                 text: String::from(
                     "Checked: the amount and the script came out of the full previous \
                      transaction, which hashes to the txid above.",
                 ),
                 ink: SUCCESS,
             },
-            (AmountProof::ClaimedByFile, ReviewedFee::Enforced(_)) => Row::Prose {
+            // Not "(taproot)" any more. Taproot's `sha_amounts` is one of the two ways this
+            // row is reachable; the other is a transaction with a single input, where
+            // BIP-143 binds the only amount there is.
+            AmountProof::BoundByOurSignature => Row::Prose {
                 text: String::from(
-                    "Checked: the signature this device adds commits to this amount (taproot).",
+                    "Checked: if this amount is wrong, the signature this device adds is \
+                     worthless and this transaction cannot confirm.",
                 ),
                 ink: INK_SECONDARY,
             },
-            (AmountProof::ClaimedByFile, ReviewedFee::Stated(_)) => Row::Prose {
+            AmountProof::ClaimedByFile => Row::Prose {
                 text: String::from(
                     "NOT CHECKED: nothing here proves this amount. It is what the file says \
                      the coin is worth.",
@@ -1747,6 +1788,24 @@ pub(crate) mod tests {
         r
     }
 
+    /// The commonest spend there is, once the amount rule of 2026-08-21 landed: ONE input,
+    /// its amount off `witness_utxo` alone, and the signature this device adds makes it
+    /// binding because there is no second amount in the transaction to lie about.
+    ///
+    /// This is what a BlueWallet watch-only wallet sends back, and every property UI-1 to
+    /// UI-4 is about is visible on it: the STATED prefix stays, the warning ink and the
+    /// caveat band do not appear, the fee is exact, and the row at the bottom of the page
+    /// says what the signature is doing rather than naming a script type.
+    fn bound_review() -> TxReview {
+        review(
+            vec![input(0, 13_000_000, AmountProof::BoundByOurSignature, true)],
+            vec![
+                output(0, 12_345_678, OutputRole::Payment),
+                output(1, 650_112, OutputRole::Change { owner: account(), index: 12 }),
+            ],
+        )
+    }
+
     /// The change-confusion shape: the file says output 1 is change and nothing proved it.
     fn claimed_change_review() -> TxReview {
         review(
@@ -1858,6 +1917,69 @@ pub(crate) mod tests {
         assert!(text.contains("STATED 0.08 000 000 BTC"), "{text}");
         assert!(text.contains("NOT PROVEN"), "{text}");
         assert!(text.contains("NOT CHECKED"), "{text}");
+    }
+
+    /// The single-input spend the amount rule admits, rendered end to end.
+    ///
+    /// Four claims at once, because they are one claim about one page: the amount keeps its
+    /// STATED prefix (UI-1), it is NOT painted in the warning ink and no caveat band sits
+    /// above it (UI-3), the caveat row says what the signature does rather than naming
+    /// taproot (UI-2), and the fee is a measurement rather than a lower bound (UI-4).
+    ///
+    /// Broken version: give [`AmountProof::BoundByOurSignature`] the WARNING ink in
+    /// `input_rows`. The third assertion trips, and an ordinary spend starts shouting.
+    #[test]
+    fn a_bound_amount_is_stated_without_being_warned_about() {
+        let mut s = ReviewState::new(bound_review());
+        s.page = 1; // the only input
+        let rows = s.build_rows();
+        let text = page_text(&s);
+
+        assert!(text.contains("STATED 0.13 000 000 BTC"), "{text}");
+        assert!(!text.contains("NOT PROVEN"), "{text}");
+        assert!(!text.contains("NOT CHECKED"), "{text}");
+        assert!(text.contains("cannot confirm"), "{text}");
+        assert!(!text.contains("(taproot)"), "{text}");
+
+        let amount_ink = rows
+            .iter()
+            .find_map(|r| match r {
+                Row::Pair { label, ink, .. } if label == "Amount" => Some(*ink),
+                _ => None,
+            })
+            .expect("the input page prints an amount");
+        assert_ne!(amount_ink, WARNING, "a bound amount must not wear the warning ink");
+        assert!(
+            !rows.iter().any(|r| matches!(r, Row::Band { .. })),
+            "a bound amount raises no caveat band"
+        );
+
+        // UI-4: nothing on the traversal qualifies this fee, because the transaction that
+        // carries this signature has to pay it.
+        let all = all_text(bound_review());
+        assert!(!all.contains("AT LEAST"), "{all}");
+        assert!(!all.contains("at least "), "{all}");
+    }
+
+    /// A forged change claim beside a bound amount still cannot be signed.
+    ///
+    /// Fixture E of the BlueWallet corpus reaches the output map for the first time under
+    /// the amount rule of 2026-08-21: the input level has nothing to say about it, so the
+    /// only thing standing between the user and a signature is `blocker`. This is that
+    /// second gate, on the exact shape that now reaches it.
+    ///
+    /// Broken version: delete the first arm of `blocker`. Both assertions trip and the hold
+    /// appears on a transaction whose change nobody proved.
+    #[test]
+    fn a_forged_change_claim_beside_a_bound_amount_still_blocks_the_hold() {
+        let mut r = bound_review();
+        r.outputs[1].role = OutputRole::ClaimedButUnproven;
+        let blocked = ReviewState::new(r);
+        assert!(blocked.blocker().is_some(), "an unproven change claim must block");
+
+        // ...and the same file with its change proven is signable, so what blocks it is the
+        // change claim and not the bound amount beside it.
+        assert!(ReviewState::new(bound_review()).blocker().is_none());
     }
 
     /// A fee the device could not bind is never printed as a measurement, and neither is any

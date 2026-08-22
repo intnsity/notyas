@@ -51,7 +51,7 @@ use crate::screens::erase::EraseState;
 use crate::screens::{Answer, Ctx, Env, Nav, Outcome, Screen, State};
 use crate::theme::*;
 use crate::{
-    BackupState, PassphraseState, Region, RegionId, StorageOutcome, StoreStatus, UiRequest,
+    PassphraseState, Region, RegionId, StorageOutcome, StoreStatus, UiRequest, WordsOutcome,
     WalletInfo,
 };
 use notyas_core::bitcoin::Network;
@@ -101,6 +101,8 @@ pub(crate) struct WalletState {
 enum Consent {
     /// The C4b consequence of a delete has been read; the typed-name sheet follows.
     Delete,
+    /// View this wallet's recovery words (C4b: reveals the seed to anyone watching).
+    ViewWords,
     /// Store this wallet's passphrase on this device (C4b: destructive of a security
     /// property, and undone by turning it off again).
     StorePassphrase,
@@ -145,6 +147,19 @@ impl WalletState {
     /// the PIN then buys an attacker, and the fact that a device is not a backup.
     fn store_sheet(&self) -> Danger {
         Danger::confirm("Store the passphrase on this device?", &STORE_DANGERS, "Store it")
+    }
+
+    /// The C4b sheet for revealing recovery words: a warning that the seed
+    /// will be visible, with a confirm that raises RecoveryWords.
+    fn words_sheet(&self) -> Danger {
+        Danger::confirm(
+            "Reveal recovery words?",
+            &[
+                "Anyone who sees these words can steal every coin in this wallet.",
+                "Do not reveal them where a camera can see the screen.",
+            ],
+            "Reveal words",
+        )
     }
 
     /// The first sheet of the forget sequence (C4b): what forgetting costs, on a sheet
@@ -288,9 +303,11 @@ impl Screen for WalletState {
         // Export needs only the derivation, because the keys ARE this screen's state.
         if self.report.is_some() {
             ids.push(RegionId::ActExport);
+            ids.push(RegionId::ActReceive);
         }
         if self.info.stored {
             ids.push(RegionId::ActMultisig);
+            ids.push(RegionId::ActWords);
         }
         // The storage toggle exists for a STORED wallet that HAS a passphrase, and only
         // while this screen holds the keys - which is the same thing as saying the
@@ -391,15 +408,6 @@ impl Screen for WalletState {
                 (self.info.kind.badge(), HEADING, INK_SECONDARY),
                 m.gap,
             )?;
-            let backup = match &self.info.backup {
-                BackupState::Verified(on) if on.is_empty() => String::from("backup verified"),
-                BackupState::Verified(on) => format!("backup verified {on}"),
-                BackupState::Unchecked => String::from("BACKUP UNCHECKED"),
-            };
-            let backup_ink = match self.info.backup {
-                BackupState::Verified(_) => SUCCESS,
-                BackupState::Unchecked => WARNING,
-            };
             let network =
                 if self.info.network == Network::Bitcoin { "mainnet" } else { "TESTNET" };
             // One of exactly three strings, and none of them says ON or off. The row
@@ -413,7 +421,7 @@ impl Screen for WalletState {
             let rows: [(&str, Rgb565, &str); 3] = [
                 (&fingerprint, INK_PRIMARY, &self.info.path),
                 (&self.info.script_type, INK_SECONDARY, passphrase),
-                (&backup, backup_ink, network),
+                ("network", INK_SECONDARY, network),
             ];
             for (i, (left, ink, right)) in rows.into_iter().enumerate() {
                 let row =
@@ -530,6 +538,10 @@ impl Screen for WalletState {
                 self.notice = None;
                 return Outcome::ask(UiRequest::StorePassphrase(self.info.slot));
             }
+            if let (DangerOutcome::Confirmed, Consent::ViewWords) = (outcome, consent) {
+                self.danger = None;
+                return Outcome::ask(UiRequest::RecoveryWords(self.info.slot));
+            }
             // Forgetting is two: the consequence, then the hold that performs it.
             if let (DangerOutcome::Confirmed, Consent::ForgetPassphrase, false) =
                 (outcome, consent, reading)
@@ -598,6 +610,18 @@ impl Screen for WalletState {
             RegionId::ActMultisig => {
                 Outcome::push(State::MultisigList(MultisigListState::new(&self.info)))
             }
+            RegionId::ActReceive => match &self.report {
+                Some(r) => match super::receive::ReceiveState::new(r) {
+                    Some(rs) => Outcome::push(State::Receive(rs)),
+                    None => Outcome::stay(),
+                },
+                None => Outcome::stay(),
+            },
+            RegionId::ActWords => {
+                self.notice = None;
+                self.danger = Some((Consent::ViewWords, self.words_sheet()));
+                Outcome::stay()
+            }
             RegionId::WalletDelete => {
                 self.notice = None;
                 self.danger = Some((Consent::Delete, self.read_sheet()));
@@ -644,6 +668,13 @@ impl Screen for WalletState {
                 self.notice = None;
             }
             Answer::PassphraseStorage(StorageOutcome::Refused(why)) => self.notice = Some(why),
+            Answer::RecoveryWords(WordsOutcome::Words(_)) => {
+                // The words were shown on the mnemonic screen opened by the firmware.
+                // Nothing more to do here - the user has seen them and we stay.
+            }
+            Answer::RecoveryWords(WordsOutcome::Refused(why)) => {
+                self.notice = Some(why);
+            }
             _ => {}
         }
         Outcome::stay()
@@ -668,10 +699,20 @@ impl Screen for WalletState {
         self.layout(ctx).overflow
     }
 
-    /// A session wallet's keys are on this screen, so Back asks first; a stored wallet's
-    /// are not, and Back is the list it was opened from.
+    /// A session wallet's keys live ONLY on this screen, so Back asks first: leaving
+    /// discards the one copy of a wallet that was never written to a slot. A stored
+    /// wallet's keys are not at risk the same way - the record survives in flash whether
+    /// or not this screen is holding a derivation of it - so Back moves straight to the
+    /// list, the same distinction the schemes screen's `Origin` draws between an Export
+    /// that returns to a wallet still on the device and one with nothing behind it.
+    ///
+    /// `report.is_some()` alone used to decide this, which reads as "does this screen
+    /// hold keys" rather than "would leaving lose something" - and the embedder hands a
+    /// stored wallet its derivation too (`Ui::wallet_opened_with_keys`), so opening ANY
+    /// stored wallet with its keys already unsealed raised the same "clear work?" modal a
+    /// truly unstored session earns, over a record that was never at risk.
     fn back(&self) -> Nav {
-        if self.report.is_some() {
+        if self.report.is_some() && !self.info.stored {
             Nav::ConfirmExit
         } else {
             Nav::Back
@@ -746,12 +787,14 @@ fn action_copy(id: RegionId) -> (&'static str, &'static str, Rgb565) {
     match id {
         RegionId::ActSign => ("Sign a transaction", "load a PSBT from the card", INK_PRIMARY),
         RegionId::ActExport => ("Export public keys", "xpub, descriptor, QR", INK_PRIMARY),
+        RegionId::ActReceive => ("Receive", "next address + QR", INK_PRIMARY),
         RegionId::ActMultisig => ("Multisig", "registrations, import one", INK_PRIMARY),
         RegionId::ActPassphraseDerive => (
             "Add a passphrase",
             "makes a different wallet",
             INK_PRIMARY,
         ),
+        RegionId::ActWords => ("View recovery words", "reveal the seed phrase", INK_PRIMARY),
         RegionId::WalletDelete => ("Delete this wallet", "type the name to confirm", DANGER),
         _ => ("", "", INK_PRIMARY),
     }
@@ -825,6 +868,7 @@ mod tests {
     use super::*;
     use crate::screens::testing::{Fixture, GEOMETRIES};
     use crate::WalletKind;
+    use crate::BackupState;
 
     /// THE COPY GATE. What this screen may say about a passphrase, and what it may never
     /// say.
@@ -869,6 +913,7 @@ mod tests {
             RegionId::ActSign,
             RegionId::ActExport,
             RegionId::ActMultisig,
+            RegionId::ActWords,
             RegionId::ActPassphraseDerive,
             RegionId::WalletDelete,
         ] {

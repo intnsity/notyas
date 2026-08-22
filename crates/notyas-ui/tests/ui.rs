@@ -987,17 +987,30 @@ fn no_qr_is_reachable_from_secret_screens() {
 /// Off-screen QR buttons are not tappable: on the short panel the last address row
 /// starts below the viewport, and its button only joins the hit regions after
 /// scrolling down.
+///
+/// Address 4 is no longer the last thing on the screen - the descriptor block and its
+/// BlueWallet explainer (`DESCRIPTOR_HELP` in schemes.rs) run on below the address rows,
+/// and that explainer alone is taller than the viewport on the 800x480 panel - but the
+/// scroll clamp (`SchemesState::scroll_limit`) keeps the last address row from ever
+/// scrolling past the top of the viewport regardless of how much content follows it, so
+/// dragging as far as a finger physically can (-2000, well past the true content height)
+/// still leaves address 4 tappable. That clamp, not the length of the prose below it, is
+/// the property this test pins.
 #[test]
 fn qr_buttons_scroll_with_the_content() {
-    let mut ui = ui_at_schemes(800, 480);
-    let visible =
-        |ui: &Ui| ui.regions().iter().any(|r| r.id == RegionId::QrAddress(4));
-    assert!(!visible(&ui), "address 4 must start below the 480px viewport");
-    // Drag far past the limit; the UI clamps to the real content height.
-    ui.touch(TouchEvent::Down { x: 400, y: 400 });
-    ui.touch(TouchEvent::Move { x: 400, y: -2000 });
-    ui.touch(TouchEvent::Up { x: 400, y: -2000 });
-    assert!(visible(&ui), "address 4 must be tappable after scrolling to the end");
+    // Both panels the descriptor block ships on: the short 800x480 (where the true
+    // content runs well past a viewport below address 4) and the tall 720x720 (where
+    // it does too, just with more headroom to spare).
+    for (w, h) in [(800u32, 480u32), (720, 720)] {
+        let mut ui = ui_at_schemes(w, h);
+        let visible =
+            |ui: &Ui| ui.regions().iter().any(|r| r.id == RegionId::QrAddress(4));
+        assert!(!visible(&ui), "{w}x{h}: address 4 must start below the viewport");
+        ui.touch(TouchEvent::Down { x: 400, y: 400 });
+        ui.touch(TouchEvent::Move { x: 400, y: -2000 });
+        ui.touch(TouchEvent::Up { x: 400, y: -2000 });
+        assert!(visible(&ui), "{w}x{h}: address 4 must be tappable after scrolling to the end");
+    }
 }
 
 // ---------------------------------------------------------------------------------------

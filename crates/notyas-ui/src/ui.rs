@@ -824,6 +824,17 @@ impl Ui {
         self.registrations = registrations;
     }
 
+    /// Answer a [`UiRequest::SaveAddress`] with the result of the SD write.
+    pub fn save_addr_result(&mut self, result: crate::SaveAddrResult) {
+        let mut env = Env {
+            network: &mut self.network,
+            lock: &self.lock,
+            wallets: &self.wallets,
+            gate: &mut self.gate,
+        };
+        screens::answered(&mut self.state, Answer::SaveAddr(result), &mut env);
+    }
+
     pub fn registrations(&self) -> &[RegistrationInfo] {
         &self.registrations
     }

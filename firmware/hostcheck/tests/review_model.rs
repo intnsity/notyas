@@ -115,6 +115,18 @@ fn plain() -> TxReview {
     }
 }
 
+/// The single-input spend the amount rule of 2026-08-21 admits: the amount came off
+/// `witness_utxo` alone, and the signature this device adds makes it binding because there
+/// is no second amount in the transaction to lie about.
+///
+/// It is a `TxReview` and not a PSBT because that is the boundary this file tests: what the
+/// firmware's own model does with the facts the engine established.
+fn bound_single_input() -> TxReview {
+    let mut review = plain();
+    review.inputs[0].amount_proof = AmountProof::BoundByOurSignature;
+    review
+}
+
 /// The headlines of every warning a review raises, in the order the page numbers them.
 fn headlines(review: &TxReview) -> Vec<String> {
     model::warnings(review).into_iter().map(|w| w.headline).collect()
@@ -340,6 +352,40 @@ fn an_unproven_fee_is_warned_about_as_a_bound() {
     );
 }
 
+/// The unproven-amount band fires on the file whose amount nobody binds, and is SILENT on
+/// the one whose amount this device's own signature binds.
+///
+/// Both files state their amount through `witness_utxo` alone, so the number on the screen
+/// came from the file in each case. Only one of them leaves that number free to be a lie,
+/// and the band has to separate the two: raised on a single-input spend of the user's own
+/// coin it would stand beside an exact fee saying every total rests on the file's word,
+/// which is a contradiction the user has no way to resolve and the fastest way to teach
+/// somebody that this page never says anything.
+///
+/// Broken version: count [`AmountProof::BoundByOurSignature`] in
+/// `TxReview::unproven_amounts`. The second assertion trips.
+#[test]
+fn the_unproven_amount_band_reads_the_proof_and_not_the_witness_utxo() {
+    let mut unbound = plain();
+    unbound.fee = ReviewedFee::Stated(Amount::from_sat(1_000));
+    unbound.inputs[0].amount_proof = AmountProof::ClaimedByFile;
+    assert!(
+        fires(&unbound, "input amounts are not proven"),
+        "{:?}",
+        headlines(&unbound)
+    );
+
+    let bound = bound_single_input();
+    assert_eq!(bound.unproven_amounts(), 0);
+    assert!(
+        !fires(&bound, "input amounts are not proven"),
+        "a bound amount is not an unproven one: {:?}",
+        headlines(&bound)
+    );
+    // And the whole page stays quiet, so the band is the only thing that changed.
+    assert!(model::warnings(&bound).is_empty(), "{:?}", headlines(&bound));
+}
+
 /// Two outputs of THIS transaction paying the same script.
 ///
 /// The only reuse an airgapped signer can honestly speak about: it holds one file, no chain
@@ -531,6 +577,7 @@ fn every_sentence_is_ascii() {
     review.fee = ReviewedFee::Stated(Amount::from_sat(200_000));
     review.inputs[0].amount_proof = AmountProof::ClaimedByFile;
     review.inputs.push(input(1, ScriptKind::P2wpkh));
+    review.inputs[1].amount_proof = AmountProof::BoundByOurSignature;
     review.outputs.push(output(1, 100, ScriptKind::P2wpkh, OutputRole::Payment));
     review.outputs[0].role = OutputRole::OwnNotChange { owner: owner(), index: 0 };
     review.unknown_fields = 2;

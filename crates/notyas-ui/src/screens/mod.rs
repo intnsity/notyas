@@ -146,6 +146,7 @@ pub(crate) mod setpin;
 pub(crate) mod settings;
 pub(crate) mod verify;
 pub(crate) mod wallet;
+pub(crate) mod receive;
 pub(crate) mod wallets;
 pub(crate) mod sdcard;
 pub(crate) mod devicename;
@@ -172,6 +173,7 @@ use pin::PinState;
 use policy::PolicyState;
 use quiz::QuizState;
 use schemes::SchemesState;
+use receive::ReceiveState;
 use setpin::SetPinState;
 use settings::SettingsState;
 use verify::VerifyState;
@@ -346,6 +348,8 @@ pub(crate) enum Answer {
     /// says - or why nothing was written. Carries no passphrase and never will: the
     /// subject is what the flash holds, not what it holds.
     PassphraseStorage(StorageOutcome),
+    /// Save-address-to-SD result.
+    SaveAddr(crate::SaveAddrResult),
 }
 
 /// The four entry points every screen exports, plus two defaulted hooks.
@@ -456,6 +460,7 @@ pub(crate) enum State {
     PassUnlock(PassUnlockState),
     Deriving(DerivingState),
     Schemes(SchemesState),
+    Receive(ReceiveState),
     Verify(VerifyState),
     Lock(LockState),
     Pin(PinState),
@@ -523,6 +528,7 @@ impl State {
             State::PassUnlock(s) => s.id(),
             State::Deriving(_) => ScreenId::Deriving,
             State::Schemes(_) => ScreenId::Schemes,
+            State::Receive(_) => ScreenId::Receive,
             // The one variant that names itself: S-46 becomes a C3 Busy screen while its
             // reserved-space scan runs, and "which screen is showing" has to say so - a
             // Busy frame with nothing tappable is a different screen to an embedder and
@@ -584,6 +590,7 @@ pub(crate) fn regions(state: &State, ctx: &Ctx) -> Vec<Region> {
         State::PassUnlock(s) => s.regions(ctx, &mut out),
         State::Deriving(s) => s.regions(ctx, &mut out),
         State::Schemes(s) => s.regions(ctx, &mut out),
+        State::Receive(s) => s.regions(ctx, &mut out),
         State::Verify(s) => s.regions(ctx, &mut out),
         State::Lock(s) => s.regions(ctx, &mut out),
         State::Pin(s) => s.regions(ctx, &mut out),
@@ -627,6 +634,7 @@ pub(crate) fn draw<D: DrawTarget<Color = Rgb565>>(
         State::PassUnlock(s) => s.draw(t, ctx),
         State::Deriving(s) => s.draw(t, ctx),
         State::Schemes(s) => s.draw(t, ctx),
+        State::Receive(s) => s.draw(t, ctx),
         State::Verify(s) => s.draw(t, ctx),
         State::Lock(s) => s.draw(t, ctx),
         State::Pin(s) => s.draw(t, ctx),
@@ -663,6 +671,7 @@ pub(crate) fn activate(state: &mut State, id: RegionId, env: &mut Env) -> Outcom
         State::PassUnlock(s) => s.activate(id, env),
         State::Deriving(s) => s.activate(id, env),
         State::Schemes(s) => s.activate(id, env),
+        State::Receive(s) => s.activate(id, env),
         State::Verify(s) => s.activate(id, env),
         State::Lock(s) => s.activate(id, env),
         State::Pin(s) => s.activate(id, env),
@@ -705,6 +714,7 @@ pub(crate) fn answered(state: &mut State, answer: Answer, env: &mut Env) -> Outc
         State::PassUnlock(s) => s.answered(answer, env),
         State::Deriving(s) => s.answered(answer, env),
         State::Schemes(s) => s.answered(answer, env),
+        State::Receive(s) => s.answered(answer, env),
         State::Verify(s) => s.answered(answer, env),
         State::Lock(s) => s.answered(answer, env),
         State::Pin(s) => s.answered(answer, env),
@@ -747,6 +757,7 @@ pub(crate) fn back(state: &mut State) -> Nav {
         State::PassUnlock(s) => s.back_moving(),
         State::Deriving(s) => s.back_moving(),
         State::Schemes(s) => s.back_moving(),
+        State::Receive(s) => s.back_moving(),
         State::Verify(s) => s.back_moving(),
         State::Lock(s) => s.back_moving(),
         State::Pin(s) => s.back_moving(),
@@ -784,6 +795,7 @@ pub(crate) fn scroll(state: &mut State, dy: i32, ctx: &Ctx) {
         State::PassUnlock(s) => scroll_one(s, dy, ctx),
         State::Deriving(s) => scroll_one(s, dy, ctx),
         State::Schemes(s) => scroll_one(s, dy, ctx),
+        State::Receive(_) => (),
         State::Verify(s) => scroll_one(s, dy, ctx),
         State::Lock(s) => scroll_one(s, dy, ctx),
         State::Pin(s) => scroll_one(s, dy, ctx),

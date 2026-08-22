@@ -65,8 +65,8 @@ use notyas_ui::{
     Artifact, CardListing, CardOutcome, CosignerRow, FileFilter, FileKind, FileRow, FormatOffer,
     FormatOutcome, ImportOutcome,
     PsbtOutcome, RefusalCode, RefusalNotice, RegistrationInfo, RegistrationOutcome,
-    RegistrationReview, ReviewedFee, SignOutcome, SignedTx, TxReview, Ui, UiRequest,
-    WordsOutcome, WriteOutcome,
+    RegistrationReview, ReviewedFee, SaveAddrResult, SignOutcome, SignedTx, TxReview, Ui,
+    UiRequest, WordsOutcome, WriteOutcome,
 };
 use notyas_wallet::sd::{self as card, Bounds, Catalog, Filter, Kind, Location, Name, OnCollision};
 
@@ -100,6 +100,10 @@ struct Loaded {
     dir: Option<Name>,
     name: Name,
     review: Review,
+    /// The wire encoding the file arrived in ([`signing::PsbtEncoding`]), carried forward
+    /// so the signed reply leaves in exactly the same one - Coldcard's rule, and the fix
+    /// for BlueWallet's own file read mangling anything that is not text.
+    encoding: signing::PsbtEncoding,
 }
 
 /// A signed transaction, its planned file, and where it goes.
@@ -107,6 +111,11 @@ pub(crate) struct Delivery {
     dir: Option<Name>,
     target: Name,
     signed: Signed,
+    /// `signed.bytes()` re-wrapped in `Loaded::encoding`. This is what actually goes to
+    /// the card; `signed.bytes()` itself stays binary because `ShowSignedQr` re-encodes it
+    /// for a completely different transport (animated UR/BBQr) that has nothing to do with
+    /// the file's own wrapper.
+    card_bytes: Vec<u8>,
 }
 
 impl Delivery {
@@ -339,6 +348,46 @@ pub fn format_card(ui: &mut Ui, partition: u8, card: String) -> Option<UiRequest
     ui.format_result(outcome)
 }
 
+/// Answer `UiRequest::SaveAddress`: write a receive address to a text file on the card.
+///
+/// No wallet, no store, no session, for the same reason `probe_card_format` has none: the
+/// address is public data the screen already holds, and what makes this a card request is
+/// that it goes through `crate::sd`.
+///
+/// It goes through the same `card::deliver` as `write` below - staged, read back, and
+/// byte-compared before the name is given to it - rather than removing and recreating the
+/// file directly. A card that acknowledges a write and hands back different bytes must not
+/// be allowed to report Saved, and an existing `receive-address.txt` is a question for the
+/// user (`SaveAddrResult::Collision`, answered by a second tap with `overwrite` set), not
+/// something this device deletes on its own say-so.
+pub fn save_address(ui: &mut Ui, address: String, overwrite: bool) {
+    let name = match Name::parse("receive-address.txt") {
+        Ok(name) => name,
+        Err(e) => {
+            log::error!("card: receive address not saved: {e}");
+            ui.save_addr_result(SaveAddrResult::Failed(format!("{e}")));
+            return;
+        }
+    };
+    let collision = if overwrite { OnCollision::Replace } else { OnCollision::Refuse };
+    let result = on_card(|c| card::deliver(c, None, &name, address.as_bytes(), collision));
+    let outcome = match result {
+        Ok(written) => {
+            log::info!("card: wrote {} ({} bytes)", written.name, written.bytes);
+            SaveAddrResult::Saved(written.name.as_str().to_string())
+        }
+        Err(Fault::Collision) => {
+            log::info!("card: {name} is already on the card - asking before replacing it");
+            SaveAddrResult::Collision(name.as_str().to_string())
+        }
+        Err(fault) => {
+            log::error!("card: receive address not saved: {}", fault.sentence());
+            SaveAddrResult::Failed(fault.sentence())
+        }
+    };
+    ui.save_addr_result(outcome);
+}
+
 /// Answer `UiRequest::ListCard`: one directory of the card, bounded, validated and ordered.
 pub fn list_card(ui: &mut Ui, dir: String, filter: FileFilter) -> Option<UiRequest> {
     let where_ = if dir.is_empty() { String::from("the card root") } else { dir.clone() };
@@ -496,6 +545,29 @@ fn read_and_review(flow: &mut Flow, dir: &str, name: &str) -> PsbtOutcome {
     };
     log::info!("psbt: {dir}/{name} read: {} bytes", bytes.len());
 
+    // BlueWallet and other coordinators hand this device a PSBT wrapped in one of three
+    // encodings - see `signing::PsbtEncoding` for the rule and its citations. Sniffed once
+    // here and carried forward to `sign`, which reproduces exactly this one: a device that
+    // always answered in binary could never round trip through BlueWallet's own file read,
+    // and one that always answered in base64 would break a coordinator that genuinely does
+    // hand it binary.
+    let encoding = match signing::PsbtEncoding::sniff(&bytes) {
+        Some(encoding) => encoding,
+        // No wrapper this device recognises. `Binary` changes nothing here: the bytes are
+        // handed to the parser exactly as read, and gate 0 gives its own "this file is not
+        // a PSBT" - the honest answer for a file that was never a PSBT in any wrapper this
+        // device knows, and not a transport fault of its own.
+        None => signing::PsbtEncoding::Binary,
+    };
+    let bytes = match encoding.decode(&bytes) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            log::error!("psbt: {dir}/{name} not loaded: {e}");
+            return PsbtOutcome::Refused(encoding_refusal(&e, name));
+        }
+    };
+    log::info!("psbt: {dir}/{name} {encoding:?}, {} bytes after transport decode", bytes.len());
+
     let review = match signing::review(wallet, &bytes) {
         Ok(review) => review,
         Err(e) => {
@@ -516,6 +588,7 @@ fn read_and_review(flow: &mut Flow, dir: &str, name: &str) -> PsbtOutcome {
         dir: parsed_dir,
         name: file,
         review,
+        encoding,
     });
     PsbtOutcome::Reviewed(rendered)
 }
@@ -531,6 +604,48 @@ fn refusal_for(e: &signing::Refusal) -> RefusalNotice {
             model::wrong_wallet(*reviewed, *holding)
         }
     }
+}
+
+/// A `signing::EncodingError` as the screen renders it.
+///
+/// `MalformedFile` and not `NotAPsbt`: the file DID open with a wrapper this device
+/// recognised (`sniff` only calls in here on `Some`, never on `None` - see
+/// `read_and_review`), so the honest sentence is that the file is damaged, not that it was
+/// never a transaction. The distinction is [`signing::EncodingError`]'s own reason for
+/// existing, and collapsing it back into "not a PSBT" here would undo it.
+///
+/// Composed like every other refusal in this vocabulary: the raw clause first, then
+/// capitalised and closed with exactly one full stop - `model::sentence`'s rule, not a
+/// hand-appended period, so a future `EncodingError` variant whose `Display` already ends
+/// in one does not render as "..". This lives here rather than calling `model::sentence`
+/// directly because that function is private to `model`; `model` and `hostcheck`'s
+/// `every_sentence_is_ascii` (which gates every panel string for ASCII and "-") are outside
+/// this change's file ownership and are not touched here.
+fn encoding_refusal(e: &signing::EncodingError, name: &str) -> RefusalNotice {
+    RefusalNotice {
+        code: RefusalCode::MalformedFile,
+        happened: closed_sentence(&format!("\"{name}\" could not be read: {e}")),
+        details: format!("{e:?}"),
+        after_signing: false,
+    }
+}
+
+/// Capitalise the first character and ensure exactly one trailing full stop.
+///
+/// The same rule `model::sentence` applies to every other engine clause before it reaches
+/// a panel (see that function's doc); duplicated here because it is private to `model` and
+/// `encoding_refusal` is the one refusal constructor that lives outside it.
+fn closed_sentence(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 1);
+    let mut chars = text.chars();
+    if let Some(first) = chars.next() {
+        out.extend(first.to_uppercase());
+        out.push_str(chars.as_str());
+    }
+    if !out.ends_with('.') {
+        out.push('.');
+    }
+    out
 }
 
 /// A file, addressed relative to the volume root.
@@ -635,6 +750,11 @@ fn sign(flow: &mut Flow) -> SignOutcome {
         }
     };
 
+    // Re-wrapped in the encoding the file arrived in (`Loaded::encoding`), because this -
+    // not `signed.bytes()` - is what invariant 2b's announced size has to match: it is
+    // what `write` actually puts on the card.
+    let card_bytes = loaded.encoding.encode(signed.bytes());
+
     let report = signed.report();
     let summary = SignedTx {
         signed_inputs: report.signatures_added,
@@ -643,16 +763,17 @@ fn sign(flow: &mut Flow) -> SignOutcome {
         complete: signed.complete(),
         artifacts: vec![Artifact {
             name: plan.signed.as_str().to_string(),
-            bytes: u32::try_from(signed.bytes().len()).unwrap_or(u32::MAX),
+            bytes: u32::try_from(card_bytes.len()).unwrap_or(u32::MAX),
         }],
         psbt_id: hex(&loaded.review.psbt_id()),
     };
     log::info!(
-        "sign: {} signatures added, {} re-verified, complete={}, {} bytes -> {}",
+        "sign: {} signatures added, {} re-verified, complete={}, {} bytes ({:?}) -> {}",
         summary.signed_inputs,
         summary.verified_inputs,
         summary.complete,
-        signed.bytes().len(),
+        card_bytes.len(),
+        loaded.encoding,
         plan.signed
     );
 
@@ -664,6 +785,7 @@ fn sign(flow: &mut Flow) -> SignOutcome {
         dir,
         target: plan.signed,
         signed,
+        card_bytes,
     });
     SignOutcome::Signed(summary)
 }
@@ -687,7 +809,7 @@ fn write(flow: &mut Flow, overwrite: bool) -> WriteOutcome {
             c,
             delivery.dir.as_ref(),
             &delivery.target,
-            delivery.signed.bytes(),
+            &delivery.card_bytes,
             collision,
         )
     });
@@ -1226,3 +1348,4 @@ fn hex(bytes: &[u8]) -> String {
     }
     out
 }
+

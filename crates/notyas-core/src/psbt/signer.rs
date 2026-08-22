@@ -20,11 +20,21 @@
 //!
 //! # Derive-and-compare
 //!
-//! An origin naming our fingerprint is a claim (see [`Claim`]). Before signing, this
-//! module derives the key at the claimed path and rebuilds the script that key can spend;
-//! if it is not the script the input actually locks, the answer is
-//! [`SignFailure::OriginDoesNotDeriveScript`]. That is ARCH check 1's other half, and it
-//! is the half that needs a seed, which is why it lives here rather than in `checks.rs`.
+//! Before signing, this module derives the key at the path a [`Claim::Ours`] carries and
+//! rebuilds the script that key can spend; if it is not the script the input actually
+//! locks, the answer is [`SignFailure::OriginDoesNotDeriveScript`]. That is ARCH check 1's
+//! other half.
+//!
+//! It is no longer the ONLY place that half runs, and the change is worth stating because
+//! this module's authority is what was copied. Since 2026-08-21 `checks::inspect_with_accounts`
+//! makes the same comparison against an [`Account`](crate::derive::Account) - an account
+//! xpub only the seed could have produced - so an input whose origin does not derive its own
+//! script is [`Claim::Foreign`] before any review screen counts it, rather than a row in the
+//! approved batch that this function refuses afterwards. The two are the same test against
+//! two values, deliberately: an account can answer with no seed in scope and cannot answer
+//! for a P2WSH leaf or for an account the session did not open, and where it cannot answer
+//! the claim arrives here unproven and this is where it stops. Neither is a substitute for
+//! the other, and this one is the last word.
 //!
 //! # The post-sign gate
 //!
@@ -242,14 +252,25 @@ pub fn sign(
 
     let mut out = psbt.clone();
     let tx: Transaction = psbt.unsigned_tx.clone();
-    // An entry here can be `AmountProof::ClaimedByFile`, and `inspect` has already decided
-    // that it may be: it refuses any file where a signature of ours would cover one input's
+    // An entry here can rest on `witness_utxo` alone, and `inspect` has already decided
+    // that it may: it refuses any file where a signature of ours would cover one input's
     // amount while another input's amount rests on nothing
-    // (`CheckFailure::UnprovenAmountBesideOurSignature`). So by the time this set is built,
-    // every claimed amount in it is one a signature of ours is about to make binding -
-    // BIP-341 hashes all of them into the digest, so a claim that is false produces a
-    // signature that verifies against nothing, never a spend of ours under an amount nobody
-    // proved. Taproot is also the only family that reads this set at all.
+    // (`CheckFailure::UnprovenAmountBesideOurSignature`, `MissingPreviousTransaction`). So
+    // by the time this set is built, every unproven amount in it is one a signature of ours
+    // is about to make binding, and there are exactly two ways that is true.
+    //
+    // Taproot: BIP-341 hashes every prevout amount into the digest, so one false claim
+    // anywhere produces signatures that verify against nothing.
+    //
+    // A single-input transaction: the only amount is the one the only signature commits to
+    // under BIP-143, so a lie invalidates it, and no second signature exists anywhere in
+    // the transaction for a later round to combine the harvested one with. That escape is
+    // keyed on the TRANSACTION's input count and never on a count of inputs the file claims
+    // are ours - see `checks::our_signatures_bind_every_amount`.
+    //
+    // Either way the coordinator's reward for lying is a transaction that cannot confirm,
+    // never a spend of ours under an amount nobody proved. Taproot is also the only family
+    // that reads this set at all.
     let prevouts: Vec<TxOut> = inspection
         .inputs
         .iter()
@@ -1243,6 +1264,78 @@ mod tests {
             .inputs
             .iter()
             .all(|input| input.partial_sigs.is_empty() && input.tap_key_sig.is_none()));
+    }
+
+    /// What the single-input escape actually buys, measured on the signature rather than
+    /// argued about.
+    ///
+    /// Fixture A with its `witness_utxo` understated: one input, one amount, and the amount
+    /// is a lie. This device signs it, because with one input there is no OTHER amount to
+    /// be lied about and no second signature anywhere for a later round to combine the
+    /// harvested one with. The signature it produces is worthless: BIP-143 hashes the input
+    /// amount into the digest, so the signature verifies under the amount the file stated
+    /// and NOT under the amount the chain holds, and a transaction carrying it cannot
+    /// confirm.
+    ///
+    /// This is the test the review screen's copy rests on. "The signature this device adds
+    /// is worthless and this transaction cannot confirm" is a claim about cryptography, and
+    /// it must not ship without something that verifies it against secp256k1.
+    #[test]
+    fn a_lying_single_input_signature_cannot_confirm() {
+        use bitcoin::hashes::Hash as _;
+        use bitcoin::secp256k1::Message;
+        use bitcoin::sighash::{EcdsaSighashType, SighashCache};
+
+        const LIE_SAT: u64 = 95_000;
+
+        let mut psbt = fixture::bluewallet_watch_only_psbt();
+        let spk = psbt.inputs[0]
+            .witness_utxo
+            .as_ref()
+            .expect("fixture A states its amount")
+            .script_pubkey
+            .clone();
+        psbt.inputs[0].witness_utxo.as_mut().unwrap().value = Amount::from_sat(LIE_SAT);
+
+        // The device's own accounts, as `firmware/src/signing.rs` puts them in scope:
+        // fixture A carries BlueWallet's zero fingerprint, and ownership is decided by
+        // deriving the leaf it names rather than by reading that fingerprint.
+        let accounts = fixture::device_accounts();
+        let inspection = crate::psbt::inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+            .expect("one input, one amount");
+        assert_eq!(inspection.signable_inputs(), 1);
+        let signed = sign(&psbt, &inspection, &fixture::SEED).expect("this device signs it");
+        assert_eq!(signed.report().inputs_signed, alloc::vec![0]);
+
+        let out = signed.into_psbt();
+        let (public, signature) = out.inputs[0]
+            .partial_sigs
+            .iter()
+            .next()
+            .expect("one signature");
+        let tx = out.unsigned_tx.clone();
+        let mut cache = SighashCache::new(&tx);
+        let mut digest_for = |value: u64| {
+            let hash = cache
+                .p2wpkh_signature_hash(0, &spk, Amount::from_sat(value), EcdsaSighashType::All)
+                .expect("a p2wpkh digest");
+            Message::from_digest(hash.to_byte_array())
+        };
+
+        // Under the amount the FILE stated, which is the digest the device was shown.
+        assert!(secp()
+            .verify_ecdsa(&digest_for(LIE_SAT), &signature.signature, &public.inner)
+            .is_ok());
+        // Under the amount the CHAIN holds, which is the digest consensus computes. This is
+        // the whole of the argument: the coordinator's reward for the lie is a transaction
+        // that cannot confirm, not a fee nobody was shown.
+        assert!(secp()
+            .verify_ecdsa(
+                &digest_for(fixture::PREVOUT_SAT),
+                &signature.signature,
+                &public.inner
+            )
+            .is_err());
     }
 
     /// The batch gate, and why it is a refusal rather than a debug assertion.

@@ -59,7 +59,7 @@
 # count, so amending anything sends the sequence back to the stage that covered it.
 #
 # The owner-facing runbook, with the reasoning and the hardware gates this script
-# cannot run, is docs/RELEASE-0.2.0.md. The verifier-facing counterpart, which is
+# cannot run, is docs/RELEASE-0.2.1.md. The verifier-facing counterpart, which is
 # what these artifacts have to satisfy in a stranger's hands, is docs/VERIFYING.md.
 
 set -euo pipefail
@@ -104,7 +104,7 @@ RELEASE_KEY_CREATED=1786752462
 # Every file that must name that fingerprint before a release goes out. A key a
 # verifier cannot find in two independent places is a key they cannot check, and
 # a document that still names the old one sends them to the wrong key entirely.
-KEY_DOCS="docs/VERIFYING.md docs/RELEASE-0.2.0.md docs/SECURITY.md docs/plan-0.2.0/REPRODUCIBLE.md"
+KEY_DOCS="docs/VERIFYING.md docs/RELEASE-0.2.1.md docs/SECURITY.md docs/plan-0.2.0/REPRODUCIBLE.md"
 
 # The version is read from the firmware crate rather than passed in, because that
 # is the value that lands in the app descriptor, in every artifact name, and in
@@ -935,7 +935,7 @@ What this script does not do, and who does:
   the reproducibility comparison tools/repro/check-repro.sh
   the manifest and its checks    tools/repro/verify-manifest.py
 
-Read docs/RELEASE-0.2.0.md before starting. It carries the gate list in full, what
+Read docs/RELEASE-0.2.1.md before starting. It carries the gate list in full, what
 ships, what deliberately does not, and the limitations the release notes must state.
 PLANEOF
 }
@@ -1056,7 +1056,7 @@ cmd_preflight() {
     fi
 
     printf '\n--- the documents this release promises\n'
-    for f in docs/VERIFYING.md docs/RELEASE-0.2.0.md docs/PROVISIONING.md docs/KNOWN-ISSUES.md; do
+    for f in docs/VERIFYING.md docs/RELEASE-0.2.1.md docs/PROVISIONING.md docs/KNOWN-ISSUES.md; do
         if [ -f "$f" ]; then ok "$f"; else bad "$f is missing"; GATE_FAIL=$((GATE_FAIL + 1)); fi
     done
 
@@ -1254,7 +1254,7 @@ notyas $VERSION
 An airgapped Bitcoin signer for ESP32-P4 touch panels.
 
 Release notes, known limitations and what deliberately does not ship:
-docs/RELEASE-0.2.0.md
+docs/RELEASE-0.2.1.md
 How to verify this release yourself: docs/VERIFYING.md
 
 Signed with the notyas release key $RELEASE_KEY_FPR.
@@ -1296,7 +1296,7 @@ cmd_build() {
 
     check_artifacts build
     # The Q41 verdict is recorded rather than left implicit in "the stage passed".
-    # docs/RELEASE-0.2.0.md and the release notes both state that the shipped image
+    # docs/RELEASE-0.2.1.md and the release notes both state that the shipped image
     # carries no test console, and this line is the evidence that claim rests on:
     # which tool decided it, about which files, at which commit.
     stamp_write build "artifacts = $ARTIFACTS" "boards = $(boards | tr '\n' ' ')" \
@@ -1559,7 +1559,7 @@ Pushed $TAG. What remains is manual, and in this order:
   2. Attach every file in $ARTIFACTS, including SHA256SUMS.txt and
      SHA256SUMS.txt.asc. Attach nothing that is not in SHA256SUMS.txt: an
      unlisted file is an unsigned file.
-  3. Paste the release notes from docs/RELEASE-0.2.0.md, including the known
+  3. Paste the release notes from docs/RELEASE-0.2.1.md, including the known
      limitations and the interop change to already finalized cosigner inputs.
   4. Publish docs/keys/$RELEASE_KEY_FPR.asc and confirm the key is on
      keys.openpgp.org, so a verifier has two independent sources.

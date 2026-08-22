@@ -48,12 +48,29 @@
 //! Everything else, including an output whose map carries our fingerprint at a perfectly
 //! plausible change path, is money leaving. See [`OutputRole`].
 //!
-//! An input is `Ours` when exactly one BIP32 origin in its map names the device's master
-//! fingerprint. That is a CLAIM, not proof: a fingerprint is four public bytes and anyone
-//! can write ours into a file. The proof is [`super::sign`]'s derive-and-compare, which
-//! rebuilds the script from the key the path actually derives and refuses if it differs.
-//! Splitting the claim from the proof is what lets the whole of this file run with no seed
-//! in scope.
+//! An INPUT is decided the same way, and it was not until 2026-08-21. A fingerprint is
+//! four public bytes and a path is a list of integers: both are ROUTING HINTS, which say
+//! WHICH key to derive, and neither is evidence about who holds it. What decides is
+//! `prove_ownership` - derive the key at the leaf the hint names from an [`Account`], which
+//! only the seed could have produced, and require BOTH that key to equal the key the origin
+//! states AND the script it locks to equal the script the input actually pays, byte for
+//! byte. That is Coldcard's `determine_my_signing_key`, Electrum's `get_pubkey_derivation`
+//! and Sparrow's `Wallet.getSigningNodes`, which are three spellings of one rule.
+//!
+//! An input we cannot prove is [`Claim::Foreign`], and Foreign is not an error: BIP-174 has
+//! a signer sign what it can and pass the rest through. Two cases are not Foreign and are
+//! worth naming, because they are where the proof stops short:
+//!
+//! - a P2WSH input is proven by a [`Registration`] rather than an [`Account`] (`bind_multisig`,
+//!   check 4), and an unregistered one is a refusal and not a shrug (Q11/Q24);
+//! - an origin that names THIS DEVICE by its master fingerprint, in a session that put no
+//!   account in scope to answer with, is carried as a claim and proven by [`super::sign`]'s
+//!   derive-and-compare instead. That is the stateless mode this crate's public [`inspect`]
+//!   offers, and it is why the claim and the proof are separate values at all.
+//!
+//! A fingerprint of all zero bytes names NOBODY. Coldcard substitutes its own XFP there and
+//! then requires the derivation to prove it (`shared/psbt.py`, the zero-XFP branch); so does
+//! this, and an assumption no wallet in scope discharges is Foreign rather than ownership.
 
 use alloc::vec::Vec;
 use core::fmt;
@@ -682,7 +699,9 @@ impl fmt::Display for CheckFailure {
             }
             MissingPreviousTransaction { index } => write!(
                 f,
-                "input {index} has no previous transaction, which is required for anything but taproot"
+                "input {index} does not carry the transaction it came from, so nothing \
+                 proves what it is worth; this device signs an unproven amount only when \
+                 the transaction has a single input"
             ),
             UnprovenAmountBesideOurSignature { signing, unproven } => write!(
                 f,
@@ -850,7 +869,7 @@ impl fmt::Display for ScriptKind {
 
 /// How firmly this device knows what an input is worth.
 ///
-/// Two states and not three: an input that states no amount at all never reaches an
+/// Three states and not four: an input that states no amount at all never reaches an
 /// [`InputFacts`], because [`CheckFailure::MissingPrevout`] refuses the file first.
 ///
 /// The distinction exists because the fee is a sum over EVERY input, so the moment one
@@ -866,16 +885,28 @@ impl fmt::Display for ScriptKind {
 /// while signing the coin next to it for its real value. The two rounds of that trick
 /// combine into one transaction, which is the attack BIP-174's line 415 footnote is about.
 ///
-/// So [`AmountProof::ClaimedByFile`] is safe in exactly one place, and it is a property of
-/// the DIGEST rather than of who owns what: a signature of ours that commits to every
-/// input amount at once makes a claimed amount binding, because substituting it produces a
-/// transaction that cannot confirm. BIP-341 with a whitelisted flag is that signature and
-/// BIP-143 is not, which is what
+/// So an amount that rests on `witness_utxo` alone is safe in exactly two places, and
+/// neither of them is a statement about who owns what. Either a signature of ours commits
+/// to every input amount at once - BIP-341 under a whitelisted flag, and nothing else - or
+/// the transaction has EXACTLY ONE INPUT, where there is no second amount to lie about and
+/// no second signature anywhere for a later round to combine with. Both are decided in one
+/// place, `our_signatures_bind_every_amount`, which is what
 /// [`CheckFailure::UnprovenAmountBesideOurSignature`] enforces and
 /// [`Inspection::fee_is_enforced`] reads from the other end.
 ///
-/// A review screen has to render the two differently, which is the whole reason this is a
-/// public type and not a private flag:
+/// INVARIANT: the single-input carve-out is over the TRANSACTION and never over the inputs
+/// we classify as ours. The "exclude a class of inputs" reasoning reverted on 2026-08-18
+/// has NOT been readmitted by it: ownership is asserted by the file, so a count restricted
+/// to inputs we believe are ours is a count the coordinator chooses, and rotating which
+/// amount is proven between two rounds defeats every rule keyed on such a count.
+///
+/// [`AmountProof::BoundByOurSignature`] is what those two cases produce, and it exists so
+/// that "the fee is exact" and "an amount on this screen is unproven" cannot both be true
+/// of one file: [`Inspection::fee_is_enforced`] and [`Inspection::unproven_amounts`] read
+/// these three states rather than two states and a predicate beside them.
+///
+/// A review screen has to render the three differently, which is the whole reason this is
+/// a public type and not a private flag:
 ///
 /// ```
 /// use notyas_core::psbt::{AmountProof, InputFacts};
@@ -884,6 +915,7 @@ impl fmt::Display for ScriptKind {
 /// fn caveat(facts: &InputFacts) -> Option<&'static str> {
 ///     match facts.amount_proof {
 ///         AmountProof::ProvenByPrevTx => None,
+///         AmountProof::BoundByOurSignature => Some("stated, bound by your signature"),
 ///         AmountProof::ClaimedByFile => Some("stated by the file, not proven"),
 ///     }
 /// }
@@ -894,10 +926,12 @@ pub enum AmountProof {
     /// spends, so the amount and the script are that transaction's own and not anybody's
     /// assertion about it.
     ProvenByPrevTx,
-    /// `witness_utxo` alone. Nothing binds it to the outpoint, so it is the file's word.
-    /// Only reachable for an input this device will not sign, or for a taproot input,
-    /// whose amount BIP-341 makes binding on the signature instead
-    /// ([`Inspection::fee_is_enforced`]).
+    /// `witness_utxo` alone, but a signature this device is about to add makes it binding:
+    /// substituting it produces a transaction that cannot confirm. Set by the post-pass in
+    /// [`inspect_with_accounts`] and never by `resolve_prevout`, because it is a fact about
+    /// the whole file rather than about one input.
+    BoundByOurSignature,
+    /// `witness_utxo` alone, and nothing binds it. The file's word.
     ClaimedByFile,
 }
 
@@ -1015,15 +1049,30 @@ impl OutputRole {
     }
 }
 
-/// Whether an input says this device can spend it.
+/// Whether this device can spend an input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Claim {
-    /// No origin here names our master fingerprint. Shown on the review screen, never
-    /// signed, and never silently dropped.
+    /// Not ours, or not provably ours, which are the same verdict and deliberately so.
+    ///
+    /// Three files land here: one whose origins name another device, one whose origins name
+    /// this device at a leaf an [`Account`] in scope refutes, and one whose origins name
+    /// nobody at all (a fingerprint of 00000000) with nothing in scope to discharge the
+    /// assumption. Shown on the review screen, never signed, and never silently dropped -
+    /// BIP-174 line 415 has a signer sign what it can and pass the rest through.
     Foreign,
-    /// Exactly one origin names our fingerprint, its path has a sane shape, its coin type
-    /// matches, and the key it names is the key the script commits to. Still a claim:
-    /// [`super::sign`] proves it by derivation before it signs.
+    /// This device can spend this input.
+    ///
+    /// `path` is the path THIS CRATE resolved, not the file's spelling of it: for a claim
+    /// proven against an [`Account`] it is that account's own origin followed by the two
+    /// leaf steps, so Electrum's relative `change/index` and a coordinator's mistaken
+    /// prefix both arrive at [`super::sign`] as a path the seed can actually walk.
+    ///
+    /// Reached two ways, and the difference is what the value carries rather than what it
+    /// says. Either `prove_ownership` derived this exact key and this exact script from an
+    /// account of ours - the whole of the proof, done with no seed in scope - or the origin
+    /// names this device and nothing in scope could answer, in which case this is still a
+    /// claim and [`super::sign`]'s derive-and-compare is what proves it. Both are refused
+    /// there if false, which is why one variant covers both.
     Ours { path: DerivationPath, key: ClaimedKey },
 }
 
@@ -1122,18 +1171,15 @@ impl Inspection {
     /// Whether [`Inspection::fee`] is a number that any transaction carrying this device's
     /// signature would actually have to pay.
     ///
-    /// Two ways to get there, and the second is the one worth stating. Either every input
-    /// amount was proven against its own previous transaction, or this device is about to
-    /// commit to all of them at once: BIP-341 hashes `sha_amounts` over every input of the
-    /// transaction, so a key-path signature of ours under a whitelisted flag makes the
-    /// claimed amounts the only amounts under which that signature verifies. Lying about
-    /// one then costs the coordinator a transaction that cannot confirm, not a fee the user
-    /// was never shown.
-    ///
-    /// The second clause reads the same predicate the amount-substitution refusal does
-    /// ([`CheckFailure::UnprovenAmountBesideOurSignature`]), which is deliberate: they are
-    /// one fact seen from two ends, and two spellings of it would eventually disagree about
-    /// which signatures bind which amounts.
+    /// One question now rather than two, and that is what [`AmountProof`]'s third state
+    /// bought. Every amount is proven by its own previous transaction, or made binding by a
+    /// signature this device is about to add, or it is the file's word; the fee is a sum
+    /// over every input, so it is enforced exactly when no input is left in the third
+    /// state. WHICH files reach the second state is decided once, in
+    /// `our_signatures_bind_every_amount`, and written into the facts by the post-pass in
+    /// [`inspect_with_accounts`] - so this reads a fact instead of re-deriving it, and "the
+    /// fee is exact" can no longer stand beside [`Inspection::unproven_amounts`] above
+    /// zero. That pair was reachable, for taproot, until 2026-08-21.
     ///
     /// `false` is not a refusal and must not become one - the only files that reach here
     /// with `false` are ones this device signs nothing in, or signs nothing SEGWIT V0 in.
@@ -1141,24 +1187,9 @@ impl Inspection {
     /// [`InputFacts::amount_proof`] is [`AmountProof::ClaimedByFile`], and a fee threshold
     /// (check 6, notyas-wallet) has to read as a lower bound rather than a measurement.
     pub fn fee_is_enforced(&self) -> bool {
-        if self
-            .inputs
+        self.inputs
             .iter()
-            .all(|i| i.amount_proof == AmountProof::ProvenByPrevTx)
-        {
-            return true;
-        }
-        self.signable_inputs() > 0 && self.every_signature_of_ours_covers_every_amount()
-    }
-
-    /// Whether every signature this device would add commits to the amount of every input,
-    /// rather than only to the amount of the input it is on.
-    ///
-    /// Vacuously true of a file this device signs nothing in, which is why
-    /// [`Inspection::fee_is_enforced`] asks for a signature to exist before it asks this.
-    fn every_signature_of_ours_covers_every_amount(&self) -> bool {
-        self.ours()
-            .all(|i| commits_to_every_amount(i.kind, whitelisted_sighashes(i.kind)))
+            .all(|i| i.amount_proof != AmountProof::ClaimedByFile)
     }
 
     /// The inputs this device would sign.
@@ -1263,10 +1294,11 @@ impl Inspection {
     /// How many inputs state an amount the file has not proven
     /// ([`AmountProof::ClaimedByFile`]).
     ///
-    /// Zero for most files. Above zero it is the caveat [`Inspection::fee`] and every
-    /// total above it have to be rendered with, and [`Inspection::fee_is_enforced`] is the
-    /// separate question of whether this device's own signatures make those amounts
-    /// binding anyway.
+    /// Zero for most files, and zero as well for a file whose claimed amounts a signature
+    /// of ours makes binding, because those carry [`AmountProof::BoundByOurSignature`]
+    /// instead. Above zero it is the caveat [`Inspection::fee`] and every total above it
+    /// have to be rendered with, and it is exactly the condition
+    /// [`Inspection::fee_is_enforced`] answers `false` to. The two cannot disagree.
     pub fn unproven_amounts(&self) -> usize {
         self.inputs
             .iter()
@@ -1299,12 +1331,18 @@ const PURPOSE_WHITELIST: [u32; 5] = [44, 48, 49, 84, 86];
 /// Validate a PSBT against a device context, with no key and no account in scope.
 ///
 /// [`inspect_with_accounts`] with an empty slice, and every word of that function's
-/// contract holds here. What is missing is only the single-sig half of check 3: with no
-/// account to re-derive from, an output claiming to be ours can only be
-/// [`OutputRole::ClaimedButUnproven`], so it counts as money leaving and the review
-/// OVERSTATES what the transaction sends by the whole of its change. Safe, and the wrong
-/// number to show anyone who has a session open - a caller holding the wallet's accounts
-/// should pass them.
+/// contract holds here. What is missing is the single-sig half of check 3: with no account
+/// to re-derive from, no output of ours can be proven, so every one of them counts as money
+/// leaving and the review OVERSTATES what the transaction sends by the whole of its change.
+/// Safe, and the wrong number to show anyone who has a session open - a caller holding the
+/// wallet's accounts should pass them.
+///
+/// Which unproven state such an output lands in is [`classify_output`]'s split and not this
+/// function's: an origin that NAMES this device is [`OutputRole::ClaimedButUnproven`], and
+/// one at the zero fingerprint, which names nobody, stays [`OutputRole::Payment`]. Both are
+/// money leaving. Only the first blocks a hold, and it blocks it here for the same reason it
+/// would with the accounts in scope - the file said something about this device that nothing
+/// backs.
 pub fn inspect(psbt: &Psbt, cx: &Context<'_>) -> Result<Inspection, CheckFailure> {
     inspect_with_accounts(psbt, cx, &[])
 }
@@ -1338,6 +1376,8 @@ pub fn inspect_with_accounts(
     let tx = &psbt.unsigned_tx;
     let expected_coin_type = coin_type_for(cx.network);
 
+    let own = OwnWallets::over(accounts);
+
     let mut inputs = Vec::with_capacity(psbt.inputs.len());
     let mut input_total = Amount::ZERO;
     for (i, input) in psbt.inputs.iter().enumerate() {
@@ -1352,7 +1392,15 @@ pub fn inspect_with_accounts(
         // input's fields are shown and never trusted, and refusing a whole transaction
         // because somebody else's input carries a field we dislike would make legitimate
         // coordinator output look like an attack.
-        let claim = claim_for_input(input, index, kind, cx, expected_coin_type)?;
+        let claim = claim_for_input(
+            input,
+            index,
+            kind,
+            &prevout.script_pubkey,
+            cx,
+            expected_coin_type,
+            &own,
+        )?;
         let mut multisig = None;
         if let Claim::Ours { key, path } = &claim {
             // ARCH check 9's finalized clause, on the inputs it is actually about. What it
@@ -1374,14 +1422,35 @@ pub fn inspect_with_accounts(
             // on a coordinator's say-so: being told a false one twice is the 2020 Trezor
             // fee attack.
             //
-            // Taproot is the exception it has always been: BIP-341 commits to every
-            // prevout, so a lie about this input's amount moves the digest rather than the
-            // money.
+            // Two exceptions, and only two. Taproot is the one it has always been: BIP-341
+            // commits to every prevout, so a lie about this input's amount moves the digest
+            // rather than the money.
+            //
+            // The second is a transaction with exactly ONE input. That attack needs two
+            // presentations of one unsigned transaction and a SECOND signature to combine
+            // the harvested one with; a one-input transaction offers neither, because lying
+            // about the only amount invalidates the only signature and leaves nothing for a
+            // later round to keep.
+            //
+            // INVARIANT: the count is over `psbt.unsigned_tx.input`, the whole transaction,
+            // and never over the inputs we classify as ours. Ownership is asserted by the
+            // file, so a count of "ours" is a count the coordinator chooses: he proves one
+            // amount, claims the other, and ROTATES which is which between rounds, so every
+            // file he presents carries exactly one unproven amount and still yields one
+            // valid signature per round. See
+            // `amount_rotation_over_a_proven_and_a_claimed_amount_is_refused`.
+            //
+            // Reading the transaction here is sound rather than gameable: `global_sanity`
+            // has already pinned `psbt.inputs.len() == tx.input.len()`
+            // (`CheckFailure::InputMapCountMismatch`) before this loop begins.
             //
             // This is HALF of check 2. The other half is about the other inputs and cannot
             // be decided one input at a time, so it runs over the finished facts below; see
             // `amounts_our_signatures_do_not_cover`.
-            if amount_proof == AmountProof::ClaimedByFile && kind != ScriptKind::P2tr {
+            if amount_proof == AmountProof::ClaimedByFile
+                && kind != ScriptKind::P2tr
+                && psbt.unsigned_tx.input.len() != 1
+            {
                 return Err(CheckFailure::MissingPreviousTransaction { index });
             }
             if kind != ScriptKind::P2wsh && !kind.is_single_sig() {
@@ -1440,11 +1509,25 @@ pub fn inspect_with_accounts(
 
     amounts_our_signatures_do_not_cover(&inputs)?;
 
+    // The ONLY writer of `AmountProof::BoundByOurSignature`, and it runs here rather than
+    // in `resolve_prevout` because what it records is a fact about the whole file: whether
+    // the signatures this round is about to add leave any amount free to be substituted.
+    // Foreign inputs are upgraded too, and that is correct in the taproot case for the
+    // reason the whole rule rests on - `sha_amounts` covers every prevout, so a lie about a
+    // cosigner's amount kills our own signature just as surely as a lie about ours.
+    if our_signatures_bind_every_amount(&inputs) {
+        for facts in &mut inputs {
+            if facts.amount_proof == AmountProof::ClaimedByFile {
+                facts.amount_proof = AmountProof::BoundByOurSignature;
+            }
+        }
+    }
+
     // Check 3's two bounds, and both are the FILE's rather than one output's: the work is
     // sized by maps the file writes, and a bound held per output leaves the product of the
     // two unbounded. The census refuses before any of it happens; the budget rations what
     // survives the census.
-    own_origin_census(psbt, cx)?;
+    own_origin_census(psbt, cx, &own)?;
     let mut budget = ChangeDerivationBudget::new(cx.limits);
 
     let mut outputs = Vec::with_capacity(psbt.outputs.len());
@@ -1453,15 +1536,8 @@ pub fn inspect_with_accounts(
         let index = i as u16;
         let txout = &tx.output[i];
         let at = Location::Output(index);
-        let (claims_our_key, role) = classify_output(
-            output,
-            txout,
-            at,
-            cx,
-            expected_coin_type,
-            accounts,
-            &mut budget,
-        )?;
+        let (claims_our_key, role) =
+            classify_output(output, txout, at, cx, &own, &mut budget)?;
 
         output_total = output_total
             .checked_add(txout.value)
@@ -1630,6 +1706,47 @@ fn resolve_prevout(
     }
 }
 
+/// Whether the signatures this device is about to add make EVERY input amount of this
+/// transaction binding, so that substituting any of them yields a transaction that cannot
+/// confirm rather than a fee the user was never shown.
+///
+/// Two ways, and only two.
+///
+/// BIP-341 key path under a whitelisted flag hashes `sha_amounts` over every prevout, so
+/// one lie anywhere invalidates every signature of ours in that round and the coordinator
+/// keeps nothing. This survives replay: each round must tell the whole truth to yield
+/// anything at all.
+///
+/// BIP-143 binds only its own input's amount, so it survives replay only when there is no
+/// second signature anywhere in the transaction for a later round to combine with: exactly
+/// one input. Two or more is the 2020 segwit fee attack, and it does NOT require two
+/// unproven amounts in one file. A coordinator that proves one amount and claims the other,
+/// then ROTATES which is which between rounds, presents a file with a single unproven
+/// amount every time and still harvests one valid signature per round - the one on the
+/// input it proved. This device has no history (S-35) with which to see the second
+/// presentation.
+///
+/// INVARIANT: `inputs.len() == 1` is over the TRANSACTION, never over the inputs we
+/// classify as ours, and that holds even though ownership is proven by derivation now
+/// rather than read off a fingerprint. What the file supplies is still the ROUTING - which
+/// origins exist and which leaves they name - so the coordinator still chooses how many
+/// inputs this device believes are its own, by the simple expedient of omitting an origin
+/// from one of them. Only a count over the transaction is a count he cannot write.
+fn our_signatures_bind_every_amount(inputs: &[InputFacts]) -> bool {
+    let mut ours = inputs
+        .iter()
+        .filter(|i| matches!(i.claim, Claim::Ours { .. }))
+        .peekable();
+    if ours.peek().is_some()
+        && ours.all(|i| commits_to_every_amount(i.kind, whitelisted_sighashes(i.kind)))
+    {
+        return true;
+    }
+    inputs.len() == 1
+        && matches!(inputs[0].claim, Claim::Ours { .. })
+        && binds_the_whole_transaction(inputs[0].kind, whitelisted_sighashes(inputs[0].kind))
+}
+
 /// ARCH check 2, the half that is about the OTHER inputs.
 ///
 /// Refuse when this device will sign ANY input whose sighash does not commit to every input
@@ -1656,6 +1773,12 @@ fn resolve_prevout(
 /// is the pin, and `the_amount_substitution_probe_burns_a_coin_no_screen_could_have_named`
 /// is what it costs when the rule is not there.
 fn amounts_our_signatures_do_not_cover(inputs: &[InputFacts]) -> Result<(), CheckFailure> {
+    if our_signatures_bind_every_amount(inputs) {
+        return Ok(());
+    }
+    // The search below stays over ALL inputs, INCLUDING the ones we sign. That scope is the
+    // whole point of the check: the amount a substitution moves is not required to sit on a
+    // coin the file calls somebody else's.
     let Some(unproven) = inputs
         .iter()
         .find(|i| i.amount_proof == AmountProof::ClaimedByFile)
@@ -1696,6 +1819,42 @@ fn commits_to_every_amount(kind: ScriptKind, admitted: &[u32]) -> bool {
         && admitted.iter().all(|flag| flag & SIGHASH_ANYONECANPAY == 0)
 }
 
+/// Whether a signature of ours over an input of `kind`, under `admitted` and nothing else,
+/// commits BOTH to that input's own amount AND to every output.
+///
+/// SIGHASH_ALL and BIP-341's SIGHASH_DEFAULT are the only two flags that do. Legacy hands
+/// back an empty list, which is the right answer twice over: this device does not sign
+/// legacy at all, and a legacy digest carries no amount to bind.
+///
+/// INVARIANT: this reads the SAME list [`sighash_whitelisted`] enforces. Widening that list
+/// to any ANYONECANPAY, NONE or SINGLE flag must turn this false and close the single-input
+/// escape in `our_signatures_bind_every_amount`, because such a signature could be
+/// transplanted into a transaction with different outputs or different inputs.
+///
+/// The kind is an EXHAUSTIVE match rather than a negated one, and that is the point of
+/// writing it out: this function grants an escape from check 2, so a [`ScriptKind`] added
+/// later must not inherit it by default. The match makes adding one a compile error here,
+/// and the question it forces on whoever adds it is the whole of what this function means -
+/// does a signature of ours over that kind commit to its own input's amount AND to every
+/// output? Answer it, then write the arm.
+fn binds_the_whole_transaction(kind: ScriptKind, admitted: &[u32]) -> bool {
+    /// SIGHASH_ALL, and BIP-341's SIGHASH_DEFAULT.
+    const WHOLE: [u32; 2] = [0x01, 0x00];
+    let binds_its_own_amount = match kind {
+        // BIP-143 hashes this input's own value into the digest, and BIP-341 hashes every
+        // prevout's - both bind their own, which is all the single-input escape needs.
+        ScriptKind::P2wpkh | ScriptKind::P2shP2wpkh | ScriptKind::P2wsh | ScriptKind::P2tr => true,
+        // A legacy digest carries no amount at all, so nothing a signature over one says
+        // is a statement about what the coin was worth. This device does not sign legacy
+        // either, and `whitelisted_sighashes` hands both an empty list, so they are refused
+        // three ways over - this arm is the third and the only one that is about the digest.
+        ScriptKind::P2pkh | ScriptKind::P2sh => false,
+        // Not scripts this device holds a key under, and not scripts it signs.
+        ScriptKind::OpReturn | ScriptKind::Other => false,
+    };
+    binds_its_own_amount && !admitted.is_empty() && admitted.iter().all(|f| WHOLE.contains(f))
+}
+
 /// ARCH check 7's whitelist: every sighash flag this device will sign an input of `kind`
 /// under, and the empty slice for a kind it will not sign at all.
 ///
@@ -1719,48 +1878,369 @@ fn whitelisted_sighashes(kind: ScriptKind) -> &'static [u32] {
     }
 }
 
-/// ARCH checks 1 and 5, the halves that need no key: is this input claimed as ours, and if
-/// so is the path it claims a shape a wallet could ever have produced.
+/// The single-sig wallets this device can prove a file against, and the fingerprints that
+/// route an origin to one of them.
+///
+/// Read by BOTH maps: [`claim_for_input`] over the inputs, [`classify_output`] over the
+/// outputs, and [`own_origins`] over the census that bounds them. That is the point of the
+/// type rather than a convenience - a device that routed an input map by one rule and an
+/// output map by another would read half of a file, which is what it did with an Electrum
+/// file until 2026-08-22.
+///
+/// Built once per file rather than per origin: [`bitcoin::bip32::Xpub::fingerprint`] hashes
+/// a public key, and a hostile derivation map is a map an attacker sizes.
+///
+/// An empty `accounts` is not an error and is not a special case in the code below - it is
+/// a caller with no single-sig wallet in scope, and every claim it is asked about comes
+/// back [`Ownership::Unknown`]. What that buys is decided in [`claim_for_input`] and in
+/// [`classify_output`], and they decide it the same way.
+struct OwnWallets<'a> {
+    /// The accounts themselves, so that a caller cannot hand the routing one set and the
+    /// proving another.
+    accounts: &'a [Account],
+    /// The ACCOUNT-level xpub fingerprints, in `accounts` order. A wallet built from an
+    /// imported xpub (BlueWallet, Specter, Electrum) has no master key to fingerprint, so
+    /// it writes the xpub's own fingerprint into `bip32_derivation` instead.
+    account_fingerprints: Vec<Fingerprint>,
+}
+
+/// How a file addressed an origin to this device, which is a question about the FILE and
+/// never about who holds the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Routing {
+    /// The file names THIS DEVICE: the master fingerprint, or the fingerprint of an account
+    /// xpub this device exported. Four public bytes, so it is a statement to be judged and
+    /// not a fact - but it IS a statement, and this crate answers it rather than ignoring
+    /// it.
+    Named,
+    /// The file names nobody: `PSBT_IN_BIP32_DERIVATION` written with a master fingerprint
+    /// of 00000000, which is BlueWallet's literal default for a watch-only import that
+    /// holds no fingerprint of its own.
+    ///
+    /// Coldcard's rule, and it is better than believing it: SUBSTITUTE this device's own
+    /// fingerprint as an ASSUMPTION so the path can be tried at all, then require the
+    /// derivation to discharge it (`shared/psbt.py`, the zero-XFP branch). Until
+    /// 2026-08-21 this crate accepted the zero fingerprint as a claim about this device,
+    /// which let any input in any file assert ownership of a coin without naming a wallet.
+    Assumed,
+}
+
+/// What a wallet of this device's own says about one origin's claim on one input.
+///
+/// Four answers and not two, because "no" has three meanings here and they buy three
+/// different verdicts. It is the same shape [`OutputRole`] has for the output side of the
+/// same question, and for the same reason: a signer that collapses "not ours" into
+/// "unproven" signs coins it cannot account for, and one that collapses them the other way
+/// refuses files it has no business refusing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Ownership {
+    /// An account of ours derives the key this origin names AND locks the script this input
+    /// actually pays. Both compared whole; either alone is not proof.
+    ///
+    /// The path carried is OURS - that account's origin followed by the two leaf steps -
+    /// and never the file's spelling of it, because [`super::sign`] walks it from the seed
+    /// and the file's spelling may be Electrum's relative `change/index` or simply wrong.
+    Proven(DerivationPath),
+    /// An account of ours locks this exact script at the leaf named, and the key the file
+    /// states at that leaf is not the key that is there.
+    ///
+    /// This is OUR coin described by a file that is lying about it: the derive-and-compare's
+    /// own verdict, promoted from [`super::sign`] to here. A refusal rather than a shrug,
+    /// because a file at odds with what the seed derives is evidence of tampering - the same
+    /// reading `resolve_prevout` gives a `witness_utxo` that contradicts its own previous
+    /// transaction.
+    Forged,
+    /// An account of ours OWNS the account this origin's FULL path names, and this input is
+    /// not one of its leaves.
+    ///
+    /// The account ANSWERED, so the claim is refuted rather than unproven, whatever
+    /// fingerprint the file wrote on it. This is what stops ownership laundering: writing
+    /// this device's fingerprint onto a stranger's input no longer buys a row in the batch
+    /// an approval screen names.
+    Refuted,
+    /// Nothing in scope could answer. An empty account slice, an account on another
+    /// network, or a path naming a wallet this device does not hold as an [`Account`] - a
+    /// BIP-48 leaf, for one, whose only honest source is a [`Registration`].
+    Unknown,
+}
+
+impl<'a> OwnWallets<'a> {
+    fn over(accounts: &'a [Account]) -> OwnWallets<'a> {
+        OwnWallets {
+            accounts,
+            account_fingerprints: accounts.iter().map(|a| a.xpub().fingerprint()).collect(),
+        }
+    }
+
+    /// Whether an origin is addressed to this device, and on what evidence. `None` is an
+    /// origin naming another device, which is the ordinary case in a multi-party round.
+    fn route(&self, origin: Fingerprint, master: Fingerprint) -> Option<Routing> {
+        if origin == master || self.account_fingerprints.contains(&origin) {
+            Some(Routing::Named)
+        } else if origin == Fingerprint::default() {
+            Some(Routing::Assumed)
+        } else {
+            None
+        }
+    }
+
+    /// THE ownership proof, and the only thing in this crate entitled to answer "ours"
+    /// about a single-sig input.
+    ///
+    /// Coldcard's `determine_my_signing_key`, Electrum's `get_pubkey_derivation` - where
+    /// every branch terminates in `test_der_suffix_against_pubkey` - and Sparrow's
+    /// `Wallet.getSigningNodes`, where script equality is the only unconditional rule, are
+    /// three implementations of one test, and this is that test: derive the key at the leaf
+    /// the origin names from an [`Account`], which only the seed could have produced, and
+    /// require BOTH the derived key to equal the key the origin states AND the script that
+    /// key locks to equal the script the input actually pays. Byte for byte, both, or the
+    /// answer is no.
+    ///
+    /// # Two shapes of path, in this order
+    ///
+    /// A FULL path from the master is [`Account::locate_path`]'s question, and at most one
+    /// account can answer it because no two accounts share an origin. That account is then
+    /// AUTHORITATIVE: if its leaf is not this input, the answer is [`Ownership::Refuted`]
+    /// and no search runs behind it. Searching on behind an account that has already
+    /// answered is how a device talks itself into a second opinion.
+    ///
+    /// A RELATIVE path is Electrum's convention, written whenever it holds only an account
+    /// xpub and has no master fingerprint to prepend: the origin carries the account xpub's
+    /// OWN fingerprint and a two-component `change/index` path under it. Nothing resolves
+    /// as a full path, so the LAST TWO components are read as that pair and derived under
+    /// each account in scope. One derivation per account decides it. This is a branch and
+    /// not a scan - the file names the leaf, and this device only checks whether what is
+    /// there is what the file says is there.
+    ///
+    /// # Cost
+    ///
+    /// At most one [`Account::leaf`] per account in scope, PER INPUT, and only for an input
+    /// carrying an origin routed here - an input with no origin of ours costs nothing at
+    /// all. The two branches are exclusive, so the bound is [`crate::derive::device_accounts`]'s
+    /// four leaves, eight BIP-32 child derivations ([`Account::LEAF_DERIVATIONS`]).
+    ///
+    /// Measured on an x86-64 release build, 2026-08-21: one leaf is 54.9 us, so the worst
+    /// case is 0.220 ms per input and an ordinary single-input file resolves on its first
+    /// leaf. At the 350x host-to-device ratio [`StructuralLimits::max_change_derivations`]
+    /// derives, that is 77 ms per input on silicon, or 19.6 s for a file at
+    /// [`StructuralLimits::max_inputs`] in which every input is hostile - which needs no
+    /// budget of its own, unlike check 3, because the file cannot buy more than one proof
+    /// per input (`AmbiguousOwnershipClaim` is what stops it naming us twice).
+    ///
+    /// The 500-address sweep this replaced ran on every FOREIGN single-sig input, cost
+    /// 4,000 leaves - 219.7 ms measured on the same build - and was charged against no
+    /// budget at all: 5.4 hours on silicon for a 255-input file, and the coordinator wrote
+    /// that file.
+    fn prove(
+        &self,
+        network: Network,
+        path: &DerivationPath,
+        claimed: ClaimedKey,
+        script_pubkey: &Script,
+    ) -> Ownership {
+        for account in self.accounts {
+            // Check 5 refuses a cross-chain PATH; this skips a cross-chain ACCOUNT, which
+            // is a caller's mistake rather than a file's and must not be reasoned from
+            // either way. The same line `prove_account_output` draws.
+            if account.network() != network {
+                continue;
+            }
+            let Some((keychain, index)) = account.locate_path(path) else {
+                continue;
+            };
+            return match account.leaf(keychain, index) {
+                Some(leaf) => leaf_verdict(&leaf, path.clone(), claimed, script_pubkey),
+                // BIP-32's roughly 2^-128 invalid-child case. The account owns the path and
+                // cannot build a key there, so it has still answered.
+                None => Ownership::Refuted,
+            };
+        }
+
+        // Electrum's branch. Read off the END of the path and never collected: a path is a
+        // field of an attacker's file and its length is his to choose, so the last two
+        // steps are taken with an iterator rather than by copying however many he wrote.
+        let mut tail = path.into_iter().rev();
+        let (Some(index), Some(chain)) = (tail.next(), tail.next()) else {
+            return Ownership::Unknown;
+        };
+        let suffix = [*chain, *index];
+        for account in self.accounts {
+            if account.network() != network {
+                continue;
+            }
+            // Built and handed back to `locate_path` rather than mapped here, so that the
+            // chain step's meaning - 0 receive, 1 change, nothing else - keeps exactly one
+            // statement in this crate and the relative branch cannot come to read it
+            // differently from the full one.
+            let mut candidate: Vec<ChildNumber> = account.origin().into_iter().copied().collect();
+            candidate.extend_from_slice(&suffix);
+            let candidate = DerivationPath::from(candidate);
+            let Some((keychain, index)) = account.locate_path(&candidate) else {
+                continue;
+            };
+            let Some(leaf) = account.leaf(keychain, index) else {
+                continue;
+            };
+            match leaf_verdict(&leaf, candidate, claimed, script_pubkey) {
+                // A SEARCH that misses is not an answer: this account simply is not the one
+                // the file meant, and the next may be.
+                Ownership::Refuted => continue,
+                answer => return answer,
+            }
+        }
+        Ownership::Unknown
+    }
+}
+
+/// One leaf against one origin: the whole of the comparison, written once so the full-path
+/// branch and Electrum's relative branch cannot come to disagree about what proof is.
+///
+/// The script is compared first because it is the statement that matters - it is what the
+/// coin is actually locked to, and Sparrow makes it the only unconditional rule. The key is
+/// compared second because for a hashed script it is a tautology the compiler cannot see,
+/// while for taproot it is not: a scriptPubKey holds a TWEAKED output key, and BIP-341 lets
+/// more than one internal key reach one.
+fn leaf_verdict(
+    leaf: &Leaf,
+    path: DerivationPath,
+    claimed: ClaimedKey,
+    script_pubkey: &Script,
+) -> Ownership {
+    if leaf.script_pubkey != *script_pubkey {
+        return Ownership::Refuted;
+    }
+    let key_agrees = match claimed {
+        ClaimedKey::Ecdsa(key) => key == leaf.key.0,
+        // A taproot origin names the INTERNAL key, and the script above already carried the
+        // output key it tweaks to, so this is the second half of the statement rather than
+        // a restatement of the first.
+        ClaimedKey::Taproot(xonly) => xonly == XOnlyPublicKey::from(leaf.key.0),
+    };
+    if key_agrees {
+        Ownership::Proven(path)
+    } else {
+        Ownership::Forged
+    }
+}
+
+/// ARCH checks 1 and 5, the halves that need no seed: is this input ours, and - where the
+/// answer rests on a claim rather than on a derivation - is the path that claim names a
+/// shape a wallet could ever have produced.
+///
+/// # Order
+///
+/// The proof runs BEFORE the path shape rule, and that order is the whole of what landed on
+/// 2026-08-21. A path is a hint about where to look; judging its shape before looking is how
+/// a file that said nothing true about this device came to refuse the file it was carried
+/// in. What survives the proof is judged; what the proof has already answered is not.
 fn claim_for_input(
     input: &bitcoin::psbt::Input,
     index: u16,
     kind: ScriptKind,
+    script_pubkey: &Script,
     cx: &Context<'_>,
     expected_coin_type: u32,
+    own: &OwnWallets<'_>,
 ) -> Result<Claim, CheckFailure> {
-    let mut found: Option<(DerivationPath, ClaimedKey)> = None;
-    let mut claims = 0usize;
+    // The two routes are counted apart, and everything below turns on the difference.
+    let mut named: Option<(DerivationPath, ClaimedKey)> = None;
+    let mut named_claims = 0usize;
+    let mut assumed: Option<(DerivationPath, ClaimedKey)> = None;
+    let mut assumed_claims = 0usize;
 
     for (pk, source) in &input.bip32_derivation {
-        if source.0 == cx.fingerprint {
-            claims += 1;
-            found = Some((source.1.clone(), ClaimedKey::Ecdsa(*pk)));
+        match own.route(source.0, cx.fingerprint) {
+            Some(Routing::Named) => {
+                named_claims += 1;
+                named = Some((source.1.clone(), ClaimedKey::Ecdsa(*pk)));
+            }
+            Some(Routing::Assumed) => {
+                assumed_claims += 1;
+                assumed = Some((source.1.clone(), ClaimedKey::Ecdsa(*pk)));
+            }
+            None => {}
         }
     }
     for (xonly, (leaves, source)) in &input.tap_key_origins {
-        if source.0 != cx.fingerprint {
+        let Some(routing) = own.route(source.0, cx.fingerprint) else {
             continue;
-        }
+        };
         // A non-empty leaf-hash list is a script-path claim: the key would sign a leaf,
         // not the key path, and the leaf is unverifiable without a registration.
         if !leaves.is_empty() {
             return Err(CheckFailure::TaprootScriptPathUnsupported { index });
         }
-        claims += 1;
-        found = Some((source.1.clone(), ClaimedKey::Taproot(*xonly)));
+        match routing {
+            Routing::Named => {
+                named_claims += 1;
+                named = Some((source.1.clone(), ClaimedKey::Taproot(*xonly)));
+            }
+            Routing::Assumed => {
+                assumed_claims += 1;
+                assumed = Some((source.1.clone(), ClaimedKey::Taproot(*xonly)));
+            }
+        }
     }
 
-    if claims > 1 {
-        return Err(CheckFailure::AmbiguousOwnershipClaim { index, claims });
+    // Ambiguity is a question about origins that NAME this device: two of those are two
+    // contradictory statements about us, there is one key to sign an input with, and
+    // choosing between them is not a decision a signer gets to make.
+    //
+    // Two ASSUMPTIONS are not two claims. Nothing in the file names anybody, so there is no
+    // contradiction to refuse and no statement about this device to be offended by - an
+    // input this crate cannot route to a single origin is simply one it cannot prove.
+    // Counting them here was the second spelling of one defect: it let any party to a
+    // multi-party round burn a transaction the device had every reason to sign, by writing
+    // two origins nobody was named in onto their own input.
+    if named_claims > 1 {
+        return Err(CheckFailure::AmbiguousOwnershipClaim {
+            index,
+            claims: named_claims,
+        });
     }
-    let Some((path, key)) = found else {
-        return Ok(Claim::Foreign);
+    // A named origin outranks an assumption, because the file has said which one it means.
+    let (path, key, routing) = match (named, assumed_claims, assumed) {
+        (Some((path, key)), _, _) => (path, key, Routing::Named),
+        (None, 1, Some((path, key))) => (path, key, Routing::Assumed),
+        _ => return Ok(Claim::Foreign),
     };
     if kind == ScriptKind::P2tr && !input.tap_scripts.is_empty() {
         return Err(CheckFailure::TaprootScriptPathUnsupported { index });
     }
-    path_sanity(&path, Location::Input(index), cx, expected_coin_type)?;
-    Ok(Claim::Ours { path, key })
+
+    match own.prove(cx.network, &path, key, script_pubkey) {
+        Ownership::Proven(proven) => {
+            // A policy check on an input already proven ours, which is the only place it
+            // belongs. It cannot fail on this path - every account origin is a whitelisted
+            // purpose at this device's own coin type, three hardened steps and two normal
+            // ones - and it is called anyway so that the rule and the proof cannot drift
+            // apart without a test noticing.
+            path_sanity(&proven, Location::Input(index), cx, expected_coin_type)?;
+            Ok(Claim::Ours { path: proven, key })
+        }
+        // Our coin, and the file is lying about which key sits at its leaf.
+        Ownership::Forged => Err(CheckFailure::ClaimedKeyNotInScript { index }),
+        // An account of ours answered, and this is not one of its leaves. Somebody else's
+        // input, whatever fingerprint the file wrote on it.
+        Ownership::Refuted => Ok(Claim::Foreign),
+        Ownership::Unknown => match routing {
+            // Nothing in scope discharged the assumption, and the file itself names no
+            // device. There is no claim here to judge - only one this crate made up on the
+            // file's behalf - so nothing about its path shape is evidence about anything.
+            Routing::Assumed => Ok(Claim::Foreign),
+            // The file names THIS DEVICE and no account in scope could answer: a P2WSH leaf
+            // that a `Registration` rather than an `Account` proves, or a session that put
+            // no account in scope at all. The claim stands and `super::sign`'s
+            // derive-and-compare is what proves it, so the path shape has to be judged here
+            // - this is the last stage that will look at it, and an arbitrary path is a key
+            // the user can never re-derive with any other wallet, which is what the 2019
+            // Coldcard ransom traded on.
+            Routing::Named => {
+                path_sanity(&path, Location::Input(index), cx, expected_coin_type)?;
+                Ok(Claim::Ours { path, key })
+            }
+        },
+    }
 }
 
 /// The path shape rule, applied wherever an origin names this device.
@@ -1897,25 +2377,35 @@ fn bind_multisig(
     })
 }
 
-/// How many origins on ONE output map name this device.
+/// How many origins on ONE output map are addressed to this device.
 ///
 /// The one definition of "an origin of ours" there is, read by the census that bounds the
 /// file and by [`classify_output`], which walks the same two maps to decide what they
 /// claim. Two spellings of this count would be two answers to "how many did the device
 /// look at", and the bound would be enforced against one of them and the work done against
-/// the other.
+/// the other - which is what it WAS between 2026-08-21 and 2026-08-22, when this counted a
+/// bare fingerprint comparison and `classify_output` walked three routings. Both read
+/// [`OwnWallets::route`] now, so the census cannot come to disagree with the loop it bounds.
+///
+/// [`Routing::Named`] and [`Routing::Assumed`] alike, because the count is about WORK and
+/// not about belief: an assumption costs the same derivations to discharge as a claim, and
+/// what the two verdicts differ in is decided long after this.
 ///
 /// Both maps, because a file that spent its allowance in `bip32_derivation` and carried on
 /// in `tap_key_origins` would have bought itself a second helping. Only ours: a foreign
 /// origin costs a four-byte comparison and a 15-cosigner output legitimately carries
 /// fourteen of them.
-fn own_origins(output: &bitcoin::psbt::Output, fingerprint: Fingerprint) -> usize {
+fn own_origins(
+    output: &bitcoin::psbt::Output,
+    own: &OwnWallets<'_>,
+    master: Fingerprint,
+) -> usize {
     output
         .bip32_derivation
         .values()
         .map(|source| source.0)
         .chain(output.tap_key_origins.values().map(|(_, source)| source.0))
-        .filter(|claimed| *claimed == fingerprint)
+        .filter(|claimed| own.route(*claimed, master).is_some())
         .count()
 }
 
@@ -1936,12 +2426,16 @@ fn own_origins(output: &bitcoin::psbt::Output, fingerprint: Fingerprint) -> usiz
 ///
 /// It is affordable precisely because it derives nothing: one four-byte comparison per map
 /// entry, over maps [`StructuralLimits::max_psbt_bytes`] already bounds.
-fn own_origin_census(psbt: &Psbt, cx: &Context<'_>) -> Result<(), CheckFailure> {
+fn own_origin_census(
+    psbt: &Psbt,
+    cx: &Context<'_>,
+    own: &OwnWallets<'_>,
+) -> Result<(), CheckFailure> {
     let mut total = 0usize;
     // The cast holds because `global_sanity` ran first and refused any file with more than
     // `max_outputs` output maps, and that limit is itself a u16.
     for (i, output) in psbt.outputs.iter().enumerate() {
-        let ours = own_origins(output, cx.fingerprint);
+        let ours = own_origins(output, own, cx.fingerprint);
         if ours > usize::from(cx.limits.max_own_output_origins) {
             return Err(CheckFailure::TooManyOwnOutputOrigins {
                 at: Location::Output(i as u16),
@@ -2009,6 +2503,53 @@ impl ChangeDerivationBudget {
 /// Returns the claim and the verdict together because they are two readings of one pass and
 /// separating the passes is how they would come to disagree.
 ///
+/// # Routing, and why the output side reads it too
+///
+/// [`OwnWallets::route`] decides which origins are addressed here, and it is the SAME call
+/// [`claim_for_input`] and [`own_origins`] make. Until 2026-08-22 this loop compared
+/// fingerprints by hand and knew two of the three spellings, which cost the release twice
+/// over. It did not know an ACCOUNT XPUB's fingerprint, so an Electrum file - which writes
+/// exactly that, beside a two-component relative path - had its change origin skipped
+/// outright: an honest file and one whose change had been swapped for the coordinator's
+/// address reviewed identically, down to the byte, and both signed. That is the 2019
+/// change-substitution attack, on the one file format 0.2.1 exists to accept. And it read
+/// the zero fingerprint as a claim about THIS device, so an origin it could not discharge
+/// blocked the hold - one field, writable by any party to a multi-party round and needing no
+/// knowledge of our fingerprint, against a file the device had every reason to sign.
+///
+/// # Order: prove first, then read the routing
+///
+/// The proof runs before anything judges the file's spelling of a path, for the reason
+/// [`claim_for_input`] gives at length: a path is a hint about where to look, and judging
+/// its shape before looking is how a file that said nothing true about this device came to
+/// refuse the file it was carried in. Electrum's relative `1/0` is two components deep and
+/// fails [`path_sanity`] on sight, so a shape rule in front of the proof would have made the
+/// HONEST Electrum file unsignable in the same change that made the forged one visible.
+///
+/// Nothing calls `path_sanity` here at all, and that is the finished form of the same
+/// argument rather than an omission. Once the proof has answered, the file's path is not
+/// what travels: an [`OutputRole`] names an account or a registration of OURS and an index
+/// under it, so the shape of the string the file wrote is not evidence about anything.
+/// Where the proof has NOT answered, the routing already decides the verdict below and the
+/// path shape cannot move it either way.
+///
+/// # The two verdicts, and the whole of the difference between them
+///
+/// [`Routing::Named`] that does not prove is [`OutputRole::ClaimedButUnproven`]: the file
+/// made a statement about this device and failed to back it, so the output counts as money
+/// leaving everywhere money is counted and `ReviewState` blocks the hold on it.
+///
+/// [`Routing::Assumed`] that does not prove leaves the role at [`OutputRole::Payment`].
+/// Four zero bytes name nobody, so there is nothing to disbelieve and nothing to block; the
+/// money still counts as leaving, which is the direction this check exists to keep, and the
+/// user still sees the address. This crate already says exactly this about inputs
+/// ([`Routing::Assumed`]'s own doc, and `claim_for_input`'s `Ownership::Unknown` arm), and
+/// the shape it protects is not hypothetical: a second party's change output, at their own
+/// BIP-84 account, claimed at the zero fingerprint their wallet writes by default, is
+/// indistinguishable from a forgery and burning the round over it burns it for everyone.
+///
+/// # Bounds
+///
 /// The proving loops below are the only unbounded-by-nature work in the pipeline - one
 /// wallet re-derivation per origin naming us, on a map an attacker sizes - and they are
 /// bounded from both ends. How many origins may reach them at all is settled before this
@@ -2019,59 +2560,61 @@ impl ChangeDerivationBudget {
 /// before the first call to this function, so the map walked here is already known to name
 /// us no more than [`StructuralLimits::max_own_output_origins`] times and the file no more
 /// than [`StructuralLimits::max_own_origins_in_file`] times. Calling this without that
-/// census is calling it on an unbounded map.
+/// census is calling it on an unbounded map. The census counts through
+/// [`OwnWallets::route`], which is what makes that sentence true of the map this walks
+/// rather than of a narrower one.
 fn classify_output(
     output: &bitcoin::psbt::Output,
     txout: &TxOut,
     at: Location,
     cx: &Context<'_>,
-    expected_coin_type: u32,
-    accounts: &[Account],
+    own: &OwnWallets<'_>,
     budget: &mut ChangeDerivationBudget,
 ) -> Result<(bool, OutputRole), CheckFailure> {
     let mut claims_our_key = false;
     let mut role = OutputRole::Payment;
 
     for (pk, source) in &output.bip32_derivation {
-        if source.0 != cx.fingerprint {
+        let Some(routing) = own.route(source.0, cx.fingerprint) else {
             continue;
-        }
+        };
         claims_our_key = true;
-        path_sanity(&source.1, at, cx, expected_coin_type)?;
-
         // The first origin that proves the script decides and a later one cannot revise
         // it. Two proofs would mean two wallets building one script, which means the same
         // keys at the same leaf; letting the last writer win would make the verdict depend
         // on map iteration order for no benefit, and the direction that matters is that an
         // unproven claim never displaces a proven one.
-        if matches!(role, OutputRole::Payment | OutputRole::ClaimedButUnproven) {
-            let claim = OutputClaim {
-                output,
-                txout,
-                path: &source.1,
-                claimed: ClaimedKey::Ecdsa(*pk),
-                at,
-            };
-            role = prove_output(&claim, cx, accounts, budget)?
-                .unwrap_or(OutputRole::ClaimedButUnproven);
+        if !matches!(role, OutputRole::Payment | OutputRole::ClaimedButUnproven) {
+            continue;
         }
+        let claim = OutputClaim {
+            output,
+            txout,
+            path: &source.1,
+            claimed: ClaimedKey::Ecdsa(*pk),
+            at,
+        };
+        role = match prove_output(&claim, cx, own.accounts, budget)? {
+            Some(proven) => proven,
+            None => unproven_verdict(routing, role),
+        };
     }
 
     for (xonly, (leaves, source)) in &output.tap_key_origins {
-        if source.0 != cx.fingerprint {
+        let Some(routing) = own.route(source.0, cx.fingerprint) else {
             continue;
-        }
+        };
         claims_our_key = true;
-        path_sanity(&source.1, at, cx, expected_coin_type)?;
         if !matches!(role, OutputRole::Payment | OutputRole::ClaimedButUnproven) {
             continue;
         }
         // A non-empty leaf-hash list is a script-path claim: this key would appear inside
         // a tree, and the only taproot output this device builds is BIP-86's key path with
         // no tree at all (Q7). Nothing here could rebuild such a script, so the claim
-        // stays a claim - and taproot multisig is not in 0.2.0 either, which is why no
-        // registration is consulted for a taproot output.
-        role = if leaves.is_empty() {
+        // cannot be proven - and taproot multisig is not in 0.2.0 either, which is why no
+        // registration is consulted for a taproot output. What that unproven claim then
+        // buys is the routing's to say, exactly as it is for every other unproven claim.
+        let proven = if leaves.is_empty() {
             let claim = OutputClaim {
                 output,
                 txout,
@@ -2079,13 +2622,48 @@ fn classify_output(
                 claimed: ClaimedKey::Taproot(*xonly),
                 at,
             };
-            prove_output(&claim, cx, accounts, budget)?.unwrap_or(OutputRole::ClaimedButUnproven)
+            prove_output(&claim, cx, own.accounts, budget)?
         } else {
-            OutputRole::ClaimedButUnproven
+            None
+        };
+        role = match proven {
+            Some(proven) => proven,
+            None => unproven_verdict(routing, role),
         };
     }
 
     Ok((claims_our_key, role))
+}
+
+/// What an origin this device could not prove leaves the output as, which is a question
+/// about WHO the file addressed and not about what it failed to prove.
+///
+/// The output side of the split [`claim_for_input`] draws on `Ownership::Unknown`, written
+/// out here so the two cannot drift: a claim on this device that does not stand up is a
+/// claim disbelieved out loud, and an assumption this crate made on a file's behalf that
+/// does not stand up is simply an assumption that bought nothing.
+fn unproven_verdict(routing: Routing, role: OutputRole) -> OutputRole {
+    match routing {
+        Routing::Named => unproven_over(role),
+        // Not [`unproven_over`], and the difference is the whole of the fix of 2026-08-22:
+        // an assumption discharges to nothing, so the output is left exactly as the origins
+        // before it left it. `Payment` stays `Payment` and the money still counts as
+        // leaving; a proof already made still stands.
+        Routing::Assumed => role,
+    }
+}
+
+/// Record an origin this device could not prove, without ever displacing one it did.
+///
+/// The direction that matters, stated once: a proof already made stands, and an unproven
+/// claim beside it changes nothing. Only [`OutputRole::Payment`] - which means no origin has
+/// claimed this output yet - moves, and it moves to the state that says the claim was made
+/// and not believed.
+fn unproven_over(role: OutputRole) -> OutputRole {
+    match role {
+        OutputRole::Payment | OutputRole::ClaimedButUnproven => OutputRole::ClaimedButUnproven,
+        proven @ (OutputRole::Change { .. } | OutputRole::OwnNotChange { .. }) => proven,
+    }
 }
 
 /// One ownership claim on one output: everything the proving functions read out of the file
@@ -2265,19 +2843,43 @@ const MAX_ACCOUNT_LEAF_INDEX: u32 = 20_000;
 /// that only the seed could have produced, and the answer is a whole-scriptPubKey
 /// comparison. Nothing about the shape of the output is consulted, and there is no branch
 /// that accepts a near miss.
+///
+/// # Two shapes of path, in this order
+///
+/// The output half of [`OwnWallets::prove`], and deliberately the same two branches in the
+/// same order, because an Electrum file spells its output map exactly the way it spells its
+/// input map and a device that resolved one and not the other would read half of a file.
+///
+/// A FULL path from the master is [`Account::locate_path`]'s question, and at most one
+/// account can answer it because no two accounts share an origin. That account is then
+/// AUTHORITATIVE: if it does not build this script at that leaf, the answer is no and no
+/// search runs behind it.
+///
+/// A RELATIVE path is Electrum's convention, written whenever it holds only an account xpub
+/// and has no master fingerprint to prepend. Nothing resolves as a full path, so the LAST
+/// TWO components are read as `(chain, index)` under each account origin in scope. That is
+/// a branch and not a scan: the file names one leaf per account, and each one is decided by
+/// the identical whole-scriptPubKey comparison the full-path branch ends in. A file whose
+/// path this device cannot read the usual way buys no softer test - only a second place to
+/// look for the leaf it was pointing at.
+///
+/// # Cost
+///
+/// At most one [`Account::leaf`] per account in scope per claim, and the two branches are
+/// exclusive, so an origin costs at worst [`crate::derive::device_accounts`]'s four leaves -
+/// 8 BIP-32 child derivations ([`Account::LEAF_DERIVATIONS`]). A full path costs 2, because
+/// only the account that owns it can locate it; a relative one costs 2 per account up to
+/// and including the one that answers, which is 6 for BIP-84 in [`crate::derive::Scheme`]'s
+/// order. Charged to [`ChangeDerivationBudget`] before each leaf runs, exactly as the
+/// full-path branch always has, so the relative branch cannot buy work the budget did not
+/// see - `an_electrum_output_claim_costs_one_leaf_per_account` pins both halves of that.
 fn prove_account_output(
     claim: &OutputClaim<'_>,
     accounts: &[Account],
     network: Network,
     budget: &mut ChangeDerivationBudget,
 ) -> Result<Option<OutputRole>, CheckFailure> {
-    let OutputClaim {
-        output,
-        txout,
-        path,
-        claimed,
-        at,
-    } = *claim;
+    let path = claim.path;
     for account in accounts {
         // Check 5 refuses a cross-chain PATH; this skips a cross-chain ACCOUNT, which is a
         // caller's mistake rather than a file's and must not be reasoned from either way.
@@ -2289,36 +2891,81 @@ fn prove_account_output(
         let Some((keychain, index)) = account.locate_path(path) else {
             continue;
         };
-        if index > MAX_ACCOUNT_LEAF_INDEX {
+        // This account owns the path, so it is the one that answers - including when the
+        // answer is "past the bound I will follow". Falling through to the relative branch
+        // here would ask the same account about the same index a second time.
+        return account_leaf_verdict(account, keychain, index, claim, budget);
+    }
+
+    // Electrum's branch. Read off the END of the path and never collected: a path is a
+    // field of an attacker's file and its length is his to choose, so the last two steps
+    // are taken with an iterator rather than by copying however many he wrote.
+    let mut tail = path.into_iter().rev();
+    let (Some(index), Some(chain)) = (tail.next(), tail.next()) else {
+        return Ok(None);
+    };
+    let suffix = [*chain, *index];
+    for account in accounts {
+        if account.network() != network {
             continue;
         }
-        budget.charge(at, Account::LEAF_DERIVATIONS)?;
-        let Some(leaf) = account.leaf(keychain, index) else {
+        // Built and handed back to `locate_path` rather than mapped here, so that the chain
+        // step's meaning - 0 receive, 1 change, nothing else - keeps exactly one statement
+        // in this crate and the relative branch cannot come to read it differently from the
+        // full one.
+        let mut candidate: Vec<ChildNumber> = account.origin().into_iter().copied().collect();
+        candidate.extend_from_slice(&suffix);
+        let Some((keychain, leaf_index)) = account.locate_path(&DerivationPath::from(candidate))
+        else {
             continue;
         };
-        // The load-bearing comparison, and the only one that decides ownership.
-        if leaf.script_pubkey != txout.script_pubkey {
-            continue;
+        // A SEARCH that misses is not an answer: this account simply is not the one the
+        // file meant, and the next may be. Only a proof stops the walk.
+        if let Some(role) = account_leaf_verdict(account, keychain, leaf_index, claim, budget)? {
+            return Ok(Some(role));
         }
-        // Past here the script is one this account locks, so this account is THE candidate
-        // and no other can also build it. What is left is whether the file's own account of
-        // the leaf agrees with ours; where it does not, the file has no honest reading and
-        // gets no proof rather than a second guess.
-        if !claim_agrees_with_leaf(claimed, output, &leaf) {
-            return Ok(None);
-        }
-        return Ok(Some(match keychain {
-            Keychain::Change => OutputRole::Change {
-                owner: Owner::Account(account.id()),
-                index,
-            },
-            Keychain::Receive => OutputRole::OwnNotChange {
-                owner: Owner::Account(account.id()),
-                index,
-            },
-        }));
     }
     Ok(None)
+}
+
+/// One leaf of one account against one output claim: the whole of the comparison, written
+/// once so the full-path branch and Electrum's relative branch cannot come to disagree
+/// about what proof is.
+fn account_leaf_verdict(
+    account: &Account,
+    keychain: Keychain,
+    index: u32,
+    claim: &OutputClaim<'_>,
+    budget: &mut ChangeDerivationBudget,
+) -> Result<Option<OutputRole>, CheckFailure> {
+    if index > MAX_ACCOUNT_LEAF_INDEX {
+        return Ok(None);
+    }
+    budget.charge(claim.at, Account::LEAF_DERIVATIONS)?;
+    let Some(leaf) = account.leaf(keychain, index) else {
+        return Ok(None);
+    };
+    // The load-bearing comparison, and the only one that decides ownership.
+    if leaf.script_pubkey != claim.txout.script_pubkey {
+        return Ok(None);
+    }
+    // Past here the script is one this account locks, so this account is THE candidate and
+    // no other can also build it. What is left is whether the file's own account of the
+    // leaf agrees with ours; where it does not, the file has no honest reading and gets no
+    // proof rather than a second guess.
+    if !claim_agrees_with_leaf(claim.claimed, claim.output, &leaf) {
+        return Ok(None);
+    }
+    Ok(Some(match keychain {
+        Keychain::Change => OutputRole::Change {
+            owner: Owner::Account(account.id()),
+            index,
+        },
+        Keychain::Receive => OutputRole::OwnNotChange {
+            owner: Owner::Account(account.id()),
+            index,
+        },
+    }))
 }
 
 /// Whether the key the file's origin names is the key this leaf derives.
@@ -2600,13 +3247,41 @@ mod tests {
         ));
     }
 
+    /// Two inputs of ours, neither carrying the transaction it came from.
+    ///
+    /// Rebuilt on a two-input file on 2026-08-21: the fixture this used to run on has one
+    /// input, which is now the acceptance below rather than the refusal. What the rule is
+    /// about is unchanged - a BIP-143 signature covers its own input's amount and no other,
+    /// so a second input is a second amount for a second round to move.
     #[test]
     fn check_2_refuses_a_segwit_v0_input_with_no_previous_transaction() {
-        let mut psbt = fixture::p2wpkh_psbt();
+        let mut psbt = fixture::two_input_psbt();
         psbt.inputs[0].non_witness_utxo = None;
+        psbt.inputs[1].non_witness_utxo = None;
         let err = inspect(&psbt, &fixture::context()).unwrap_err();
         assert_eq!(err, CheckFailure::MissingPreviousTransaction { index: 0 });
         assert_eq!(err.check(), Check::Prevouts);
+    }
+
+    /// And the file that is now accepted instead: the SAME input, alone in its transaction.
+    ///
+    /// One input is one amount, and it is the amount the only signature commits to. A
+    /// coordinator who states it falsely gets a signature that verifies against nothing,
+    /// and this transaction offers no second signature for a later round to combine the
+    /// harvested one with - which is the half of the argument the input count carries and
+    /// the digest does not.
+    #[test]
+    fn check_2_accepts_a_single_input_segwit_v0_file_with_no_previous_transaction() {
+        let mut psbt = fixture::p2wpkh_psbt();
+        psbt.inputs[0].non_witness_utxo = None;
+        let inspection = inspect(&psbt, &fixture::context()).expect("one input, one amount");
+        assert_eq!(inspection.signable_inputs(), 1);
+        assert_eq!(
+            inspection.inputs[0].amount_proof,
+            AmountProof::BoundByOurSignature
+        );
+        assert!(inspection.fee_is_enforced());
+        assert_eq!(inspection.unproven_amounts(), 0);
     }
 
     #[test]
@@ -3514,9 +4189,18 @@ mod tests {
         assert!(matches!(inspection.inputs[1].claim, Claim::Foreign));
         assert_eq!(inspection.signable_inputs(), 1);
         assert_eq!(inspection.inputs[0].kind, ScriptKind::P2tr);
-        assert_eq!(inspection.inputs[0].amount_proof, AmountProof::ClaimedByFile);
-        assert_eq!(inspection.inputs[1].amount_proof, AmountProof::ClaimedByFile);
+        // Both amounts came off `witness_utxo` and both are BOUND, the cosigner's included:
+        // `sha_amounts` covers every prevout, so a lie about theirs kills our signature too.
+        assert_eq!(
+            inspection.inputs[0].amount_proof,
+            AmountProof::BoundByOurSignature
+        );
+        assert_eq!(
+            inspection.inputs[1].amount_proof,
+            AmountProof::BoundByOurSignature
+        );
         assert!(inspection.fee_is_enforced());
+        assert_eq!(inspection.unproven_amounts(), 0);
     }
 
     /// And the other file that keeps its unproven amount: one this device signs nothing in.
@@ -3558,7 +4242,10 @@ mod tests {
     fn a_taproot_spend_of_ours_makes_the_claimed_amounts_binding() {
         let psbt = fixture::p2tr_psbt();
         let inspection = inspect(&psbt, &fixture::context()).unwrap();
-        assert_eq!(inspection.inputs[0].amount_proof, AmountProof::ClaimedByFile);
+        assert_eq!(
+            inspection.inputs[0].amount_proof,
+            AmountProof::BoundByOurSignature
+        );
         assert!(inspection.fee_is_enforced());
     }
 
@@ -3859,6 +4546,325 @@ mod tests {
             }
         }
     }
+
+    /// The single-input escape rests on a SECOND property of the whitelist, and this is the
+    /// pin under it.
+    ///
+    /// One input means one amount and one signature, which is only enough while that
+    /// signature also fixes the OUTPUTS. Under SIGHASH_NONE or SIGHASH_SINGLE it does not,
+    /// and under any ANYONECANPAY flag the input itself is not fixed either, so the
+    /// signature could be lifted into a transaction with different outputs or a second
+    /// input - and the argument that there is nothing else to lie about collapses. Widening
+    /// [`whitelisted_sighashes`] has to fail HERE rather than quietly unsound the escape.
+    ///
+    /// The KIND half of the same coupling is held by the compiler rather than by this list:
+    /// [`binds_the_whole_transaction`] matches [`ScriptKind`] exhaustively, so a variant
+    /// added later is a build error at that function and somebody has to answer whether a
+    /// signature over it binds its own amount and every output. This test enumerates the
+    /// eight that exist by hand, which is a check on the ANSWERS and not on the coverage.
+    #[test]
+    fn the_sighash_whitelist_gates_the_single_input_escape() {
+        assert!(binds_the_whole_transaction(ScriptKind::P2wpkh, &[0x01]));
+        assert!(binds_the_whole_transaction(ScriptKind::P2shP2wpkh, &[0x01]));
+        assert!(binds_the_whole_transaction(ScriptKind::P2wsh, &[0x01]));
+        assert!(binds_the_whole_transaction(ScriptKind::P2tr, &[0x00]));
+        for widened in [
+            &[0x01u32, 0x81] as &[u32], // ALL | ANYONECANPAY
+            &[0x02],                    // NONE
+            &[0x03],                    // SINGLE
+            &[],                        // a kind this device does not sign at all
+        ] {
+            assert!(
+                !binds_the_whole_transaction(ScriptKind::P2wpkh, widened),
+                "{widened:x?} must close the escape"
+            );
+        }
+        // Legacy is refused three ways over, and this is the third: no flag makes a legacy
+        // digest bind an amount, because a legacy digest carries none.
+        for kind in [
+            ScriptKind::P2pkh,
+            ScriptKind::P2sh,
+            ScriptKind::OpReturn,
+            ScriptKind::Other,
+        ] {
+            assert!(!binds_the_whole_transaction(kind, &[0x01]), "{kind:?}");
+            assert!(
+                !binds_the_whole_transaction(kind, whitelisted_sighashes(kind)),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// THE PIN THAT KILLS THE "AT MOST ONE UNPROVEN AMOUNT" RULE.
+    ///
+    /// The attacker does not have to leave two amounts unproven in one file. He PROVES one
+    /// and CLAIMS the other, and ROTATES which is which between rounds: every file he
+    /// presents carries exactly ONE unproven amount, and it sits on an input this device
+    /// would sign. Every round still hands him one valid harvestable signature - the one on
+    /// the input he proved, made over that input's true amount - and the two rounds share
+    /// one unsigned transaction, so they combine into a spend that burns 0.9999 BTC of a
+    /// 2 BTC wallet behind two screens that each said 10000 sat.
+    ///
+    /// This is exactly why the escape is keyed on `psbt.unsigned_tx.input.len() == 1`, the
+    /// whole TRANSACTION, and never on a count of unproven amounts or a count of inputs the
+    /// file says are ours. Both of those are counts the coordinator chooses. Permanent.
+    ///
+    /// Read with the device's real account set in scope, which is what
+    /// `firmware/src/signing.rs` puts there. That is not decoration: both rounds carry
+    /// BlueWallet's zero fingerprint, and since 2026-08-21 a zero fingerprint is an
+    /// ASSUMPTION that a derivation has to discharge rather than a claim of ownership. With
+    /// nothing in scope to discharge it the two inputs are Foreign, this device signs
+    /// nothing, and there is no signature for a second round to harvest - safe, but a
+    /// weaker statement than the one this test exists to make. The attack needs a device
+    /// that would sign, so the pin belongs where signing is possible; the no-account
+    /// configuration is asserted below it rather than instead of it.
+    #[test]
+    fn amount_rotation_over_a_proven_and_a_claimed_amount_is_refused() {
+        let accounts = fixture::device_accounts();
+        for proven in 0..2usize {
+            let psbt = fixture::amount_rotation_round(proven);
+
+            // The shape any looser formulation readmits: ONE unproven amount, on an input
+            // of ours, in a file whose arithmetic shows an ordinary fee.
+            assert_eq!(
+                psbt.inputs
+                    .iter()
+                    .filter(|i| i.non_witness_utxo.is_none())
+                    .count(),
+                1,
+                "round {proven} must leave exactly one amount unproven"
+            );
+
+            let err = inspect_with_accounts(&psbt, &fixture::context(), &accounts).unwrap_err();
+            assert_eq!(
+                err,
+                CheckFailure::MissingPreviousTransaction {
+                    index: 1 - proven as u16
+                },
+                "round {proven}"
+            );
+            assert_eq!(err.check(), Check::Prevouts);
+
+            // And with no wallet in scope to prove either input: nothing is ours, so the
+            // round yields no signature at all. The harvest is empty either way.
+            let inspection = inspect(&psbt, &fixture::context())
+                .expect("a file this device can read and cannot sign");
+            assert_eq!(inspection.signable_inputs(), 0, "round {proven}");
+        }
+
+        // And the two rounds really are one transaction, or the attack they describe would
+        // not combine and this test would be pinning nothing.
+        assert_eq!(
+            fixture::amount_rotation_round(0).unsigned_tx,
+            fixture::amount_rotation_round(1).unsigned_tx
+        );
+    }
+
+    /// The plainer rotation, and the one a BlueWallet consolidation actually looks like:
+    /// both inputs ours, both `witness_utxo` only, at the zero fingerprint.
+    ///
+    /// Neither amount is proven, so which of them is TRUE is a choice the coordinator makes
+    /// per round and nothing in either file records. Refused in both rounds for the reason
+    /// above: two inputs are two signatures, and two signatures over one unsigned
+    /// transaction are what a second round exists to collect. Permanent.
+    ///
+    /// In scope, for the reason given on
+    /// `amount_rotation_over_a_proven_and_a_claimed_amount_is_refused`: the device's own
+    /// accounts, because these files carry the zero fingerprint and it is a derivation and
+    /// not a fingerprint that makes an input ours.
+    #[test]
+    fn all_ours_two_input_witness_utxo_only_is_refused() {
+        let accounts = fixture::device_accounts();
+        let err = inspect_with_accounts(
+            &fixture::bluewallet_two_inputs_psbt(),
+            &fixture::context(),
+            &accounts,
+        )
+        .unwrap_err();
+        assert_eq!(err, CheckFailure::MissingPreviousTransaction { index: 0 });
+
+        for truthful in 0..2usize {
+            let psbt = fixture::all_ours_claimed_round(truthful);
+            assert!(
+                psbt.inputs.iter().all(|i| i.non_witness_utxo.is_none()),
+                "round {truthful} proves nothing, which is the point"
+            );
+            assert_eq!(
+                inspect_with_accounts(&psbt, &fixture::context(), &accounts).unwrap_err(),
+                CheckFailure::MissingPreviousTransaction { index: 0 },
+                "round {truthful}"
+            );
+            // And with nothing in scope to prove ownership: no input of ours, so no
+            // signature this round, so nothing for the next round to combine with.
+            assert_eq!(
+                inspect(&psbt, &fixture::context())
+                    .expect("readable")
+                    .signable_inputs(),
+                0,
+                "round {truthful}"
+            );
+        }
+    }
+
+    /// Ownership laundering is refused, and since 2026-08-21 it does not even get a
+    /// relabelling out of this device.
+    ///
+    /// Input 0 is ours and fully proven; input 1 carries NO ORIGIN AT ALL, an unproven
+    /// amount, and a `witness_utxo.script_pubkey` that is one of our own receive addresses.
+    /// Writing that script cost the coordinator one lookup in an xpub he already had, and
+    /// under the 500-address sweep this crate used to run it bought him a relabelling of
+    /// input 1 to `Ours` - which moved the file into the exact shape a rule keyed on "one
+    /// unproven amount, and it is one we sign" would admit.
+    ///
+    /// The sweep is gone. Ownership now needs an ORIGIN to derive against, and an input
+    /// that states none states nothing this device can prove, so input 1 is Foreign in
+    /// every configuration and the laundering buys nothing at all. The file is still
+    /// refused, by the half of check 2 that is about the OTHER inputs, and the escape was
+    /// never reachable anyway because it counts transaction inputs.
+    #[test]
+    fn a_laundered_foreign_input_is_still_refused() {
+        let psbt = fixture::laundered_foreign_input_psbt();
+        let accounts = fixture::device_accounts();
+
+        for (what, inspected) in [
+            ("the device's accounts", inspect_with_accounts(&psbt, &fixture::context(), &accounts)),
+            ("nothing", inspect(&psbt, &fixture::context())),
+        ] {
+            let err = inspected.expect_err(what);
+            assert_eq!(
+                err,
+                CheckFailure::UnprovenAmountBesideOurSignature {
+                    signing: 0,
+                    unproven: 1,
+                },
+                "with {what} in scope"
+            );
+            assert_eq!(err.check(), Check::Prevouts);
+        }
+    }
+
+    /// The other half of the same statement: a script of ours in a `witness_utxo`, with no
+    /// origin to derive against, is not evidence of anything.
+    ///
+    /// Same file, with the input that makes it refusable removed. Input 0 alone would be a
+    /// single-input transaction paying a script this wallet really does lock - and it is
+    /// still Foreign, because a `witness_utxo` is the file's own word about what an input
+    /// is worth AND what it is locked to, and neither is a derivation. A signer that read a
+    /// script out of an unproven prevout and called it ownership would be taking the
+    /// coordinator's word for which coin it is spending.
+    #[test]
+    fn a_script_of_ours_in_an_unproven_prevout_is_not_an_ownership_claim() {
+        let psbt = fixture::our_script_without_an_origin_psbt();
+        let accounts = fixture::device_accounts();
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+            .expect("one input, readable");
+        assert_eq!(inspection.inputs[0].claim, Claim::Foreign);
+        assert_eq!(inspection.signable_inputs(), 0);
+        assert_eq!(inspection.inputs[0].amount_proof, AmountProof::ClaimedByFile);
+    }
+
+    /// The upgrade needs an input of OURS, and this is the file that proves it does.
+    ///
+    /// One input, `witness_utxo` alone, no origin and no script this wallet derives. There
+    /// is nothing here for this device to sign, so no signature of ours binds the number and
+    /// the fee stays a lower bound - a file to read, exactly as before.
+    #[test]
+    fn a_single_input_foreign_unproven_file_signs_nothing() {
+        let psbt = fixture::single_input_foreign_unproven_psbt();
+        let account = fixture::account_bip84();
+        let accounts = core::slice::from_ref(&account);
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), accounts)
+            .expect("a stranger's transaction is readable");
+        assert_eq!(inspection.signable_inputs(), 0);
+        assert_eq!(inspection.inputs[0].claim, Claim::Foreign);
+        assert_eq!(inspection.inputs[0].amount_proof, AmountProof::ClaimedByFile);
+        assert!(!inspection.fee_is_enforced());
+        assert_eq!(inspection.unproven_amounts(), 1);
+    }
+
+    /// The coherence invariant the third [`AmountProof`] state exists to make
+    /// unrepresentable, asserted over every file this crate can inspect.
+    ///
+    /// "The fee is exact" and "an amount on this screen is unproven" were both reachable at
+    /// once until 2026-08-21, for taproot, and a review screen had no honest way to render
+    /// the pair. It is now a property of the type: `fee_is_enforced` is the negation of
+    /// `unproven_amounts() > 0` and cannot be given a second spelling that drifts from it.
+    #[test]
+    fn fee_is_enforced_implies_no_claimed_amount() {
+        let cx = fixture::context();
+        let registry = alloc::vec![fixture::registration()];
+        let multisig_cx = fixture::context_with(&registry);
+        // Every account a session really opens, not one hand-picked: ownership is decided
+        // by deriving against these, so the widest set is the one that turns the most
+        // inputs of this corpus into inputs of ours and puts the most files through the
+        // amount rule's upgrade path.
+        let accounts = fixture::device_accounts();
+        let accounts = accounts.as_slice();
+
+        let mut corpus: Vec<(&str, Psbt)> = alloc::vec![
+            ("p2wpkh", fixture::p2wpkh_psbt()),
+            ("p2sh_p2wpkh", fixture::p2sh_p2wpkh_psbt()),
+            ("p2tr", fixture::p2tr_psbt()),
+            ("taproot two input", fixture::taproot_two_input_psbt()),
+            (
+                "taproot beside an unproven input",
+                fixture::taproot_spend_beside_an_unproven_input_psbt()
+            ),
+            ("two of ours", fixture::two_input_psbt()),
+            ("ours and a foreign input", fixture::ours_and_a_foreign_input_psbt()),
+            ("a foreign input finalized", fixture::foreign_input_finalized_psbt()),
+            ("no input of ours", fixture::no_input_of_ours_one_unproven_psbt()),
+            ("a batch of eight", fixture::batch_psbt(8)),
+            ("bluewallet fixture a", fixture::bluewallet_watch_only_psbt()),
+            (
+                "bluewallet fixture b",
+                fixture::bluewallet_watch_only_master_fingerprint_psbt()
+            ),
+            ("a single input stranger", fixture::single_input_foreign_unproven_psbt()),
+            ("multisig", fixture::multisig_psbt()),
+        ];
+        for (name, hex_bytes) in test_corpus::VECTORS {
+            let raw = hex::decode(hex_bytes).expect(name);
+            corpus.push((name, crate::psbt::decode(&raw).expect(name)));
+        }
+
+        for (name, psbt) in &corpus {
+            for (what, inspected) in [
+                ("no account", inspect(psbt, &cx)),
+                ("an account", inspect_with_accounts(psbt, &cx, accounts)),
+                ("a registration", inspect(psbt, &multisig_cx)),
+            ] {
+                let Ok(inspection) = inspected else { continue };
+                assert!(
+                    !inspection.fee_is_enforced() || inspection.unproven_amounts() == 0,
+                    "{name} with {what}: the fee is exact beside {} unproven amounts",
+                    inspection.unproven_amounts()
+                );
+            }
+        }
+    }
+
+    /// Taproot's security is unchanged by the single-input escape; only its rendering is.
+    ///
+    /// A multi-input all-taproot file with every amount on the file's word is still
+    /// accepted, for the reason it always was - `sha_amounts` is in the digest, so the
+    /// escape is never consulted. What changed is that those amounts now READ as bound
+    /// rather than as unproven, so the review screen's unproven-amount band stops firing on
+    /// a file whose fee it is simultaneously calling exact.
+    #[test]
+    fn taproot_regression() {
+        let psbt = fixture::taproot_two_input_psbt();
+        assert_eq!(psbt.unsigned_tx.input.len(), 2, "the escape must not be what passes it");
+        let inspection = inspect(&psbt, &fixture::context()).expect("an ordinary taproot spend");
+        assert_eq!(inspection.signable_inputs(), 2);
+        for facts in &inspection.inputs {
+            assert_eq!(facts.kind, ScriptKind::P2tr);
+            assert_eq!(facts.amount_proof, AmountProof::BoundByOurSignature);
+        }
+        assert!(inspection.fee_is_enforced());
+        // The band the firmware raises off this number is now silent on this file.
+        assert_eq!(inspection.unproven_amounts(), 0);
+    }
     // -- the batch one approval covers (0.2.0-G10) ---------------------------------------
 
     /// The list an approval screen shows is the list of inputs that carry a claim of ours,
@@ -3930,25 +4936,36 @@ mod tests {
         assert_eq!(inspection.leaving_total(), inspection.output_total);
     }
 
-    /// How many rows carry the caveat, and the separate question of whether the fee is
-    /// binding anyway.
+    /// How many rows carry the caveat, and the fee that is binding beside them.
     ///
-    /// Both amounts in this file rest on the file's word, and the fee is still enforced,
-    /// because the signature this device is about to make is a BIP-341 key-path one and
-    /// `sha_amounts` puts every one of those amounts inside its digest. A review that
-    /// collapsed the two questions would either hide a caveat or refuse a file it has no
-    /// reason to.
+    /// Amended 2026-08-21. Both amounts in this file came off `witness_utxo`, and until the
+    /// third [`AmountProof`] state landed this test asserted `unproven_amounts() == 2` while
+    /// asserting the fee was enforced - the incoherent pair a review screen then had to
+    /// render as "the fee is exact" beside "every total rests on the file's word". A
+    /// BIP-341 key-path signature of ours puts every one of these amounts inside its own
+    /// digest, so none of them is unproven any more; the caveat they still carry is that the
+    /// NUMBER came from the file, which is [`AmountProof::BoundByOurSignature`] and the
+    /// STATED prefix on the row, not a count of unproven amounts.
     #[test]
     fn a_batch_review_counts_the_amounts_that_rest_on_the_files_word() {
         let psbt = fixture::taproot_spend_beside_an_unproven_input_psbt();
         let inspection = inspect(&psbt, &fixture::context()).unwrap();
-        assert_eq!(inspection.unproven_amounts(), 2);
+        assert_eq!(inspection.unproven_amounts(), 0);
         assert!(inspection.fee_is_enforced());
+        for facts in &inspection.inputs {
+            assert_eq!(facts.amount_proof, AmountProof::BoundByOurSignature);
+        }
 
         let proven = fixture::batch_psbt(4);
         let inspection = inspect(&proven, &fixture::context()).unwrap();
         assert_eq!(inspection.unproven_amounts(), 0);
         assert!(inspection.fee_is_enforced());
+
+        // And a file whose amount really is nobody's but the coordinator's still counts.
+        let unsigned_by_us = fixture::no_input_of_ours_one_unproven_psbt();
+        let inspection = inspect(&unsigned_by_us, &fixture::context()).unwrap();
+        assert_eq!(inspection.unproven_amounts(), 1);
+        assert!(!inspection.fee_is_enforced());
     }
 
     /// Check 2's pairing rule is about the FILE, not about a row, so burying the unproven
@@ -4591,5 +5608,1032 @@ mod tests {
             );
         }
         psbt
+    }
+
+    // -- The ownership proof (0.2.1, 2026-08-21) -----------------------------------------
+    //
+    // What decides `Claim::Ours` is `OwnWallets::prove`: derive the leaf the origin names
+    // from an `Account`, and require BOTH the key and the whole scriptPubKey to match. The
+    // fingerprint and the path choose WHICH leaf; they decide nothing. Until this landed,
+    // ownership was the fingerprint plus the shape of the path, and the derivation only ran
+    // in `sign` - after the user had approved a batch that may have included a coin this
+    // wallet does not hold.
+
+    /// Rewrite every `bip32_derivation` origin on input 0 to `fp`, leaving the key and the
+    /// path exactly as they were. One field changed, which is this corpus's whole method.
+    fn with_input_fingerprint(mut psbt: Psbt, fp: Fingerprint) -> Psbt {
+        let entries: Vec<(bitcoin::secp256k1::PublicKey, DerivationPath)> = psbt.inputs[0]
+            .bip32_derivation
+            .iter()
+            .map(|(pk, (_, path))| (*pk, path.clone()))
+            .collect();
+        psbt.inputs[0].bip32_derivation.clear();
+        for (pk, path) in entries {
+            psbt.inputs[0].bip32_derivation.insert(pk, (fp, path));
+        }
+        let taproot: Vec<_> = psbt.inputs[0]
+            .tap_key_origins
+            .iter()
+            .map(|(xonly, (leaves, (_, path)))| (*xonly, leaves.clone(), path.clone()))
+            .collect();
+        psbt.inputs[0].tap_key_origins.clear();
+        for (xonly, leaves, path) in taproot {
+            psbt.inputs[0]
+                .tap_key_origins
+                .insert(xonly, (leaves, (fp, path)));
+        }
+        psbt
+    }
+
+    /// Ownership follows the DERIVATION, and the fingerprint only chooses which key to
+    /// derive.
+    ///
+    /// One honest coin of ours read under three fingerprints that all address the file to
+    /// this device - the master's, the account xpub's own, and BlueWallet's zero default -
+    /// and it is ours under every one of them, at the path THIS CRATE resolved. The same
+    /// three over a coin this wallet does not hold are foreign under every one of them,
+    /// even though the origin names one of our own leaves and the key it states really does
+    /// spend the script beside it. Four public bytes decide nothing in either direction.
+    ///
+    /// A stranger's fingerprint is the fourth case and it is different in kind: the file is
+    /// not addressed to this device at all, so no leaf is derived and no judgement is
+    /// passed. Foreign for the ordinary reason, which is that it is somebody else's input.
+    #[test]
+    fn ownership_follows_the_derivation_and_not_the_fingerprint() {
+        let accounts = fixture::device_accounts();
+        let addressed_to_us = [
+            ("the master fingerprint", fixture::fingerprint()),
+            (
+                "the account xpub's own",
+                fixture::account_bip84().xpub().fingerprint(),
+            ),
+            ("BlueWallet's zero default", Fingerprint::default()),
+        ];
+
+        for (what, fp) in addressed_to_us {
+            let psbt = with_input_fingerprint(fixture::bluewallet_watch_only_psbt(), fp);
+            let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            let Claim::Ours { path, .. } = &inspection.inputs[0].claim else {
+                panic!("{what}: {:?}", inspection.inputs[0].claim);
+            };
+            assert_eq!(*path, fixture::path(fixture::P2WPKH_PATH), "{what}");
+
+            // The same origin over a coin this wallet does not hold. The origin and the
+            // script agree with each other, so nothing that reads only the file objects.
+            let psbt =
+                with_input_fingerprint(fixture::bluewallet_origin_over_a_stranger_input_psbt(), fp);
+            let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_eq!(inspection.inputs[0].claim, Claim::Foreign, "{what}");
+        }
+
+        let elsewhere = Fingerprint::from([0xde, 0xad, 0xbe, 0xef]);
+        let psbt = with_input_fingerprint(fixture::bluewallet_watch_only_psbt(), elsewhere);
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts).unwrap();
+        assert_eq!(inspection.inputs[0].claim, Claim::Foreign);
+    }
+
+    /// The proof reaches every script kind this device spends, under the fingerprint that
+    /// names nobody.
+    ///
+    /// One file per kind, each rewritten to the zero fingerprint, read against the accounts
+    /// a session really opens. Taproot is the arm worth naming: the origin states an
+    /// INTERNAL key while the scriptPubKey holds the TWEAKED output key, so the two halves
+    /// of the comparison are two statements there rather than one seen twice, and a proof
+    /// that only compared keys would accept a tweak the coordinator chose.
+    #[test]
+    fn the_proof_covers_every_scheme_the_device_holds() {
+        let accounts = fixture::device_accounts();
+        for (kind, path, psbt) in [
+            (
+                ScriptKind::P2wpkh,
+                fixture::P2WPKH_PATH,
+                fixture::p2wpkh_psbt(),
+            ),
+            (
+                ScriptKind::P2shP2wpkh,
+                fixture::P2SH_P2WPKH_PATH,
+                fixture::p2sh_p2wpkh_psbt(),
+            ),
+            (ScriptKind::P2tr, fixture::P2TR_PATH, fixture::p2tr_psbt()),
+        ] {
+            let psbt = with_input_fingerprint(psbt, Fingerprint::default());
+            let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+                .unwrap_or_else(|e| panic!("{kind}: {e}"));
+            assert_eq!(inspection.inputs[0].kind, kind);
+            let Claim::Ours { path: proven, .. } = &inspection.inputs[0].claim else {
+                panic!("{kind}: {:?}", inspection.inputs[0].claim);
+            };
+            assert_eq!(*proven, fixture::path(path), "{kind}");
+            let signed =
+                crate::psbt::sign(&psbt, &inspection, &fixture::SEED).expect("one signature");
+            assert_eq!(signed.report().inputs_signed, alloc::vec![0], "{kind}");
+        }
+    }
+
+    /// A taproot claim whose internal key is not the one at the leaf is refused, and the
+    /// tweak is why this needs saying twice.
+    ///
+    /// The scriptPubKey holds an output key, and BIP-341 lets more than one internal key
+    /// and merkle root reach one. So a proof that stopped at "this account locks this
+    /// script" would accept an origin naming any internal key at all, and the signature
+    /// would be produced under a key the coordinator picked. `leaf_verdict` compares both.
+    #[test]
+    fn a_taproot_origin_naming_another_internal_key_is_refused() {
+        let mut psbt = fixture::p2tr_psbt();
+        let entry = psbt.inputs[0]
+            .tap_key_origins
+            .iter()
+            .map(|(_, (leaves, source))| (leaves.clone(), source.clone()))
+            .next()
+            .expect("the fixture states a taproot origin");
+        let other = fixture::key_at("m/86'/0'/0'/0/1").internal_key();
+        psbt.inputs[0].tap_key_origins.clear();
+        psbt.inputs[0].tap_key_origins.insert(other, entry);
+
+        let accounts = fixture::device_accounts();
+        let err = inspect_with_accounts(&psbt, &fixture::context(), &accounts).unwrap_err();
+        assert_eq!(err, CheckFailure::ClaimedKeyNotInScript { index: 0 });
+    }
+
+    /// A taproot coin tweaked with a merkle root is NOT one of ours, and this narrowing is
+    /// deliberate.
+    ///
+    /// The internal key is ours and the output key is a tweak of it, so `taproot_tweak`
+    /// says the file is self-consistent - but the root it checks against is the
+    /// COORDINATOR'S, and an account of ours builds BIP-86's bare key-path script and no
+    /// other (Q7: key path, no tree). A coin at `output_key(ours, their_root)` is spendable
+    /// by whoever holds that tree as well as by us; it is not a coin this device created and
+    /// it is not one it can account for, so it is Foreign - shown, and not signed.
+    ///
+    /// With no account in scope nothing can answer, the origin names this device by name,
+    /// and the claim stands for [`super::sign`] to prove exactly as it always has. That is
+    /// what keeps `check_8`'s tweak tests and the published vectors reading the same.
+    #[test]
+    fn a_taproot_input_tweaked_with_a_tree_is_not_proven_ours() {
+        use bitcoin::taproot::TapNodeHash;
+
+        let key = fixture::key_at(fixture::P2TR_PATH);
+        let root = TapNodeHash::from_byte_array([0x7c; 32]);
+        let spk = ScriptBuf::new_p2tr_tweaked(key.output_key(Some(root)));
+        let mut psbt = fixture::p2tr_psbt();
+        psbt.inputs[0].witness_utxo = Some(TxOut {
+            value: Amount::from_sat(fixture::PREVOUT_SAT),
+            script_pubkey: spk,
+        });
+        psbt.inputs[0].non_witness_utxo = None;
+        psbt.inputs[0].tap_merkle_root = Some(root);
+
+        let accounts = fixture::device_accounts();
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+            .expect("a coin this device cannot account for is not an error");
+        assert_eq!(inspection.inputs[0].claim, Claim::Foreign);
+        assert_eq!(inspection.signable_inputs(), 0);
+
+        // With nothing in scope to answer, the claim stands and check 8 is what judges it.
+        let inspection = inspect(&psbt, &fixture::context()).expect("the tweak is consistent");
+        assert_eq!(inspection.signable_inputs(), 1);
+    }
+
+    /// A path shape this device dislikes, on SOMEBODY ELSE'S input, does not refuse the
+    /// file.
+    ///
+    /// Until 2026-08-21 it did, and the two defects that made it possible were separate:
+    /// `claim_for_input` accepted the zero fingerprint as a claim about this device, and
+    /// then propagated `path_sanity`'s `Err` with `?`. Together they let any party to a
+    /// multi-party round burn a file by writing four zero bytes and a made-up path onto
+    /// their own input. Neither field is one this device gets to be told about by a
+    /// stranger, so neither is evidence, and the input is simply Foreign.
+    ///
+    /// What is NOT relaxed: the same path shape under an origin that names THIS DEVICE is
+    /// still a refusal, because that is the file making a false statement about us rather
+    /// than about itself, and an arbitrary path is a key the user can never re-derive with
+    /// any other wallet. `check_1_refuses_a_purpose_outside_the_whitelist` and its four
+    /// neighbours are the pins on that half, and this test asserts it again beside its own
+    /// case so the two cannot be confused for one rule.
+    #[test]
+    fn a_foreign_input_at_a_path_we_dislike_does_not_refuse_the_file() {
+        let psbt = fixture::foreign_input_at_a_path_we_dislike_psbt();
+        let accounts = fixture::device_accounts();
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+            .expect("a stranger's path shape is a stranger's business");
+        assert_eq!(inspection.signable_input_indexes(), alloc::vec![0]);
+        assert_eq!(inspection.inputs[1].claim, Claim::Foreign);
+
+        let signed = crate::psbt::sign(&psbt, &inspection, &fixture::SEED).expect("one signature");
+        assert_eq!(signed.report().inputs_signed, alloc::vec![0]);
+
+        // The same shape under our OWN fingerprint stays a refusal.
+        let err = inspect(
+            &fixture::psbt_with_input_path("m/1'/1'/0'/0/0"),
+            &fixture::context(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            CheckFailure::PathOutsidePurposeWhitelist {
+                at: Location::Input(0),
+                purpose: 1
+            }
+        );
+    }
+
+    /// Two origins naming NOBODY on a stranger's input do not refuse the file either, and
+    /// two naming THIS DEVICE still do.
+    ///
+    /// The same defect in its other spelling. `AmbiguousOwnershipClaim` counted every origin
+    /// the zero fingerprint routed here, so two zero-fingerprint origins on any input in any
+    /// file were a refusal - the second two-field way for a party to a multi-party round to
+    /// burn a transaction. It is a question about statements this device is entitled to
+    /// judge: two claims on our own fingerprint contradict each other and are refused, and
+    /// two assumptions contradict nothing because the file names nobody in either.
+    #[test]
+    fn two_origins_naming_nobody_are_not_an_ambiguous_claim_on_us() {
+        let accounts = fixture::device_accounts();
+
+        let mut psbt = fixture::bluewallet_mixed_ownership_proven_psbt();
+        for leaf in ["m/84'/0'/9'/0/1", "m/84'/0'/9'/0/2"] {
+            let key = fixture::key_at(leaf).public_key();
+            psbt.inputs[1]
+                .bip32_derivation
+                .insert(key.0, (Fingerprint::default(), fixture::path(leaf)));
+        }
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+            .expect("two assumptions about a stranger's coin are not a contradiction about us");
+        assert_eq!(inspection.inputs[1].claim, Claim::Foreign);
+        assert_eq!(inspection.signable_input_indexes(), alloc::vec![0]);
+
+        // Two origins on OUR fingerprint are still two contradictory statements about this
+        // device, and still a refusal.
+        let err = inspect(&fixture::psbt_with_two_of_our_claims(), &fixture::context()).unwrap_err();
+        assert_eq!(
+            err,
+            CheckFailure::AmbiguousOwnershipClaim {
+                index: 0,
+                claims: 2
+            }
+        );
+    }
+
+    /// The same downgrade on the OUTPUT side, where it matters more: nothing this device
+    /// signs is at stake in an output, so a path shape it cannot use has never been a
+    /// reason to refuse the file.
+    ///
+    /// On 2026-08-22 this got the stronger answer still. `classify_output` no longer
+    /// consults the path's SHAPE at all - it derives first, and this output really is the
+    /// wallet's own change, at a spelling ("m/84'/1'/0'/1/0", the wrong coin type) no wallet
+    /// of ours writes. The last two components name the leaf, an account of ours rebuilds
+    /// the whole scriptPubKey there, and what travels afterwards is OUR account and index
+    /// rather than the file's string. So the user's change is netted out instead of being
+    /// counted as money leaving, and the file's bad spelling costs them nothing.
+    ///
+    /// The direction is the safe one either way, and that is why the SHAPE was never worth
+    /// a verdict: an unprovable claim overstates the spend, and a provable one is proven by
+    /// a comparison the file cannot influence.
+    #[test]
+    fn an_output_claim_at_a_path_we_dislike_does_not_refuse_the_file() {
+        let psbt = fixture::change_claim_at_a_path_we_dislike_psbt();
+        let accounts = fixture::device_accounts();
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+            .expect("an output's path shape does not burn a file");
+        assert!(inspection.outputs[1].claims_our_key, "the file does claim it");
+        assert!(
+            matches!(inspection.outputs[1].role, OutputRole::Change { .. }),
+            "the script is this wallet's change however the file spelled the path: {:?}",
+            inspection.outputs[1].role
+        );
+        assert_eq!(
+            inspection.change_total(),
+            Amount::from_sat(fixture::BW_CHANGE_SAT)
+        );
+    }
+
+    /// An unusable origin cannot displace a proof that has already been made.
+    ///
+    /// Real change, proven by the account that builds it, with a second origin beside it
+    /// carrying a path this device would refuse. Map iteration order is not something a
+    /// verdict may depend on, so the direction is fixed: a proof stands and an unproven
+    /// claim never overwrites it. Without this, a coordinator could un-prove a user's own
+    /// change output by appending one junk origin to it, which would show the change as
+    /// money leaving and overstate the spend by its whole value.
+    #[test]
+    fn an_unusable_origin_cannot_unprove_a_change_output() {
+        let mut psbt = fixture::bluewallet_watch_only_psbt();
+        let junk = fixture::key_at("m/84'/0'/7'/0/3").public_key();
+        psbt.outputs[1]
+            .bip32_derivation
+            .insert(junk.0, (Fingerprint::default(), fixture::path("m/1'/1'/0'/1/0")));
+
+        let accounts = fixture::device_accounts();
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+            .expect("one junk origin does not burn the file");
+        assert!(
+            matches!(inspection.outputs[1].role, OutputRole::Change { .. }),
+            "{:?}",
+            inspection.outputs[1].role
+        );
+        assert_eq!(
+            inspection.change_total(),
+            Amount::from_sat(fixture::BW_CHANGE_SAT)
+        );
+    }
+
+    // -- BlueWallet watch-only import (0.2.0, 2026-08-21) --------------------------------
+    //
+    // The field report, off device: a BlueWallet watch-only wallet built from a bare zpub
+    // this device exported sends back a spend of its own coin, and this device refuses it.
+    // `fixture::bluewallet_watch_only_psbt` and its siblings are BlueWallet's exact
+    // construction - PSBT v0, `witness_utxo` only, the full path at fingerprint 00000000 -
+    // and the module doc beside them explains why each field is what it is.
+    //
+    // Every test below asserts CURRENT behaviour, not desired behaviour: nothing in this
+    // crate changed to reach it (`no changes to production code` was a constraint on this
+    // corpus, not an accident of what it found). `bluewallet_watch_only_import_...` is THE
+    // RED TEST - it reproduces the bug the user hit, off hardware, with the exact refusal
+    // and the exact sentence a review screen would have shown. The rest of the corpus pins
+    // what today's single over-broad refusal is currently standing in front of, so that
+    // whatever loosens it has a named list of adversarial cases it must not also loosen.
+
+    /// THE RED TEST, and it is green from the other side now.
+    ///
+    /// Fixture A, inspected exactly as `firmware/src/signing.rs` inspects an SD card file -
+    /// `inspect_with_accounts` with the open wallet's BIP-84 account in scope, which is
+    /// what proves the change output. This is the user's wallet's own coin, sent back to be
+    /// signed, and this device signs it.
+    ///
+    /// Why it is safe without the previous transaction behind it: the transaction has ONE
+    /// input. The only amount in the file is the amount the only signature commits to under
+    /// BIP-143, so stating it falsely produces a signature that verifies against nothing,
+    /// and there is no second signature anywhere in this transaction for a later round to
+    /// combine a harvested one with. Both halves are needed and both are properties of the
+    /// TRANSACTION, not of which inputs the file calls ours.
+    #[test]
+    fn bluewallet_watch_only_import_is_accepted_and_signs() {
+        let psbt = fixture::bluewallet_watch_only_psbt();
+        let account = fixture::account_bip84();
+        let accounts = core::slice::from_ref(&account);
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), accounts)
+            .expect("a single-input spend of this wallet's own coin");
+
+        assert_eq!(inspection.inputs.len(), 1);
+        assert_eq!(inspection.signable_inputs(), 1);
+        assert_eq!(
+            inspection.inputs[0].amount_proof,
+            AmountProof::BoundByOurSignature
+        );
+        assert_eq!(inspection.fee, Amount::from_sat(fixture::BW_FEE_SAT));
+        assert!(inspection.fee_is_enforced());
+        assert_eq!(inspection.unproven_amounts(), 0);
+        assert!(
+            matches!(inspection.outputs[1].role, OutputRole::Change { .. }),
+            "{:?}",
+            inspection.outputs[1].role
+        );
+
+        let signed = crate::psbt::sign(&psbt, &inspection, &fixture::SEED).expect("one signature");
+        assert_eq!(signed.report().inputs_signed, alloc::vec![0]);
+    }
+
+    /// Fixture B: the same file with the wallet's real master fingerprint in place of
+    /// BlueWallet's zero default. Same outcome, same index - the fingerprint was never what
+    /// stood between this device and the file, which is the whole purpose of this fixture
+    /// and is why it keeps making the same statement now that the outcome has inverted.
+    #[test]
+    fn bluewallet_master_fingerprint_variant_is_accepted_the_same_way_as_the_zero_default() {
+        let psbt = fixture::bluewallet_watch_only_master_fingerprint_psbt();
+        let account = fixture::account_bip84();
+        let accounts = core::slice::from_ref(&account);
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), accounts)
+            .expect("the master fingerprint variant of fixture A");
+        assert_eq!(inspection.signable_inputs(), 1);
+        assert_eq!(
+            inspection.inputs[0].amount_proof,
+            AmountProof::BoundByOurSignature
+        );
+        assert!(inspection.fee_is_enforced());
+        assert!(matches!(inspection.outputs[1].role, OutputRole::Change { .. }));
+    }
+
+    /// Fixture A with no account in scope at all, which is a DIFFERENT answer and has to
+    /// stay one - the SAME different answer on both halves of the file.
+    ///
+    /// Fixture A's origins carry a fingerprint of all zeroes, which names no device. This
+    /// crate substitutes its own as an ASSUMPTION so the path can be tried at all, then
+    /// requires a derivation to discharge it, and with no account in scope nothing can
+    /// discharge anything. So the input is Foreign and the file signs nothing rather than
+    /// signing on the strength of four zero bytes, and the wallet's own change proves
+    /// nothing and nets out of nothing - all 90,000 sat count as leaving, where the same
+    /// file read with the account in scope shows 60,000. One rule, applied to both maps,
+    /// and a session that wants either half answered has to put the wallet in scope.
+    ///
+    /// What this must never become is a refusal, and it must never become a block either:
+    /// an unheld assumption is not a claim to disbelieve, it is a question nobody in scope
+    /// could answer. Pinned so that nobody "fixes" the acceptance path by loosening what
+    /// counts as proven change - the number that guards it is `change_total`, which is what
+    /// a screen would net out.
+    #[test]
+    fn a_single_input_file_with_no_account_in_scope_proves_neither_half() {
+        let psbt = fixture::bluewallet_watch_only_psbt();
+        let inspection = inspect(&psbt, &fixture::context()).expect("the file is readable");
+        assert_eq!(inspection.inputs[0].claim, Claim::Foreign);
+        assert_eq!(inspection.signable_inputs(), 0);
+        assert_eq!(inspection.inputs[0].amount_proof, AmountProof::ClaimedByFile);
+        assert!(!inspection.fee_is_enforced());
+        assert!(
+            !inspection.outputs[1].role.is_change(),
+            "nothing in scope could prove it: {:?}",
+            inspection.outputs[1].role
+        );
+        assert_eq!(inspection.change_total(), Amount::ZERO);
+        assert_eq!(inspection.leaving_total(), inspection.output_total);
+
+        // Not a refusal, and it must never become one: a file this device cannot prove
+        // anything about is a file to read.
+        assert!(matches!(
+            crate::psbt::sign(&psbt, &inspection, &fixture::SEED),
+            Err(crate::psbt::SignFailure::NothingToSign)
+        ));
+    }
+
+    /// Fixture C: a two-input BlueWallet consolidation, and the file this change does NOT
+    /// admit.
+    ///
+    /// Two inputs are two amounts and two signatures, so the single-input escape never
+    /// opens and check 2's per-input half stops at input 0. That is the whole of what a
+    /// BlueWallet user loses here, and the refusal's own sentence names the remedy: spend a
+    /// single coin with coin control, or rebuild the file in software that attaches the
+    /// previous transactions. See `all_ours_two_input_witness_utxo_only_is_refused` for
+    /// the two-round attack this is refusing.
+    #[test]
+    fn bluewallet_two_input_consolidation_is_refused_at_the_first_input() {
+        let psbt = fixture::bluewallet_two_inputs_psbt();
+        let accounts = fixture::device_accounts();
+        let err = inspect_with_accounts(&psbt, &fixture::context(), &accounts).unwrap_err();
+        assert_eq!(err, CheckFailure::MissingPreviousTransaction { index: 0 });
+        assert_eq!(
+            err.to_string(),
+            "check 2 (previous transactions): input 0 does not carry the transaction it \
+             came from, so nothing proves what it is worth; this device signs an unproven \
+             amount only when the transaction has a single input"
+        );
+    }
+
+    /// Fixture D: the key-substitution attack, caught on its own merits, by the derivation
+    /// rather than by a hash of the key the file handed over.
+    ///
+    /// The file states a key of ours at OUR OWN leaf, and it is not the key that is there.
+    /// An account in scope derives that leaf, finds the script it locks IS this input's
+    /// script, and finds a different key in the origin: our coin, described by a file that
+    /// is lying about it. [`Ownership::Forged`], which is `ClaimedKeyNotInScript` - and
+    /// this is the derive-and-compare's own verdict, reached at inspect time instead of
+    /// after a seed is in scope.
+    ///
+    /// With nothing in scope the file is not refused and must not be: its origin carries
+    /// the zero fingerprint, so it claims nothing about this device that could be
+    /// contradicted, and a session holding no wallet has no standing to call somebody's
+    /// file a forgery. It signs nothing, which is the safe half of the same answer.
+    #[test]
+    fn bluewallet_key_substitution_is_refused_on_its_merits() {
+        let psbt = fixture::bluewallet_key_substitution_psbt();
+        let accounts = fixture::device_accounts();
+
+        let err = inspect_with_accounts(&psbt, &fixture::context(), &accounts).unwrap_err();
+        assert_eq!(err, CheckFailure::ClaimedKeyNotInScript { index: 0 });
+        assert_eq!(err.check(), Check::InputOwnership);
+
+        let inspection = inspect(&psbt, &fixture::context())
+            .expect("with no wallet in scope this file claims nothing about this device");
+        assert_eq!(inspection.signable_inputs(), 0);
+    }
+
+    /// The same substitution with the wallet's REAL master fingerprint on it, which is a
+    /// statement about this device rather than about nobody - so it is refused whether or
+    /// not a wallet is in scope, and by a different comparison in each case.
+    ///
+    /// With an account: the leaf the origin names is derived, its script IS this input's,
+    /// and the key stated there is not the key that is there. Without one: the origin and
+    /// the script are simply read off the file and disagree with each other
+    /// (`key_matches_script`). The second is the weaker test and it is why the first had to
+    /// exist - a forgery that states the right key for the wrong coin passes it, which is
+    /// `an_origin_of_ours_over_a_stranger_key_and_script_is_foreign`.
+    #[test]
+    fn a_named_key_substitution_is_refused_with_or_without_a_wallet_in_scope() {
+        let psbt = fixture::key_substitution_at_our_fingerprint_psbt();
+        let accounts = fixture::device_accounts();
+        for (what, inspected) in [
+            (
+                "the device's accounts",
+                inspect_with_accounts(&psbt, &fixture::context(), &accounts),
+            ),
+            ("nothing", inspect(&psbt, &fixture::context())),
+        ] {
+            assert_eq!(
+                inspected.expect_err(what),
+                CheckFailure::ClaimedKeyNotInScript { index: 0 },
+                "with {what} in scope"
+            );
+        }
+    }
+
+    /// The forgery `key_matches_script` alone cannot see, and the reason the derivation had
+    /// to move to inspect time.
+    ///
+    /// Fixture A's input with a stranger's key AND the stranger's script, at our own change
+    /// path and our own fingerprint. The origin and the script agree with each other
+    /// perfectly - so the hash comparison passes - and the leaf they name is one this wallet
+    /// derives to something else entirely. Before 2026-08-21 that file put a coin this
+    /// device does not own into `signable_inputs`, onto the approval screen's batch, and
+    /// into the count check 2 reasons about, and only [`super::sign`] refused it, after the
+    /// user had approved. It is Foreign now, and the rest of the file is still signable.
+    #[test]
+    fn an_origin_of_ours_over_a_stranger_key_and_script_is_foreign() {
+        let psbt = fixture::bluewallet_origin_over_a_stranger_input_psbt();
+        let accounts = fixture::device_accounts();
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+            .expect("a stranger's coin is not an error");
+        assert_eq!(inspection.inputs[0].claim, Claim::Foreign);
+        assert_eq!(inspection.signable_inputs(), 0);
+    }
+
+    /// Fixture E: the 2019 change-confusion attack, in the one spelling that cannot be
+    /// distinguished from an honest file, and what the device does about it.
+    ///
+    /// The input level passes, so the output map is read - which is where this attack has
+    /// always lived. The claim names our real change path and the script it pays is the
+    /// attacker's, so nothing re-derives it and NOTHING IS NETTED OUT: `change_total` is
+    /// zero, all 90,000 sat count as leaving, and the address the user reads on the output
+    /// page is the attacker's. That is the direction check 3 exists to keep - the review
+    /// overstates the spend, it never understates it - and it is the whole of the
+    /// protection here.
+    ///
+    /// What it deliberately does NOT do is block the hold, and the reason is the fingerprint
+    /// rather than the script. Fixture E's claim carries 00000000, four bytes that name
+    /// nobody, and a second party's own change output in a multi-party round - at their own
+    /// BIP-84 account 0, claimed at the zero fingerprint their wallet writes by default -
+    /// is byte-for-byte this shape. There is no test that separates them, so a device that
+    /// blocked on this would burn every such round for every party in it on one field any of
+    /// them can write. Between 2026-08-21 and 2026-08-22 it did exactly that; see
+    /// `an_unprovable_assumed_output_claim_does_not_burn_the_round`.
+    ///
+    /// The blocking answer belongs to the claims that NAME this device, and it is still
+    /// there: `check_3_refuses_a_forged_singlesig_change_claim` for the master fingerprint,
+    /// `an_electrum_spelled_change_substitution_is_seen_and_blocked` for an account xpub's.
+    /// Writing either needs a fingerprint of ours; writing this one needs nothing.
+    #[test]
+    fn bluewallet_forged_change_is_counted_as_money_leaving() {
+        let psbt = fixture::bluewallet_forged_change_psbt();
+        let account = fixture::account_bip84();
+        let accounts = core::slice::from_ref(&account);
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), accounts)
+            .expect("the input level has nothing to say about this file");
+        assert_eq!(inspection.signable_inputs(), 1);
+        assert!(
+            !inspection.outputs[1].role.is_change(),
+            "the attacker's script is never change: {:?}",
+            inspection.outputs[1].role
+        );
+        assert_eq!(inspection.change_total(), Amount::ZERO);
+        assert_eq!(inspection.leaving_total(), inspection.output_total);
+        assert_eq!(
+            inspection.leaving_total(),
+            Amount::from_sat(fixture::BW_PAYMENT_SAT + fixture::BW_CHANGE_SAT)
+        );
+    }
+
+    /// Fixture F: one input of ours beside a cosigner's, both `witness_utxo` only. BIP-174
+    /// makes the cosigner's input not-an-error; the refusal fires on OUR input first, which
+    /// this pins so a fix cannot start naming input 1 instead - that would be refusing the
+    /// whole file over a coin this device was never asked to sign.
+    #[test]
+    fn bluewallet_mixed_ownership_refuses_naming_our_own_input() {
+        let psbt = fixture::bluewallet_mixed_ownership_psbt();
+        let accounts = fixture::device_accounts();
+        let inspection_of_ownership =
+            inspect(&psbt, &fixture::context()).expect("nothing in scope, nothing ours");
+        assert_eq!(inspection_of_ownership.signable_inputs(), 0);
+
+        let err = inspect_with_accounts(&psbt, &fixture::context(), &accounts).unwrap_err();
+        assert_eq!(err, CheckFailure::MissingPreviousTransaction { index: 0 });
+    }
+
+    /// Fixture F with both amounts proven, which is the file BIP-174 line 415 is actually
+    /// describing: this device signs ITS input and passes the cosigner's through untouched.
+    ///
+    /// The amount rule is out of the way here on purpose, so what is left is the ownership
+    /// question alone. Input 0's origin derives to input 0's script under an account of
+    /// ours, so it is signed; input 1 carries no origin at all, so it is Foreign, shown,
+    /// and left exactly as it came. Foreign is not an error, and a signer that refused this
+    /// file could not take part in a multi-party round.
+    #[test]
+    fn a_mixed_file_with_proven_amounts_signs_only_our_own_input() {
+        let psbt = fixture::bluewallet_mixed_ownership_proven_psbt();
+        let accounts = fixture::device_accounts();
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+            .expect("a cosigner's input is not an error");
+
+        assert_eq!(inspection.signable_input_indexes(), alloc::vec![0]);
+        assert_eq!(inspection.inputs[1].claim, Claim::Foreign);
+        assert!(inspection.fee_is_enforced());
+
+        let signed = crate::psbt::sign(&psbt, &inspection, &fixture::SEED).expect("one signature");
+        assert_eq!(signed.report().inputs_signed, alloc::vec![0]);
+        let out = signed.psbt();
+        assert_eq!(out.inputs[0].partial_sigs.len(), 1);
+        assert!(
+            out.inputs[1].partial_sigs.is_empty() && out.inputs[1].tap_key_sig.is_none(),
+            "the cosigner's input is passed through untouched"
+        );
+    }
+
+    /// Fixture G, half one: Electrum's convention read with no account in scope. Nothing
+    /// matches the claimed account-xpub fingerprint, so the input is Foreign rather than
+    /// refused, and the file inspects clean while signing nothing - a silent
+    /// under-signing, not a refusal, and a different failure mode from every other fixture
+    /// in this corpus.
+    #[test]
+    fn bluewallet_electrum_relative_path_is_foreign_with_no_account_in_scope() {
+        let psbt = fixture::bluewallet_electrum_relative_path_psbt();
+        let inspection = inspect(&psbt, &fixture::context()).unwrap();
+        assert_eq!(inspection.inputs[0].claim, Claim::Foreign);
+        assert_eq!(inspection.signable_inputs(), 0);
+    }
+
+    /// Fixture G, half two: the same file with the matching account in scope, where
+    /// Electrum's convention now RESOLVES instead of failing a rule it was never able to
+    /// pass.
+    ///
+    /// The origin carries the account xpub's own fingerprint and a two-component
+    /// `change/index` path relative to it. Until 2026-08-21 that reached `path_sanity`,
+    /// which demands three hardened steps before the first unhardened one, and a relative
+    /// path has none - so the file was refused for its SPELLING of a path while the coin
+    /// it named was the wallet's own. Electrum's own branch is implemented now: the path
+    /// does not resolve from the master, so its last two components are read as
+    /// `(change, index)` and derived under each account in scope, and the answer is decided
+    /// by the same key-and-script comparison every other route ends in.
+    ///
+    /// What travels afterwards is OUR path and not the file's. `signable_input_indexes`
+    /// names input 0 and `sign` walks `m/84'/0'/0'/0/0` from the seed, which is the whole
+    /// point of resolving rather than believing: the file's two components are not
+    /// something a master key can be walked along.
+    ///
+    /// BOTH maps, because Electrum spells them the same way and a device that read one and
+    /// not the other would sign a file whose change it never looked at. The change output
+    /// carries the same account-xpub fingerprint and the same two-component path, and it
+    /// proves the same way, so the review nets it out and shows 60,000 sat leaving rather
+    /// than 90,000.
+    #[test]
+    fn bluewallet_electrum_relative_path_resolves_with_the_account_in_scope() {
+        let psbt = fixture::bluewallet_electrum_relative_path_psbt();
+        let accounts = fixture::device_accounts();
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+            .expect("Electrum's relative path is a shape this device reads");
+
+        assert_eq!(inspection.signable_input_indexes(), alloc::vec![0]);
+        let Claim::Ours { path, .. } = &inspection.inputs[0].claim else {
+            panic!("{:?}", inspection.inputs[0].claim);
+        };
+        assert_eq!(*path, fixture::path(fixture::P2WPKH_PATH));
+
+        assert_eq!(
+            inspection.outputs[1].role,
+            OutputRole::Change {
+                owner: Owner::Account(fixture::account_bip84().id()),
+                index: 0
+            },
+            "the output map is spelled the same way the input map is"
+        );
+        assert_eq!(
+            inspection.change_total(),
+            Amount::from_sat(fixture::BW_CHANGE_SAT)
+        );
+        assert_eq!(
+            inspection.leaving_total(),
+            Amount::from_sat(fixture::BW_PAYMENT_SAT)
+        );
+
+        let signed = crate::psbt::sign(&psbt, &inspection, &fixture::SEED).expect("one signature");
+        assert_eq!(signed.report().inputs_signed, alloc::vec![0]);
+        assert_eq!(signed.report().signatures_verified, 1);
+    }
+
+    /// THE SUBSTITUTION PROBE, made permanent. Two files identical except output 1, and
+    /// the device has to reach two different verdicts about them.
+    ///
+    /// This is check 3's whole purpose, on the file format 0.2.1 exists to accept, and
+    /// between 2026-08-21 and 2026-08-22 it was unreachable there: `classify_output`
+    /// compared fingerprints by hand and did not know an account xpub's, so an
+    /// Electrum-spelled change origin was skipped outright. Measured against that tree, the
+    /// honest file and the swapped one produced BYTE-IDENTICAL review facts - signable=[0],
+    /// both outputs Payment, 90,000 leaving, 10,000 fee - and `sign` returned a signature
+    /// for both. No screen could have told a user which one they were holding.
+    ///
+    /// What separates them now is a derivation the file cannot influence: an account of ours
+    /// rebuilds the whole scriptPubKey at the leaf the origin names, or it does not. The
+    /// honest file nets its change out and signs; the swapped one is
+    /// [`OutputRole::ClaimedButUnproven`], which counts as money leaving AND which
+    /// `ReviewState::blocker` refuses to arm a hold on (`notyas-ui`'s
+    /// `a_forged_change_claim_beside_a_bound_amount_still_blocks_the_hold`), so it cannot be
+    /// signed at the device at all.
+    ///
+    /// The blocking half is right HERE and not on fixture E, and the difference is the
+    /// fingerprint: this claim wears an account xpub of ours, so it is a statement about
+    /// this device, and nobody writes it without holding that xpub.
+    #[test]
+    fn an_electrum_spelled_change_substitution_is_seen_and_blocked() {
+        let honest = fixture::bluewallet_electrum_relative_path_psbt();
+        let stolen = fixture::electrum_relative_path_stolen_change_psbt();
+        let accounts = fixture::device_accounts();
+
+        // One field apart, and it is the one that decides.
+        assert_eq!(honest.unsigned_tx.input, stolen.unsigned_tx.input);
+        assert_eq!(honest.unsigned_tx.output[0], stolen.unsigned_tx.output[0]);
+        assert_eq!(honest.inputs, stolen.inputs);
+        assert_ne!(
+            honest.unsigned_tx.output[1].script_pubkey,
+            stolen.unsigned_tx.output[1].script_pubkey
+        );
+        assert_eq!(
+            honest.unsigned_tx.output[1].value,
+            stolen.unsigned_tx.output[1].value
+        );
+
+        let good = inspect_with_accounts(&honest, &fixture::context(), &accounts)
+            .expect("the honest file is readable");
+        let bad = inspect_with_accounts(&stolen, &fixture::context(), &accounts)
+            .expect("a substituted output is classified, never a refusal");
+
+        // The input halves agree, so nothing but the output verdict separates the reviews.
+        assert_eq!(good.signable_input_indexes(), alloc::vec![0]);
+        assert_eq!(bad.signable_input_indexes(), alloc::vec![0]);
+        assert_eq!(good.fee, bad.fee);
+
+        assert!(good.outputs[1].role.is_change(), "{:?}", good.outputs[1].role);
+        assert_eq!(bad.outputs[1].role, OutputRole::ClaimedButUnproven);
+        assert!(bad.outputs[1].claims_our_key, "the file does claim it");
+
+        // The two numbers a user reads, and they differ by the whole of the change.
+        assert_eq!(
+            good.leaving_total(),
+            Amount::from_sat(fixture::BW_PAYMENT_SAT)
+        );
+        assert_eq!(
+            bad.leaving_total(),
+            Amount::from_sat(fixture::BW_PAYMENT_SAT + fixture::BW_CHANGE_SAT)
+        );
+        assert_eq!(bad.change_total(), Amount::ZERO);
+
+        // The honest file still signs. The swapped one is stopped by `ReviewState::blocker`
+        // on the role above, which is the gate this verdict exists to reach.
+        let signed = crate::psbt::sign(&honest, &good, &fixture::SEED).expect("one signature");
+        assert_eq!(signed.report().inputs_signed, alloc::vec![0]);
+    }
+
+    /// The relative branch is a derivation and not a shrug: the same two-component path
+    /// with a key that is not the key at that leaf is refused, naming the input.
+    ///
+    /// Electrum's convention makes the file's path shorter, never softer. This is fixture D
+    /// carried in fixture G's shape, and it has to reach the same verdict, or "the path
+    /// does not resolve from the master" would be a way to skip the comparison.
+    #[test]
+    fn a_relative_path_over_the_wrong_key_is_refused_the_same_as_a_full_one() {
+        let psbt = fixture::electrum_relative_path_wrong_key_psbt();
+        let accounts = fixture::device_accounts();
+        let err = inspect_with_accounts(&psbt, &fixture::context(), &accounts).unwrap_err();
+        assert_eq!(err, CheckFailure::ClaimedKeyNotInScript { index: 0 });
+        assert_eq!(err.check(), Check::InputOwnership);
+    }
+
+    /// THE REGRESSION, pinned. One unprovable zero-fingerprint origin on one output must not
+    /// burn the file for everyone in the round.
+    ///
+    /// A mixed-ownership round with both amounts proven, plus one field: an origin on the
+    /// shared payment output at fingerprint 00000000 and a BIP-84 path under an account
+    /// index this device does not hold. That is what a second party's wallet writes about
+    /// its own money, it requires no knowledge of our fingerprint, and any party to the
+    /// round can write it on any output.
+    ///
+    /// Between 2026-08-21 and 2026-08-22 it made the output
+    /// [`OutputRole::ClaimedButUnproven`], which `ReviewState::blocker` turns into a refusal
+    /// with no override - so one field burned a legitimate transaction for every party in
+    /// it. The role stays [`OutputRole::Payment`]: nothing is netted out, the money still
+    /// counts as leaving, and the file signs.
+    #[test]
+    fn an_unprovable_assumed_output_claim_does_not_burn_the_round() {
+        let psbt = fixture::mixed_round_with_an_assumed_output_claim_psbt();
+        let accounts = fixture::device_accounts();
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+            .expect("a second party's claim about their own money is not an error");
+
+        assert_eq!(inspection.outputs[0].role, OutputRole::Payment);
+        assert_eq!(inspection.change_total(), Amount::ZERO);
+        assert_eq!(inspection.leaving_total(), inspection.output_total);
+        assert_eq!(inspection.signable_input_indexes(), alloc::vec![0]);
+
+        let signed = crate::psbt::sign(&psbt, &inspection, &fixture::SEED).expect("one signature");
+        assert_eq!(signed.report().inputs_signed, alloc::vec![0]);
+    }
+
+    /// The other half of the split, and the reason the half above is not simply a hole: the
+    /// SAME claim at OUR master fingerprint is disbelieved out loud.
+    ///
+    /// One field apart from the fixture above, and the field is who the file says it is
+    /// talking about. Here it has named this device and failed to back it, so the output is
+    /// [`OutputRole::ClaimedButUnproven`] - counted as money leaving, and blocked at the
+    /// hold by `notyas-ui`'s `ReviewState::blocker`. Writing this needs a fingerprint of
+    /// ours; writing the zero one needs nothing at all, which is the whole of why they get
+    /// different answers.
+    #[test]
+    fn an_unprovable_named_output_claim_is_disbelieved_and_blocks() {
+        let psbt = fixture::mixed_round_with_a_named_output_claim_psbt();
+        let accounts = fixture::device_accounts();
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), &accounts)
+            .expect("a false claim about this device is classified, never a refusal");
+
+        assert_eq!(inspection.outputs[0].role, OutputRole::ClaimedButUnproven);
+        assert!(inspection.outputs[0].claims_our_key);
+        assert_eq!(inspection.change_total(), Amount::ZERO);
+        assert_eq!(inspection.leaving_total(), inspection.output_total);
+    }
+
+    /// Electrum's branch is a BRANCH and not a scan, and the budget is what says so.
+    ///
+    /// The file names one leaf; this device asks each account in scope whether that leaf is
+    /// one of its own, and the answer is one [`Account::leaf`] per account. A change that
+    /// turned [`MAX_ACCOUNT_LEAF_INDEX`] into a loop bound - which its own doc warns
+    /// against - would show up here as a cost far past this, so the pin is on the exact
+    /// number rather than on an inequality: 6 derivations for a BIP-84 claim, which is
+    /// [`Account::LEAF_DERIVATIONS`] for each of BIP-44, BIP-49 and BIP-84 in
+    /// [`crate::derive::Scheme::ALL`]'s order, and not one more.
+    ///
+    /// The second half of the pin is that the relative branch is charged at all. Give it
+    /// one derivation less than it needs and the file is REFUSED, quoting the budget, rather
+    /// than quietly reporting the wallet's own change as money leaving.
+    #[test]
+    fn an_electrum_output_claim_costs_one_leaf_per_account() {
+        let psbt = fixture::bluewallet_electrum_relative_path_psbt();
+        let accounts = fixture::device_accounts();
+        let exact = 3 * Account::LEAF_DERIVATIONS;
+
+        let budgeted = |max: u32| Context {
+            limits: StructuralLimits {
+                max_change_derivations: max,
+                ..StructuralLimits::DEFAULT
+            },
+            ..fixture::context()
+        };
+
+        let inspection = inspect_with_accounts(&psbt, &budgeted(exact), &accounts)
+            .expect("the claim costs exactly what the budget allows");
+        assert!(
+            inspection.outputs[1].role.is_change(),
+            "{:?}",
+            inspection.outputs[1].role
+        );
+
+        assert_eq!(
+            inspect_with_accounts(&psbt, &budgeted(exact - 1), &accounts).unwrap_err(),
+            CheckFailure::ChangeDerivationBudgetExhausted {
+                at: Location::Output(1),
+                max: exact - 1,
+            },
+            "the relative branch must be charged, and running out is a refusal"
+        );
+    }
+
+    /// The census counts what the proving loop walks, which is what its own INVARIANT says
+    /// and what it stopped doing on 2026-08-21.
+    ///
+    /// `own_origins` filtered on a bare fingerprint comparison while `classify_output` walked
+    /// three routings, so the bound was enforced against one map and the work done against
+    /// another: measured at the default limits, sixteen origins at the zero fingerprint were
+    /// ACCEPTED on one output where sixteen at the real fingerprint were refused by name.
+    /// Both read [`OwnWallets::route`] now, so all three spellings are counted the same and
+    /// the per-output bound means the same thing whichever one a file uses.
+    #[test]
+    fn the_origin_census_counts_every_routing_the_proving_loop_walks() {
+        let cx = fixture::context();
+        let accounts = fixture::device_accounts();
+        let account_fp = fixture::account_bip84().xpub().fingerprint();
+        let over = usize::from(cx.limits.max_own_output_origins) + 1;
+
+        for spelling in [Fingerprint::default(), account_fp, fixture::fingerprint()] {
+            let mut psbt = fixture::bluewallet_watch_only_psbt();
+            psbt.outputs[0].bip32_derivation.clear();
+            for key in filler_keys(over) {
+                psbt.outputs[0]
+                    .bip32_derivation
+                    .insert(key, (spelling, fixture::path(CHANGE_PATH)));
+            }
+            assert_eq!(
+                inspect_with_accounts(&psbt, &cx, &accounts).unwrap_err(),
+                CheckFailure::TooManyOwnOutputOrigins {
+                    at: Location::Output(0),
+                    found: over,
+                    max: cx.limits.max_own_output_origins,
+                },
+                "origins spelled {spelling} went uncounted"
+            );
+        }
+
+        // A fingerprint that routes nowhere is still not counted, and must not be: a
+        // 15-cosigner output legitimately carries fourteen of them.
+        let mut psbt = fixture::bluewallet_watch_only_psbt();
+        psbt.outputs[0].bip32_derivation.clear();
+        for key in filler_keys(over * 4) {
+            psbt.outputs[0].bip32_derivation.insert(
+                key,
+                (
+                    Fingerprint::from([0xde, 0xad, 0xbe, 0xef]),
+                    fixture::path(CHANGE_PATH),
+                ),
+            );
+        }
+        let inspection = inspect_with_accounts(&psbt, &cx, &accounts).unwrap();
+        assert!(!inspection.outputs[0].claims_our_key);
+    }
+
+    /// Fixture H, half one: fixture A exactly as BlueWallet writes it to an SD card - base64
+    /// text, trailing newline, `.psbt` extension implied by the file name rather than
+    /// by these bytes. `codec::decode` does not autodetect transport encodings by design
+    /// (its own doc says why), so this is the sentence a raw SD-card read produces before
+    /// any transport layer has touched the file.
+    #[test]
+    fn bluewallet_base64_export_fails_the_magic_check_before_transport_unwraps_it() {
+        let text = fixture::bluewallet_base64_text();
+        assert!(text.ends_with(b"\n"), "BlueWallet's export ends in a newline");
+        assert!(
+            text.iter().all(u8::is_ascii),
+            "a base64 export is ASCII text, not the binary PSBT_MAGIC bytes"
+        );
+        let err = codec::decode(&text).unwrap_err();
+        assert_eq!(err, codec::Malformed::NotAPsbt);
+    }
+
+    /// Fixture H, half two: unwrapped by hand, the base64 text is byte-identical to
+    /// fixture A's own serialization, and inspecting the recovered PSBT reproduces THE RED
+    /// TEST's outcome exactly - it inspects clean and it signs. The byte-identity assertion
+    /// is the load-bearing half and is unchanged: transport was never what stood between
+    /// this device and the user's file.
+    #[test]
+    fn bluewallet_base64_export_unwraps_to_exactly_fixture_a_and_signs() {
+        let text = fixture::bluewallet_base64_text();
+        let decoded = base64_decode_for_test(&text).expect("fixture H is valid base64");
+        let expected = codec::encode(&fixture::bluewallet_watch_only_psbt());
+        assert_eq!(decoded, expected);
+
+        let psbt = codec::decode(&decoded).expect("the recovered bytes are a valid psbt");
+        let account = fixture::account_bip84();
+        let accounts = core::slice::from_ref(&account);
+        let inspection = inspect_with_accounts(&psbt, &fixture::context(), accounts)
+            .expect("the recovered file is fixture A");
+        assert_eq!(inspection.signable_inputs(), 1);
+        assert_eq!(
+            inspection.inputs[0].amount_proof,
+            AmountProof::BoundByOurSignature
+        );
+        let signed = crate::psbt::sign(&psbt, &inspection, &fixture::SEED).expect("one signature");
+        assert_eq!(signed.report().inputs_signed, alloc::vec![0]);
+    }
+
+    /// The inverse of `fixture::bluewallet_base64_text`'s private encoder, kept here
+    /// rather than exported from the fixture module because only this one test needs it:
+    /// proving the transport wrapper unwraps to fixture A's exact bytes is not a fact any
+    /// other fixture in this corpus depends on.
+    fn base64_decode_for_test(text: &[u8]) -> Option<Vec<u8>> {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut table = [255u8; 256];
+        for (i, b) in ALPHABET.iter().enumerate() {
+            table[*b as usize] = i as u8;
+        }
+        let trimmed: Vec<u8> = text
+            .iter()
+            .copied()
+            .filter(|b| !b.is_ascii_whitespace())
+            .collect();
+        if trimmed.is_empty() || trimmed.len() % 4 != 0 {
+            return None;
+        }
+        let mut out = Vec::with_capacity(trimmed.len() / 4 * 3);
+        for chunk in trimmed.chunks(4) {
+            let pad = chunk.iter().filter(|&&b| b == b'=').count();
+            let mut n = 0u32;
+            for &b in chunk {
+                let v = if b == b'=' { 0 } else { table[b as usize] };
+                if v == 255 {
+                    return None;
+                }
+                n = (n << 6) | u32::from(v);
+            }
+            out.push((n >> 16) as u8);
+            if pad < 2 {
+                out.push((n >> 8) as u8);
+            }
+            if pad < 1 {
+                out.push(n as u8);
+            }
+        }
+        Some(out)
     }
 }

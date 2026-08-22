@@ -623,7 +623,7 @@ impl Store {
             self.adopt(session);
             return Err(String::from("no Argon2 working set"));
         };
-        let request = notyas_wallet::config::PolicyRequest { wipe_after, min_pin_len: min_pin };
+        let request = PolicyRequest { wipe_after, min_pin_len: min_pin };
         match self.vault.set_policy(&session, request, pin, scratch) {
             Ok(policy) => {
                 self.adopt(session);
@@ -635,6 +635,26 @@ impl Store {
             }
         }
     }
+    /// Like set_policy but also sets min_pin_len. For the HIL console policysoak command.
+    pub fn set_policy_full(&mut self, pin: &Pin, wipe_after: u8, min_pin_len: u8) -> Result<notyas_wallet::config::Policy, String> {
+        let session = self.session.take().ok_or("locked")?;
+        let Some(scratch) = self.scratch.as_mut().map(PsramScratch::borrow) else {
+            self.adopt(session);
+            return Err(String::from("no Argon2 working set"));
+        };
+        let request = PolicyRequest { wipe_after, min_pin_len };
+        match self.vault.set_policy(&session, request, pin, scratch) {
+            Ok(policy) => {
+                self.adopt(session);
+                Ok(policy)
+            }
+            Err(e) => {
+                self.adopt(session);
+                Err(format!("{e:?}"))
+            }
+        }
+    }
+
 
     /// Destroy every sealed record and leave the store unformatted (Q5.5). The PIN is
     /// confirmed inside the AEAD before the wipe. Returns the count of what was destroyed.

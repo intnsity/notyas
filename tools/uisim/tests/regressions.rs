@@ -10,10 +10,10 @@
 //! the device, and "QR buttons are dead on hardware" is precisely a failure of that round
 //! trip: request raised -> encoded by the core -> handed back -> modal on screen.
 
-use notyas_ui::{QrData, RegionId, ScreenId, Ui, UiRequest, VERSION};
+use notyas_ui::{QrData, RegionId, ScreenId, TouchEvent, Ui, UiRequest, VERSION};
 
 use uisim::catalog::{build, Frame, CATALOG};
-use uisim::drive::{tap, ui_has};
+use uisim::drive::{scroll_to, tap, ui_has};
 use uisim::fixtures::dummy_verify_info;
 use uisim::panel::Panel;
 
@@ -165,28 +165,60 @@ fn a_qr_tap_round_trips_through_the_core_encoder() {
     assert_eq!(pixels(&ui), closed, "closing the modal did not restore the sheet");
 }
 
-/// Every QR button on the screen answers, not just the one the catalogue photographs: the
-/// address rows and the SLIP-132 rendering are the same path and the same public-value
-/// rule.
+/// Every region id the schemes screen ever offers, on any tab it starts on, discovered
+/// by dragging through the whole of it rather than assumed.
+///
+/// A `RegionId::Qr*` allow-list here would have exactly the failure mode this function
+/// exists to close: a new QR button joins the screen, nobody adds its variant to the
+/// list, and the coverage gap is silent. Scrolling to the clamp and back finds every
+/// region that ever exists on screen - QR or not - so the caller can decide what counts
+/// as a QR button by what TAPPING it returns, not by its name.
+fn every_region_id_on(name: &str) -> Vec<RegionId> {
+    let mut ui = at(name);
+    let mut ids: Vec<RegionId> = ui.regions().iter().map(|r| r.id).collect();
+    let mut prev = ids.clone();
+    for step in 0.. {
+        assert!(step < 64, "{name}: scrolling to the clamp never settles");
+        ui.touch(TouchEvent::Down { x: 100, y: 400 });
+        ui.touch(TouchEvent::Move { x: 100, y: 240 });
+        ui.touch(TouchEvent::Up { x: 100, y: 240 });
+        let now: Vec<RegionId> = ui.regions().iter().map(|r| r.id).collect();
+        for &id in &now {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        if now == prev {
+            // The clamp: one more drag changed nothing, so nothing further is reachable.
+            break;
+        }
+        prev = now;
+    }
+    ids
+}
+
+/// Every QR button on the screen answers, not just the one the catalogue photographs -
+/// found by tapping every region the screen ever offers (see [`every_region_id_on`]) and
+/// treating whichever ones answer with [`UiRequest::Qr`] as the QR buttons, rather than
+/// naming them: `RegionId::QrDescriptor` joined the screen with zero coverage here
+/// because the old filter matched three named variants and this one is silent about
+/// what a QR button IS in the type system, so the next one joins by construction.
+///
+/// Each tap runs on a fresh `Ui`, scrolled to that one region with the same drag a
+/// finger would use ([`scroll_to`]) - not the accumulating `ui` the discovery pass
+/// scrolled, and not a raw coordinate hit - so a non-QR region (Back, a tab) tapped along
+/// the way cannot leave a later iteration on the wrong screen or the wrong scroll.
 #[test]
 fn every_qr_button_of_a_scheme_encodes() {
-    let mut ui = at("schemes/bip84");
-    let buttons: Vec<RegionId> = ui
-        .regions()
-        .iter()
-        .map(|r| r.id)
-        .filter(|id| {
-            matches!(id, RegionId::QrXpub | RegionId::QrSlip132 | RegionId::QrAddress(_))
-        })
-        .collect();
-    assert!(
-        buttons.contains(&RegionId::QrXpub) && buttons.contains(&RegionId::QrSlip132),
-        "BIP84 offers an xpub and a zpub QR: {buttons:?}"
-    );
-    for id in buttons {
-        let Some(UiRequest::Qr(target)) = tap(&mut ui, id) else {
-            panic!("{id:?} raised no request");
-        };
+    let mut qr_buttons = Vec::new();
+    for id in every_region_id_on("schemes/bip84") {
+        let mut ui = at("schemes/bip84");
+        if !ui_has(&ui, id) {
+            scroll_to(&mut ui, id);
+        }
+        let Some(UiRequest::Qr(target)) = tap(&mut ui, id) else { continue };
+        qr_buttons.push(id);
+
         let matrix =
             notyas_core::qr::matrix(&target.payload).unwrap_or_else(|e| panic!("{id:?}: {e}"));
         let data = QrData::from_matrix(&matrix).expect("square");
@@ -194,4 +226,17 @@ fn every_qr_button_of_a_scheme_encodes() {
         assert!(ui_has(&ui, RegionId::ModalClose), "{id:?}: modal did not open");
         tap(&mut ui, RegionId::ModalClose);
     }
+    assert!(
+        qr_buttons.contains(&RegionId::QrXpub) && qr_buttons.contains(&RegionId::QrSlip132),
+        "BIP84 offers an xpub and a zpub QR: {qr_buttons:?}"
+    );
+    assert!(
+        qr_buttons.contains(&RegionId::QrDescriptor),
+        "the descriptor QR button was not exercised: {qr_buttons:?}"
+    );
+    let addresses = qr_buttons.iter().filter(|id| matches!(id, RegionId::QrAddress(_))).count();
+    assert_eq!(
+        addresses, notyas_ui::ADDRESS_ROWS as usize,
+        "every derived address row must offer its own QR: {qr_buttons:?}"
+    );
 }

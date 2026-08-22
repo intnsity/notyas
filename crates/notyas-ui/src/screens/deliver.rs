@@ -822,10 +822,6 @@ mod tests {
     use crate::screens::testing::{rows_are_clear_on, Fixture, GEOMETRIES};
     use notyas_fonts::Atlas;
 
-    pub(super) fn signed_state() -> DeliverState {
-        DeliverState::new(signed(true))
-    }
-
     fn signed(complete: bool) -> SignedTx {
         SignedTx {
             signed_inputs: 3,

@@ -556,6 +556,61 @@ pub fn dummy_tx_review(shape: ReviewShape) -> TxReview {
     review
 }
 
+/// The commonest file this device sees: ONE input of the open wallet, its amount stated by
+/// the file and made binding by the signature this device is about to add.
+///
+/// A separate fixture rather than a fourth [`ReviewShape`], because the shape that makes it
+/// safe is its INPUT COUNT: one input is one amount, so nothing else in the transaction is
+/// left free to be a lie, and a fixture with three inputs could not show it. Six pages
+/// instead of ten for the same reason.
+///
+/// It sits beside [`dummy_tx_review`]'s [`ReviewShape::Stated`], which is the multi-input
+/// file whose amounts nothing binds, so the two render side by side: the STATED prefix is
+/// on both, and everything else about them differs. Here the amount is not painted amber,
+/// no caveat band sits above it, the caveat row says the signature makes it binding, and
+/// the fee is an exact number rather than a lower bound.
+pub fn dummy_bluewallet_review() -> TxReview {
+    let inputs = vec![ours(
+        0,
+        ScriptKind::P2wpkh,
+        1_450_000,
+        AmountProof::BoundByOurSignature,
+    )];
+    let outputs = vec![
+        out(0, 1_000_000, ScriptKind::P2wpkh, OutputRole::Payment),
+        out(
+            1,
+            445_000,
+            ScriptKind::P2wpkh,
+            OutputRole::Change { owner: dummy_owner(), index: 4 },
+        ),
+    ];
+    let mut review = TxReview {
+        inputs,
+        outputs,
+        input_total: Amount::from_sat(1_450_000),
+        output_total: Amount::from_sat(1_445_000),
+        // Enforced, and that is the point: for any transaction that can actually confirm,
+        // the fee on the screen IS the fee.
+        fee: ReviewedFee::Enforced(Amount::from_sat(5_000)),
+        lock_time: LockTime::ZERO,
+        rbf_signaled: true,
+        network: Network::Bitcoin,
+        fingerprint: String::from("dead0eef"),
+        wallet: String::from("DUMMY savings"),
+        source: String::from("dummy-bluewallet-2026-08-21.psbt"),
+        signable_inputs: 1,
+        unknown_fields: 0,
+        serialized_len: 1_100,
+        psbt_id: String::from("4f0e8a1c66d3f9b27a5514e0cc9d3b8f2e6a71d4905cb3e8f27a10b6cd4e9f30"),
+        vsize: 141,
+        vsize_exact: false,
+        warnings: Vec::new(),
+    };
+    review.warnings = dummy_warnings(&review);
+    review
+}
+
 /// The warnings the fixtures raise, spelled out here because `tools/uisim` cannot call the
 /// firmware's own `flow::model` (different target, different crate).
 ///

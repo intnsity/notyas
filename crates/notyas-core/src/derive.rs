@@ -653,11 +653,26 @@ impl Account {
 /// a cosigner and locks nothing on its own, so its outputs are proven from a
 /// [`crate::multisig::Registration`] or not at all.
 ///
-/// What is NOT covered: an account index above 0. A coordinator that spends from one gets
-/// [`crate::psbt::OutputRole::ClaimedButUnproven`] on its change, which counts as money
-/// leaving - the review OVERSTATES the spend rather than understating it, which is the
-/// direction this whole check exists to keep. Widening the set is a UI decision (there is
-/// no screen that selects an account) and not one to make here on speculation.
+/// What is NOT covered: an account index above 0. Nothing in scope rebuilds such a change
+/// output, so what the file gets is decided by HOW it addressed the claim, and the two
+/// answers are different:
+///
+/// - Spelled with this device's master fingerprint or one of its account xpub
+///   fingerprints, the file has made a statement about this device and failed to back it.
+///   The output is [`crate::psbt::OutputRole::ClaimedButUnproven`], which counts as money
+///   leaving AND which `ReviewState::blocker` refuses to arm a hold on: the file is not
+///   signed here at all, rather than signed with an overstated spend. Writing it needs a
+///   fingerprint of ours, so nobody writes it by accident.
+/// - Spelled with the zero fingerprint - BlueWallet's default for a watch-only import, and
+///   four bytes that name nobody - there is no statement about this device to disbelieve.
+///   The output stays [`crate::psbt::OutputRole::Payment`], so the review OVERSTATES the
+///   spend rather than understating it, which is the direction this whole check exists to
+///   keep, and the file still signs. That has to be so: any party to a multi-party round
+///   can write that field on any output, and blocking on it burns the round for everyone
+///   in it.
+///
+/// Widening the set is a UI decision (there is no screen that selects an account) and not
+/// one to make here on speculation.
 ///
 /// The seed is read for the length of the call and the four account xpubs are what
 /// survives it; every [`Account`] this returns is watch-only.

@@ -717,7 +717,8 @@ fn holds_a_wallet(screen: ScreenId) -> bool {
         | ScreenId::Deliver
         | ScreenId::MultisigList
         | ScreenId::MultisigImport
-        | ScreenId::MultisigDetail => true,
+        | ScreenId::MultisigDetail
+        | ScreenId::Receive => true,
         // The wallet list is where a wallet is CHOSEN, so arriving there means the user has
         // left the one they had. Everything else is the create flow, the store surfaces or
         // a locked device, and none of them is behind a wallet at all.
@@ -1057,6 +1058,9 @@ fn answer_request(
         UiRequest::DeleteRegistration(slot) => {
             let next = flow::delete_registration(ui, store, flow, slot);
             answer_request(ui, store, flow, passphrases, next);
+        }
+        UiRequest::SaveAddress { address, overwrite } => {
+            flow::save_address(ui, address, overwrite);
         }
     }
 }
