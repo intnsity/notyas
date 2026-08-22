@@ -1052,20 +1052,29 @@ face value:
   screen's own `DESCRIPTOR_HELP` tells the reader to use - is the LAST block, below five
   address rows (`schemes.rs:460`). The layout contradicts its own help text.
 
-Meanwhile the signer cannot spend any of it: `ScriptKind::is_single_sig` excludes P2pkh
-(`crates/notyas-core/src/psbt/checks.rs:846`), `whitelisted_sighashes(P2pkh)` is empty, and
-`sign::SpendKind` has no legacy arm. So the device derives, displays, exports and solicits
-deposits for a scheme it will then refuse to spend, and `export::descriptor` even emits a
-`pkh()` descriptor for it (`crates/notyas-core/src/export.rs:256`).
+When this entry was written the signer could not spend any of it: `is_single_sig` excluded
+P2pkh, `whitelisted_sighashes(P2pkh)` was the empty slice, and `sign::SpendKind` had no
+legacy arm. So the device derived, displayed, exported and solicited deposits for a scheme
+it would then refuse to spend, and `export::descriptor` even emitted a `pkh()` descriptor
+for it (`crates/notyas-core/src/export.rs:256`).
 
-The demonstration is the user's own file: a PSBT with one legacy P2PKH input at
-`m/44'/0'/0'/0/0` of this device's own seed, full previous transaction present, refused at
-load. The device proves the input is its own by derivation and then refuses to sign it. The
-refusal he was shown, and the false multisig alarm it wore, is K31.
+That half is closed: 0.2.2 completes the legacy signing the ratified record always called
+for, so a legacy coin of this device's own can now be spent by it. What remains open in
+this entry is the FUNNEL, which is a separate defect and is not closed by signing: Receive
+still takes `schemes.first()` and Export still opens on the legacy tab with the bare xpub
+first, so the device still steers a user into BIP-44 without saying so.
 
-Funds are not lost - the recovery phrase re-derives `m/44'` in any standard wallet - but the
-device can never move them, while actively inviting more of them. BIP-49 and BIP-86 are
-spendable end to end; only BIP-44 is stranded.
+The demonstration was a PSBT with one legacy P2PKH input at `m/44'/0'/0'/0/0` of this
+device's own seed, full previous transaction present, refused at load: the device proved the
+input was its own by derivation and then refused to sign it. That file now signs, and the
+`legacy` case in `tools/psbtgen` is it, verified end to end by a verifier that derives
+everything independently. The refusal it used to draw, and the false multisig alarm that
+refusal wore, is K31.
+
+Funds were never lost - the recovery phrase re-derives `m/44'` in any standard wallet - and
+as of 0.2.2 the device can move them itself. All four schemes are now spendable end to end.
+The residual is that the device still invites deposits to the one scheme it silently
+defaults to, which is what the remaining half of this entry tracks.
 
 **Does it block 0.2.2? Yes**, and it is what 0.2.2 is for. `docs/RELEASE-0.2.2.md` sections 1
 and 4 carry the two halves: implement P2PKH signing, which the design record already
