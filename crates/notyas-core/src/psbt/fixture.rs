@@ -35,6 +35,7 @@ pub const FEE_SAT: u64 = 10_000;
 pub const SEED: [u8; 64] = [0x2a; 64];
 pub const NETWORK: Network = Network::Bitcoin;
 
+pub const P2PKH_PATH: &str = "m/44'/0'/0'/0/0";
 pub const P2WPKH_PATH: &str = "m/84'/0'/0'/0/0";
 pub const P2SH_P2WPKH_PATH: &str = "m/49'/0'/0'/0/0";
 pub const P2TR_PATH: &str = "m/86'/0'/0'/0/0";
@@ -123,9 +124,50 @@ fn segwit_v0_skeleton(spk: &ScriptBuf) -> Psbt {
     psbt
 }
 
+/// The legacy shape: the full previous transaction and NOTHING beside it.
+///
+/// Deliberately not [`segwit_v0_skeleton`] with one field dropped. A pre-BIP-143 signature
+/// commits to no amount at all, so a `witness_utxo` on a legacy input is a number the signed
+/// bytes could never contradict, and this device requires the txid-checked previous
+/// transaction for every legacy input without exception - the strictest amount regime it
+/// has. `docs/RELEASE-0.2.2.md` section 2 is the rule; the two negatives below are what
+/// happens to a file that leaves it out.
+fn legacy_skeleton(spk: &ScriptBuf) -> Psbt {
+    let (prev, mut psbt) = skeleton(spk);
+    psbt.inputs[0].non_witness_utxo = Some(prev);
+    psbt
+}
+
+/// The scriptPubKey a BIP-44 leaf of [`SEED`] is locked to: `76a914{hash160(pubkey)}88ac`.
+///
+/// Built through [`ScriptBuf::new_p2pkh`] rather than through `crate::address`, so that a
+/// fixture proven ours by derivation is proving that `Account::leaf` and this file agree
+/// rather than that one of them is consistent with itself.
+fn legacy_script(p: &str) -> ScriptBuf {
+    ScriptBuf::new_p2pkh(&key_at(p).public_key().pubkey_hash())
+}
+
 // ---------------------------------------------------------------------------------------
 // Clean cases
 // ---------------------------------------------------------------------------------------
+
+/// CORPUS group P3, ratified in 0.2.0 and first built in 0.2.2: a single-sig P2PKH spend of
+/// this device's own BIP-44 account, carrying the previous transaction that proves what the
+/// coin is worth.
+///
+/// This is the shape of the file that provoked the field report - a bare account xpub
+/// exported from this device, imported by a wallet that reads any bare xpub as
+/// `m/44'/0'/0'`, spending a coin from the scheme `Scheme::ALL` puts FIRST and the receive
+/// screen hands out by default. The device derived the leaf, rebuilt this exact script,
+/// proved the input was its own, and then refused it as a multisig cosigner mismatch.
+pub fn p2pkh_psbt() -> Psbt {
+    let pk = key_at(P2PKH_PATH).public_key();
+    let mut psbt = legacy_skeleton(&legacy_script(P2PKH_PATH));
+    psbt.inputs[0]
+        .bip32_derivation
+        .insert(pk.0, (fingerprint(), path(P2PKH_PATH)));
+    psbt
+}
 
 pub fn p2wpkh_psbt() -> Psbt {
     let key = key_at(P2WPKH_PATH);
@@ -217,6 +259,147 @@ pub fn psbt_with_two_of_our_claims() -> Psbt {
     psbt.inputs[0]
         .bip32_derivation
         .insert(other.0, (fingerprint(), path("m/84'/0'/0'/0/1")));
+    psbt
+}
+
+/// THE PIN UNDER THE LEGACY AMOUNT RULE: [`p2pkh_psbt`] with its proof pulled and a bare
+/// `witness_utxo` in its place, on a transaction with exactly ONE input.
+///
+/// One input is the shape 0.2.1 bought an escape for, and the escape must not reach here.
+/// The reason it is safe for segwit v0 is that a BIP-143 signature binds its own input's
+/// amount, so a one-input transaction has no amount anywhere left to lie about. A legacy
+/// digest does not bind even that: it hashes the scriptCode and the outputs and never the
+/// value, so it is STRICTLY WEAKER than the case the exemption was reasoned about. A reader
+/// who extends the exemption to legacy by analogy reopens a fee attack on the commonest
+/// input shape there is, and this file is what stops him.
+pub fn p2pkh_psbt_without_its_prev_tx() -> Psbt {
+    let mut psbt = p2pkh_psbt();
+    psbt.inputs[0].non_witness_utxo = None;
+    psbt.inputs[0].witness_utxo = Some(TxOut {
+        value: Amount::from_sat(PREVOUT_SAT),
+        script_pubkey: legacy_script(P2PKH_PATH),
+    });
+    psbt
+}
+
+/// Two legacy inputs of ours and one previous transaction between them: the same rule at
+/// the other end of the carve-out, where the input count alone refuses the file before any
+/// reasoning about signatures happens.
+pub fn two_p2pkh_inputs_one_amount_claimed_psbt() -> Psbt {
+    const SECOND: &str = "m/44'/0'/0'/0/1";
+    let spk_a = legacy_script(P2PKH_PATH);
+    let spk_b = legacy_script(SECOND);
+    let prev_a = funding_of(&spk_a, 3, PREVOUT_SAT);
+    let prev_b = funding_of(&spk_b, 4, PREVOUT_SAT);
+    let unsigned = Transaction {
+        version: transaction::Version::TWO,
+        lock_time: absolute::LockTime::ZERO,
+        input: vec![
+            spending(prev_a.compute_txid()),
+            spending(prev_b.compute_txid()),
+        ],
+        output: vec![TxOut {
+            value: Amount::from_sat(2 * PREVOUT_SAT - FEE_SAT),
+            script_pubkey: external_script(),
+        }],
+    };
+    let mut psbt = Psbt::from_unsigned_tx(unsigned).expect("fixture psbt");
+    psbt.inputs[0].non_witness_utxo = Some(prev_a);
+    psbt.inputs[0]
+        .bip32_derivation
+        .insert(key_at(P2PKH_PATH).public_key().0, (fingerprint(), path(P2PKH_PATH)));
+    // The second input states its worth and proves nothing.
+    psbt.inputs[1].witness_utxo = Some(TxOut {
+        value: Amount::from_sat(PREVOUT_SAT),
+        script_pubkey: spk_b,
+    });
+    psbt.inputs[1]
+        .bip32_derivation
+        .insert(key_at(SECOND).public_key().0, (fingerprint(), path(SECOND)));
+    psbt
+}
+
+/// The origin names one of our keys and the legacy script commits to another. Both are
+/// ours, so nothing here is a forged fingerprint; it is a coordinator pointing at the wrong
+/// leaf, and `76a914{hash160(pubkey)}88ac` is the only thing that can tell.
+pub fn p2pkh_psbt_claiming_the_wrong_key() -> Psbt {
+    let mut psbt = p2pkh_psbt();
+    let other = key_at("m/44'/0'/0'/0/1").public_key();
+    psbt.inputs[0].bip32_derivation.clear();
+    psbt.inputs[0]
+        .bip32_derivation
+        .insert(other.0, (fingerprint(), path(P2PKH_PATH)));
+    psbt
+}
+
+/// [`p2pkh_psbt`] with the sighash type it would be signed under written out explicitly.
+///
+/// A coordinator may state `PSBT_IN_SIGHASH_TYPE` or leave it absent, and the two say the
+/// same thing about a legacy input: absent means SIGHASH_ALL. This file exists because this
+/// device does not yet agree that they say the same thing - see the test that reads it.
+pub fn p2pkh_psbt_declaring_sighash_all() -> Psbt {
+    let mut psbt = p2pkh_psbt();
+    psbt.inputs[0].sighash_type =
+        Some(bitcoin::psbt::PsbtSighashType::from(bitcoin::EcdsaSighashType::All));
+    psbt
+}
+
+/// A segwit input of OURS beside a legacy input belonging to somebody else, both amounts
+/// proven.
+///
+/// The shape every multi-party round arrives in, with the other party on a script family
+/// this device happens to sign. A foreign input's script kind has never been this device's
+/// business, because such an input is shown and never signed, and refusing the transaction
+/// over one would burn a round for everyone in it. Admitting P2PKH must not change that in
+/// either direction.
+pub fn ours_and_a_foreign_legacy_input_psbt() -> Psbt {
+    let ours = key_at(P2WPKH_PATH).public_key();
+    let spk_a = ScriptBuf::new_p2wpkh(&ours.wpubkey_hash());
+    // A legacy coin of an account this device does not derive, carrying no origin at all.
+    let spk_b = legacy_script("m/44'/0'/9'/0/0");
+    let prev_a = funding_of(&spk_a, 5, PREVOUT_SAT);
+    let prev_b = funding_of(&spk_b, 6, PREVOUT_SAT);
+    let unsigned = Transaction {
+        version: transaction::Version::TWO,
+        lock_time: absolute::LockTime::ZERO,
+        input: vec![
+            spending(prev_a.compute_txid()),
+            spending(prev_b.compute_txid()),
+        ],
+        output: vec![TxOut {
+            value: Amount::from_sat(2 * PREVOUT_SAT - FEE_SAT),
+            script_pubkey: external_script(),
+        }],
+    };
+    let mut psbt = Psbt::from_unsigned_tx(unsigned).expect("fixture psbt");
+    psbt.inputs[0].witness_utxo = Some(TxOut {
+        value: Amount::from_sat(PREVOUT_SAT),
+        script_pubkey: spk_a,
+    });
+    psbt.inputs[0].non_witness_utxo = Some(prev_a);
+    psbt.inputs[0]
+        .bip32_derivation
+        .insert(ours.0, (fingerprint(), path(P2WPKH_PATH)));
+    psbt.inputs[1].non_witness_utxo = Some(prev_b);
+    psbt
+}
+
+/// A genuine BIP-49 coin OF OURS whose `redeem_script` the coordinator left out.
+///
+/// Distinct from [`p2sh_psbt_claiming_our_key`], which supplies a redeem script of the wrong
+/// shape: this is the file defect a sender can actually fix, and it is the one that reaches
+/// the refusal from the direction a real coordinator produces. Without the field nothing can
+/// tell this apart from a P2SH of any other shape - guessing is what ARCH check 3 forbids -
+/// so it classifies as [`super::ScriptKind::P2sh`] and stays refused after legacy signing
+/// lands. It is the shape R-26 is written for.
+pub fn p2sh_psbt_with_no_redeem_script() -> Psbt {
+    let pk = key_at(P2SH_P2WPKH_PATH).public_key();
+    let redeem = ScriptBuf::new_p2wpkh(&pk.wpubkey_hash());
+    let spk = ScriptBuf::new_p2sh(&redeem.script_hash());
+    let mut psbt = segwit_v0_skeleton(&spk);
+    psbt.inputs[0]
+        .bip32_derivation
+        .insert(pk.0, (fingerprint(), path(P2SH_P2WPKH_PATH)));
     psbt
 }
 

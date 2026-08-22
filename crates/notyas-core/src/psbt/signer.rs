@@ -298,6 +298,31 @@ pub fn sign(
             .map_err(|error| SignFailure::Derivation { index, error })?;
 
         let spend = match facts.kind {
+            ScriptKind::P2pkh => {
+                // Derive-and-compare, over the one script family where the key hash sits in
+                // the scriptPubKey itself with no witness program in between. The
+                // COMPRESSED key is the only form this device has ever locked a BIP-44 leaf
+                // to (`address::for_key`), so an uncompressed P2PKH coin of the same secret
+                // is a different script that this device does not claim and will not spend.
+                let derived = ScriptBuf::new_p2pkh(&key.public_key().pubkey_hash());
+                if derived != facts.script_pubkey {
+                    return Err(SignFailure::OriginDoesNotDeriveScript { index });
+                }
+                // The legacy algorithm signs the SUBSCRIPT, and for a P2PKH coin the
+                // subscript is the scriptPubKey the line above just proved this key builds.
+                // There is no redeem script and no witness script to pick the wrong one of.
+                //
+                // SIGHASH_ALL is written here rather than read from the file, exactly as it
+                // is for every other kind: `inspect` has already refused any input that
+                // states another flag (WALLET-API gate 8), and hard-coding it means the
+                // digest cannot be steered by the coordinator even if that gate were ever
+                // widened. For legacy that matters more than for segwit - see
+                // `sign::SpendKind::P2pkh` on the SIGHASH_SINGLE index-overflow bug.
+                crate::sign::SpendKind::P2pkh {
+                    script_pubkey: &facts.script_pubkey,
+                    sighash_type: EcdsaSighashType::All,
+                }
+            }
             ScriptKind::P2wpkh => {
                 let derived = ScriptBuf::new_p2wpkh(&key.public_key().wpubkey_hash());
                 if derived != facts.script_pubkey {
@@ -567,17 +592,38 @@ fn verify_produced(psbt: &Psbt, produced: &[Produced]) -> Result<u16, SignFailur
                 //
                 // Which digest, and over which script, is decided from the PREVOUT alone -
                 // the gate's own independent read of the file - and never from the plan the
-                // signing loop followed. A P2WSH input hashes its witness script verbatim
-                // (BIP-143 does not expand it the way it expands a P2WPKH program), and the
-                // copy used here is the PSBT's, not the registration's rebuild: `inspect`
-                // proved the two are equal, so taking the file's copy here keeps the gate a
-                // second opinion instead of a second reading of the same value.
-                let hash = if prevout.script_pubkey.is_p2wsh() {
+                // signing loop followed. THREE PREVOUT SHAPES, THREE ALGORITHMS, and the
+                // shape of the coin picks one, so a signature made under one algorithm can
+                // never be checked under another: that is the whole of what this branch is.
+                //
+                // A P2WSH input hashes its witness script verbatim (BIP-143 does not expand
+                // it the way it expands a P2WPKH program), and the copy used here is the
+                // PSBT's, not the registration's rebuild: `inspect` proved the two are
+                // equal, so taking the file's copy here keeps the gate a second opinion
+                // instead of a second reading of the same value.
+                //
+                // A P2PKH input is PRE-BIP-143 and has no BIP-143 digest to fall back on.
+                // Before 0.2.2 it could not reach here at all - `inspect` refused it - and
+                // the segwit arm below would not even have produced a wrong digest: it
+                // would have refused, because `p2wpkh_signature_hash` answers
+                // `NotP2wpkhScript` for a `76a914..88ac` scriptPubKey. This gate would
+                // therefore have failed closed on every correct legacy signature the
+                // device made. It is taught the algorithm here rather than excused from the
+                // check: the script code it hashes is the prevout's own scriptPubKey,
+                // re-read from the file by `prevout_of`, and for a legacy input that is
+                // always the txid-checked `non_witness_utxo`, because `RELEASE-0.2.2.md`
+                // section 2 admits no other proof of what is being spent. The gate reaches
+                // its own conclusion about the script code, as it does for every other kind.
+                //
+                // The two segwit arms compute the byte-identical digests they always did;
+                // unifying on `[u8; 32]` is only what lets three hash types meet one
+                // `verify_ecdsa`.
+                let digest: [u8; 32] = if prevout.script_pubkey.is_p2wsh() {
                     let witness_script = input
                         .witness_script
                         .as_deref()
                         .ok_or(SignFailure::SignatureVerificationFailed { index })?;
-                    cache
+                    *cache
                         .p2wsh_signature_hash(
                             i,
                             witness_script,
@@ -590,6 +636,26 @@ fn verify_produced(psbt: &Psbt, produced: &[Produced]) -> Result<u16, SignFailur
                                 error,
                             )),
                         })?
+                        .as_ref()
+                } else if prevout.script_pubkey.is_p2pkh() {
+                    // `to_u32` because the legacy algorithm hashes four bytes of flag while
+                    // only the low one is appended to the signature. The flag comes off the
+                    // signature, which is sound here for the reason stated above - it is the
+                    // byte this device wrote, under a key only this device holds - and is
+                    // not a licence to sign under it: what may be signed at all is
+                    // `checks::whitelisted_sighashes`'s answer, and for legacy that is
+                    // SIGHASH_ALL and nothing else.
+                    *cache
+                        .legacy_signature_hash(
+                            i,
+                            prevout.script_pubkey.as_script(),
+                            signature.sighash_type.to_u32(),
+                        )
+                        .map_err(|error| SignFailure::Digest {
+                            index,
+                            error: SignError::Legacy(error),
+                        })?
+                        .as_ref()
                 } else {
                     let script_code: &Script = if prevout.script_pubkey.is_p2sh() {
                         input
@@ -599,7 +665,7 @@ fn verify_produced(psbt: &Psbt, produced: &[Produced]) -> Result<u16, SignFailur
                     } else {
                         prevout.script_pubkey.as_script()
                     };
-                    cache
+                    *cache
                         .p2wpkh_signature_hash(
                             i,
                             script_code,
@@ -610,10 +676,11 @@ fn verify_produced(psbt: &Psbt, produced: &[Produced]) -> Result<u16, SignFailur
                             index,
                             error: SignError::SegwitV0(error),
                         })?
+                        .as_ref()
                 };
                 secp()
                     .verify_ecdsa(
-                        &Message::from_digest(*hash.as_ref()),
+                        &Message::from_digest(digest),
                         &signature.signature,
                         &pubkey.inner,
                     )
@@ -707,6 +774,54 @@ mod tests {
         // SIGHASH_DEFAULT omits the flag byte; anything else would be 65.
         assert_eq!(signature.serialize().len(), 64);
         assert!(signed.psbt().inputs[0].partial_sigs.is_empty());
+    }
+
+    /// The spend behind the field report, end to end: a P2PKH coin on the BIP-44 account
+    /// this device derives, exports and hands out as its default receive address.
+    ///
+    /// The signature is checked here against a pre-BIP-143 digest recomputed from the file
+    /// by secp256k1 directly - not through `sign`, not through the post-sign gate, and not
+    /// through `prevout_of`. Both of those have their own tests; a claim that this device
+    /// produces a VALID legacy signature must not rest on the device agreeing with itself.
+    #[test]
+    fn a_legacy_input_is_signed_and_verifies() {
+        let psbt = fixture::p2pkh_psbt();
+        let signed = sign_fixture(&psbt);
+        assert_eq!(signed.report().signatures_added, 1);
+        assert_eq!(signed.report().signatures_verified, 1);
+        assert_eq!(signed.report().inputs_signed, alloc::vec![0]);
+
+        // BIP-174 carries a legacy signature in `partial_sigs` exactly as it carries a
+        // segwit one, and this device does not finalize: assembling the scriptSig from it
+        // is the coordinator's role, not a hardware signer's.
+        let input = &signed.psbt().inputs[0];
+        assert_eq!(input.partial_sigs.len(), 1);
+        assert!(input.final_script_sig.is_none());
+        assert!(input.final_script_witness.is_none());
+        assert!(input.tap_key_sig.is_none());
+
+        let out = signed.into_psbt();
+        let prevout = legacy_prevout(&out, 0);
+        assert!(
+            prevout.script_pubkey.is_p2pkh(),
+            "the script code a legacy signature commits to IS the scriptPubKey"
+        );
+        let (public, signature) = out.inputs[0].partial_sigs.iter().next().unwrap();
+        assert_eq!(signature.sighash_type, EcdsaSighashType::All);
+        assert!(signature.serialize().len() <= crate::sign::MAX_ECDSA_SIGNATURE_LEN);
+
+        let tx = out.unsigned_tx.clone();
+        let cache = SighashCache::new(&tx);
+        let digest = cache
+            .legacy_signature_hash(0, &prevout.script_pubkey, EcdsaSighashType::All.to_u32())
+            .expect("input 0 exists");
+        assert!(secp()
+            .verify_ecdsa(
+                &Message::from_digest(*digest.as_ref()),
+                &signature.signature,
+                &public.inner
+            )
+            .is_ok());
     }
 
     // -- Multisig (0.2.0-m7) ------------------------------------------------------------
@@ -976,6 +1091,187 @@ mod tests {
         let derived = fixture::key_at(fixture::P2TR_PATH).output_key(None);
         assert_eq!(from_script, derived.to_x_only_public_key());
         assert!(taproot_output_key(&ScriptBuf::new()).is_none());
+    }
+
+    // -- Legacy at the gate (0.2.2) -----------------------------------------------------
+
+    /// The prevout a legacy input spends, read out of the full previous transaction the
+    /// file is required to carry.
+    ///
+    /// Deliberately not [`prevout_of`]: everything below is the independent half, and
+    /// borrowing the gate's own reader would make these tests agree with it by
+    /// construction rather than by measurement.
+    fn legacy_prevout(psbt: &Psbt, i: usize) -> TxOut {
+        let prev = psbt.inputs[i]
+            .non_witness_utxo
+            .as_ref()
+            .expect("a legacy input proves its worth with the whole previous transaction");
+        let vout = psbt.unsigned_tx.input[i].previous_output.vout as usize;
+        prev.output[vout].clone()
+    }
+
+    /// A legacy signature must not verify against a BIP-143 digest of the same input.
+    ///
+    /// The two algorithms are handed the same transaction, the same script code and the
+    /// same flag here, so what separates the digests is the algorithm and nothing else -
+    /// which makes "the wrong arm was taken" a silent defect that produces a well formed
+    /// signature no validator will accept. This is the pin that stops a later edit from
+    /// folding the legacy branch back into the segwit one.
+    ///
+    /// `p2wsh_signature_hash` supplies the BIP-143 side because it is the entry point that
+    /// hashes an arbitrary script verbatim. The one the gate's `else` arm would have used,
+    /// `p2wpkh_signature_hash`, cannot even be asked the question: it answers
+    /// `NotP2wpkhScript` for a `76a914..88ac` script, which is exactly why a gate with no
+    /// legacy branch would have refused every correct legacy signature rather than
+    /// accepting a wrong one. Both facts are asserted, because the second is the reason
+    /// this task could not be skipped and the first is the reason it could not be faked.
+    #[test]
+    fn a_legacy_signature_does_not_verify_against_a_bip143_digest() {
+        let out = sign_fixture(&fixture::p2pkh_psbt()).into_psbt();
+        let prevout = legacy_prevout(&out, 0);
+        let (public, signature) = out.inputs[0].partial_sigs.iter().next().unwrap();
+
+        let tx = out.unsigned_tx.clone();
+        let mut cache = SighashCache::new(&tx);
+        let legacy = cache
+            .legacy_signature_hash(0, &prevout.script_pubkey, EcdsaSighashType::All.to_u32())
+            .unwrap();
+        let bip143 = cache
+            .p2wsh_signature_hash(
+                0,
+                &prevout.script_pubkey,
+                prevout.value,
+                EcdsaSighashType::All,
+            )
+            .unwrap();
+        let legacy_bytes: [u8; 32] = *legacy.as_ref();
+        let bip143_bytes: [u8; 32] = *bip143.as_ref();
+        assert_ne!(legacy_bytes, bip143_bytes);
+
+        assert!(secp()
+            .verify_ecdsa(
+                &Message::from_digest(legacy_bytes),
+                &signature.signature,
+                &public.inner
+            )
+            .is_ok());
+        assert!(secp()
+            .verify_ecdsa(
+                &Message::from_digest(bip143_bytes),
+                &signature.signature,
+                &public.inner
+            )
+            .is_err());
+        assert!(cache
+            .p2wpkh_signature_hash(
+                0,
+                &prevout.script_pubkey,
+                prevout.value,
+                EcdsaSighashType::All
+            )
+            .is_err());
+    }
+
+    /// The standing proof that the gate's legacy branch is wired, in the same form the
+    /// segwit and taproot ones have: break the signature, and the gate that would let the
+    /// file leave the device says no.
+    #[test]
+    fn the_post_sign_gate_catches_a_corrupted_legacy_signature() {
+        let psbt = fixture::p2pkh_psbt();
+        let inspection = inspect(&psbt, &fixture::context()).unwrap();
+        let mut signed = sign(&psbt, &inspection, &fixture::SEED)
+            .unwrap()
+            .into_psbt();
+        assert_eq!(verify_signatures(&signed, &inspection).unwrap(), 1);
+
+        let (pubkey, signature) = signed.inputs[0].partial_sigs.iter().next().unwrap();
+        let (pubkey, mut signature) = (*pubkey, *signature);
+        let mut der = signature.signature.serialize_der().to_vec();
+        // Flip the low bit of s. Still a well formed DER signature, still low-s, and no
+        // longer a signature over this digest.
+        let last = der.len() - 1;
+        der[last] ^= 0x01;
+        let mutated = bitcoin::secp256k1::ecdsa::Signature::from_der(&der)
+            .expect("the mutated DER should still parse");
+        signature.signature = mutated;
+        signed.inputs[0].partial_sigs.insert(pubkey, signature);
+        let err = verify_signatures(&signed, &inspection).unwrap_err();
+        assert!(matches!(
+            err,
+            SignFailure::SignatureVerificationFailed { index: 0 }
+        ));
+        assert_eq!(err.check(), Check::PostSign);
+    }
+
+    /// The legacy arm on the route the device actually takes: ownership established by
+    /// DERIVING the leaf against an account xpub, not by recognising a fingerprint.
+    ///
+    /// `firmware/src/signing.rs` puts the device's own accounts in scope
+    /// (`derive::device_accounts`) and `inspect_with_accounts` is what a real spend runs,
+    /// because the file behind the field report carries BlueWallet's zero fingerprint and no
+    /// fingerprint match is available to route it. The two entry points must reach the same
+    /// `Claim::Ours` for a BIP-44 leaf and therefore the same signature, or the suite would
+    /// be pinning a path the device never walks.
+    #[test]
+    fn a_legacy_input_signs_the_same_when_ownership_is_proven_by_derivation() {
+        let psbt = fixture::p2pkh_psbt();
+        let by_origin = inspect(&psbt, &fixture::context()).unwrap();
+        let by_account = crate::psbt::inspect_with_accounts(
+            &psbt,
+            &fixture::context(),
+            &fixture::device_accounts(),
+        )
+        .unwrap();
+        assert_eq!(by_account.signable_input_indexes(), alloc::vec![0]);
+
+        let signed = sign(&psbt, &by_account, &fixture::SEED).unwrap();
+        assert_eq!(signed.report().signatures_verified, 1);
+        assert_eq!(
+            crate::psbt::encode(signed.psbt()),
+            crate::psbt::encode(sign(&psbt, &by_origin, &fixture::SEED).unwrap().psbt()),
+            "the same coin, the same key, the same digest, whichever way it was proven ours"
+        );
+        // And the gate re-runs standalone over the account-derived inspection, which is the
+        // form notyas-wallet holds.
+        assert_eq!(verify_signatures(signed.psbt(), &by_account).unwrap(), 1);
+    }
+
+    /// The gate's legacy digest really does depend on the script code it reads out of the
+    /// prevout, rather than on anything the signing plan handed it.
+    ///
+    /// Driven through [`verify_produced`] rather than [`verify_signatures`] for the reason
+    /// its multisig sibling gives: the public entry point binds an inspection to the file
+    /// and would refuse a mutated PSBT before reaching a digest, which is correct and is a
+    /// different property. What is measured here is the arithmetic - swap the scriptPubKey
+    /// for another VALID P2PKH script of this same wallet, at a leaf one index along, and
+    /// the signature must stop verifying. A gate that hashed a constant, or that reached
+    /// back into the signing plan for the script, would pass this file.
+    #[test]
+    fn the_gate_hashes_the_legacy_script_code_it_reads_from_the_prevout() {
+        let psbt = fixture::p2pkh_psbt();
+        let inspection = inspect(&psbt, &fixture::context()).unwrap();
+        let signed = sign(&psbt, &inspection, &fixture::SEED)
+            .unwrap()
+            .into_psbt();
+        let pubkey = *signed.inputs[0].partial_sigs.keys().next().unwrap();
+        let produced = alloc::vec![Produced::Ecdsa { index: 0, pubkey }];
+        assert_eq!(verify_produced(&signed, &produced).unwrap(), 1);
+
+        let mut tampered = signed;
+        let vout = tampered.unsigned_tx.input[0].previous_output.vout as usize;
+        let other = ScriptBuf::new_p2pkh(
+            &fixture::key_at("m/44'/0'/0'/0/1").public_key().pubkey_hash(),
+        );
+        tampered.inputs[0]
+            .non_witness_utxo
+            .as_mut()
+            .expect("the fixture carries the previous transaction")
+            .output[vout]
+            .script_pubkey = other;
+        assert!(matches!(
+            verify_produced(&tampered, &produced),
+            Err(SignFailure::SignatureVerificationFailed { index: 0 })
+        ));
     }
 
     // -- the inspection-to-PSBT binding on the gate itself ---------------------------

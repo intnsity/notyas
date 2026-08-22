@@ -523,9 +523,10 @@ pub enum CheckFailure {
     MultisigWitnessScriptMismatch { index: u16 },
 
     // -- Check 7: sighash whitelist ------------------------------------------------------
-    /// Anything but SIGHASH_ALL on a segwit-v0 input or SIGHASH_DEFAULT on a taproot one.
-    /// No override exists, in 0.2.0 or later (Q24): SINGLE, NONE and ANYONECANPAY are how
-    /// outputs get swapped after a signature is taken.
+    /// Anything but SIGHASH_ALL on a legacy or segwit-v0 input, or SIGHASH_DEFAULT on a
+    /// taproot one. No override exists, in 0.2.0 or later (Q24): SINGLE, NONE and
+    /// ANYONECANPAY are how outputs get swapped after a signature is taken, and on a legacy
+    /// input SINGLE is also the index-overflow bug `whitelisted_sighashes` documents.
     SighashTypeNotWhitelisted { index: u16, found: u32 },
 
     // -- Check 8: taproot ----------------------------------------------------------------
@@ -841,12 +842,42 @@ pub enum ScriptKind {
 }
 
 impl ScriptKind {
-    /// Whether [`super::sign`] can produce a signature for an input of this kind. The
-    /// three that answer yes are exactly BIP84, BIP49 and BIP86 key-path.
+    /// Whether [`super::sign`] can produce a signature for an input of this kind. The four
+    /// that answer yes are exactly BIP44, BIP49, BIP84 and BIP86 key-path: one key, one
+    /// signature, and a scriptPubKey this device rebuilds from that key alone.
+    ///
+    /// P2PKH is in the set because the ratified record always put it there - ARCHITECTURE
+    /// check 2 requires a full previous transaction "for every segwit-v0/legacy input",
+    /// WALLET-API gate 8 admits SIGHASH_ALL "(legacy/segwit-v0)" for "every input we would
+    /// sign", and CORPUS group P3 is a legacy PSBT this device is required to sign. The
+    /// contrary position was never ratified anywhere; it existed in comments on this
+    /// function and on `binds_the_whole_transaction`, and it cost the owner of a coin on
+    /// this device's OWN default receive scheme the ability to spend it. See
+    /// `docs/RELEASE-0.2.2.md` sections 0 and 1.
+    ///
+    /// WIDENED HERE RATHER THAN JOINED BY A SECOND PREDICATE, and the reader list is the
+    /// reason. This has exactly one caller in the tree: the admission gate in
+    /// [`inspect_with_accounts`], `kind != P2wsh && !kind.is_single_sig()`, which means "a
+    /// script the signer has an arm for" - the sentence at the top of this comment and
+    /// nothing narrower. (Two comments in `tools/psbtgen` also name it. They are prose
+    /// about what that gate refuses, not readers of the predicate.)
+    ///
+    /// No caller means "segwit single-sig" specifically, and the two functions for which
+    /// that distinction IS the whole point - [`whitelisted_sighashes`] and
+    /// [`binds_the_whole_transaction`] - match [`ScriptKind`] exhaustively by hand and
+    /// never call this. That is why widening it cannot reach the amount rule: there is no
+    /// edge from this predicate to either of them, and the compiler holds the other end by
+    /// making a new variant a build error at both. A second predicate would put one
+    /// question in two places for a single caller to read one of them.
+    ///
+    /// INVARIANT: this answers for [`super::sign`] and must not run ahead of it. A kind
+    /// admitted here without an arm in `sign::SpendKind` does not become signable; it
+    /// moves its refusal to AFTER the user has held to sign, which is the same decision
+    /// with strictly worse copy.
     pub fn is_single_sig(self) -> bool {
         matches!(
             self,
-            ScriptKind::P2wpkh | ScriptKind::P2shP2wpkh | ScriptKind::P2tr
+            ScriptKind::P2pkh | ScriptKind::P2wpkh | ScriptKind::P2shP2wpkh | ScriptKind::P2tr
         )
     }
 }
@@ -1822,9 +1853,11 @@ fn commits_to_every_amount(kind: ScriptKind, admitted: &[u32]) -> bool {
 /// Whether a signature of ours over an input of `kind`, under `admitted` and nothing else,
 /// commits BOTH to that input's own amount AND to every output.
 ///
-/// SIGHASH_ALL and BIP-341's SIGHASH_DEFAULT are the only two flags that do. Legacy hands
-/// back an empty list, which is the right answer twice over: this device does not sign
-/// legacy at all, and a legacy digest carries no amount to bind.
+/// SIGHASH_ALL and BIP-341's SIGHASH_DEFAULT are the only two flags that do, and legacy is
+/// false under either of them: a legacy digest carries no amount to bind, so no flag
+/// [`whitelisted_sighashes`] could ever admit makes a legacy signature a statement about
+/// what a coin was worth. The kind settles that below, before the list is read at all,
+/// which is why giving P2PKH its own SIGHASH_ALL arm could not reach this answer.
 ///
 /// INVARIANT: this reads the SAME list [`sighash_whitelisted`] enforces. Widening that list
 /// to any ANYONECANPAY, NONE or SINGLE flag must turn this false and close the single-input
@@ -1845,9 +1878,11 @@ fn binds_the_whole_transaction(kind: ScriptKind, admitted: &[u32]) -> bool {
         // prevout's - both bind their own, which is all the single-input escape needs.
         ScriptKind::P2wpkh | ScriptKind::P2shP2wpkh | ScriptKind::P2wsh | ScriptKind::P2tr => true,
         // A legacy digest carries no amount at all, so nothing a signature over one says
-        // is a statement about what the coin was worth. This device does not sign legacy
-        // either, and `whitelisted_sighashes` hands both an empty list, so they are refused
-        // three ways over - this arm is the third and the only one that is about the digest.
+        // is a statement about what the coin was worth. That is about the DIGEST and not
+        // about what this device signs: the answer here is false for P2PKH under every
+        // list `whitelisted_sighashes` could hand it, and it stayed false when P2PKH got
+        // the SIGHASH_ALL arm that lets the device sign one. P2SH is also not a script this
+        // device signs, which is a second reason for that variant and never this arm's.
         ScriptKind::P2pkh | ScriptKind::P2sh => false,
         // Not scripts this device holds a key under, and not scripts it signs.
         ScriptKind::OpReturn | ScriptKind::Other => false,
@@ -1862,19 +1897,35 @@ fn binds_the_whole_transaction(kind: ScriptKind, admitted: &[u32]) -> bool {
 /// [`commits_to_every_amount`], because a device that admitted one flag while reasoning
 /// about another would keep saying an amount was bound by a signature that no longer bound
 /// it.
+///
+/// WHY THE LEGACY ARM HOLDS EXACTLY ONE FLAG. The legacy sighash algorithm carries an
+/// index-overflow bug that consensus now depends on, so it cannot be fixed below this
+/// list: signing input `i` under SIGHASH_SINGLE when the transaction has no output `i`
+/// does not fail, it returns the fixed constant `uint256(1)`. That "digest" commits to no
+/// transaction at all, so two different files hash to it alike and a signature over one
+/// spends the coin of the other, for anyone who has seen it. rust-bitcoin reproduces the
+/// constant faithfully because consensus does, and nothing downstream would notice - this
+/// whitelist is what keeps the case unreachable, by never admitting the flag that reaches
+/// it. [`crate::sign`]'s `the_sighash_single_bug_is_what_the_legacy_whitelist_keeps_out`
+/// executes the collision rather than arguing it, and it is the sentence a reader widening
+/// this arm has to meet first. (`psbt::signer` writes SIGHASH_ALL rather than echoing
+/// the file, which is a second lock on the same door and not a reason to unlock this
+/// one.)
 fn whitelisted_sighashes(kind: ScriptKind) -> &'static [u32] {
     match kind {
         // SIGHASH_ALL. P2WSH is here rather than in its own arm because BIP-143 gives
         // segwit v0 one flag encoding whatever the script code is; the multisig case
         // differs in what is hashed, never in what is whitelisted.
         ScriptKind::P2wpkh | ScriptKind::P2shP2wpkh | ScriptKind::P2wsh => &[0x01],
+        // SIGHASH_ALL, and nothing else - WALLET-API gate 8 admits it for legacy and segwit
+        // v0 alike. The narrowness is the point and the doc above is the reason for it: one
+        // element long is what keeps the SIGHASH_SINGLE index-overflow bug out of reach.
+        ScriptKind::P2pkh => &[0x01],
         // SIGHASH_DEFAULT. BIP-341 gives it the shorter signature, and accepting 0x01 as
         // well would let a coordinator pick the encoding of our witness.
         ScriptKind::P2tr => &[0x00],
-        ScriptKind::P2pkh
-        | ScriptKind::P2sh
-        | ScriptKind::OpReturn
-        | ScriptKind::Other => &[],
+        // Not scripts this device signs, so there is no flag to admit for any of them.
+        ScriptKind::P2sh | ScriptKind::OpReturn | ScriptKind::Other => &[],
     }
 }
 
@@ -2300,6 +2351,23 @@ fn key_matches_script(
     index: u16,
 ) -> Result<(), CheckFailure> {
     match (key, kind) {
+        (ClaimedKey::Ecdsa(pk), ScriptKind::P2pkh) => {
+            // 76a914{hash160(pubkey)}88ac: the one script here that hashes the key with no
+            // witness program in between. It is load-bearing rather than a tautology on the
+            // path where an origin NAMES this device and no account is in scope to derive
+            // the leaf - there the claim stands unproven until `super::sign` re-derives it,
+            // and this comparison is the whole of what check 1 gets to say about the key.
+            //
+            // `bip32_derivation` carries a point, not an encoding, so the form is this
+            // function's to choose and there is only one right answer: `address::for_key`
+            // locks a BIP-44 leaf to the COMPRESSED key and nothing on this device ever
+            // locked one to the uncompressed form. An uncompressed P2PKH coin of the same
+            // secret is a different script, which this device neither derives nor spends.
+            let want = ScriptBuf::new_p2pkh(&CompressedPublicKey(pk).pubkey_hash());
+            if want != *script_pubkey {
+                return Err(CheckFailure::ClaimedKeyNotInScript { index });
+            }
+        }
         (ClaimedKey::Ecdsa(pk), ScriptKind::P2wpkh) => {
             let want = ScriptBuf::new_p2wpkh(&CompressedPublicKey(pk).wpubkey_hash());
             if want != *script_pubkey {
@@ -3127,6 +3195,49 @@ mod tests {
 
     // -- the happy paths -----------------------------------------------------------------
 
+    /// The legacy spend this device offers, exports and receives on by default, admitted.
+    ///
+    /// Read twice on purpose, because the two readings prove different halves. With no
+    /// account in scope the claim rests on the origin alone and [`key_matches_script`] is
+    /// the whole of what check 1 gets to say about the key. With the device's own accounts
+    /// in scope the leaf is DERIVED and its script rebuilt, which is the authoritative test
+    /// and the one that says `Account::leaf` locks a BIP-44 leaf to the legacy form,
+    /// `76a914{hash160(pubkey)}88ac`, rather than to some other scheme's script at the same
+    /// leaf. Ownership by derivation is what 0.2.1 made the rule; 0.2.2 changes which script
+    /// kinds may reach the signer once it has answered, and nothing about the answer.
+    #[test]
+    fn a_legacy_spend_of_ours_inspects_clean() {
+        let psbt = fixture::p2pkh_psbt();
+        for (label, inspection) in [
+            (
+                "no account in scope",
+                inspect(&psbt, &fixture::context()).unwrap(),
+            ),
+            (
+                "the device's accounts",
+                inspect_with_accounts(&psbt, &fixture::context(), &fixture::device_accounts())
+                    .unwrap(),
+            ),
+        ] {
+            assert_eq!(inspection.inputs.len(), 1, "{label}");
+            assert_eq!(inspection.inputs[0].kind, ScriptKind::P2pkh, "{label}");
+            assert!(
+                matches!(inspection.inputs[0].claim, Claim::Ours { .. }),
+                "{label}"
+            );
+            // Never `BoundByOurSignature`: a legacy signature binds no amount, so the only
+            // proof this input can ever carry is the previous transaction it arrived with.
+            assert_eq!(
+                inspection.inputs[0].amount_proof,
+                AmountProof::ProvenByPrevTx,
+                "{label}"
+            );
+            assert_eq!(inspection.signable_inputs(), 1, "{label}");
+            assert!(inspection.fee_is_enforced(), "{label}");
+            assert_eq!(inspection.fee, Amount::from_sat(fixture::FEE_SAT), "{label}");
+        }
+    }
+
     #[test]
     fn a_p2wpkh_spend_of_ours_inspects_clean() {
         let psbt = fixture::p2wpkh_psbt();
@@ -3155,6 +3266,27 @@ mod tests {
         let inspection = inspect(&psbt, &fixture::context()).unwrap();
         assert_eq!(inspection.inputs[0].kind, ScriptKind::P2tr);
         assert!(matches!(inspection.inputs[0].claim, Claim::Ours { .. }));
+    }
+
+    /// Somebody else's legacy coin in a round of ours: shown, not signed, and not a
+    /// refusal.
+    ///
+    /// A foreign input's script kind has never been this device's business - it is rendered
+    /// and never signed - and burning a multi-party round over one would be the same defect
+    /// the finalized-input rule was narrowed for in 0.2.1. Admitting P2PKH must not change
+    /// that in either direction: the input is still Foreign, still outside the batch, and
+    /// its amount is still proven by its own previous transaction like any other.
+    #[test]
+    fn a_foreign_legacy_input_beside_one_of_ours_is_shown_not_refused() {
+        let psbt = fixture::ours_and_a_foreign_legacy_input_psbt();
+        let inspection =
+            inspect_with_accounts(&psbt, &fixture::context(), &fixture::device_accounts()).unwrap();
+        assert_eq!(inspection.inputs[0].kind, ScriptKind::P2wpkh);
+        assert!(matches!(inspection.inputs[0].claim, Claim::Ours { .. }));
+        assert_eq!(inspection.inputs[1].kind, ScriptKind::P2pkh);
+        assert_eq!(inspection.inputs[1].claim, Claim::Foreign);
+        assert_eq!(inspection.signable_inputs(), 1);
+        assert!(inspection.fee_is_enforced());
     }
 
     /// An input nobody claims is shown, not signed, and not an error.
@@ -3387,6 +3519,32 @@ mod tests {
         assert_eq!(err.check(), Check::InputOwnership);
     }
 
+    /// The same statement over a legacy script, where the hash is the scriptPubKey's own
+    /// rather than a witness program's.
+    ///
+    /// Both readings refuse and both name the input, by different machinery, which is the
+    /// point of running it twice: with an account in scope `leaf_verdict` finds our leaf at
+    /// the path and a key that is not the one it derives ([`Ownership::Forged`]); with none
+    /// in scope the claim is unproven and [`key_matches_script`]'s P2PKH arm rebuilds
+    /// `76a914{hash160(pubkey)}88ac` and finds it is not the script the coin is locked to.
+    /// A device that admitted a legacy input on the origin's word would be signing over a
+    /// scriptCode chosen by whoever wrote the file.
+    #[test]
+    fn check_1_refuses_a_key_that_cannot_spend_a_legacy_input() {
+        let psbt = fixture::p2pkh_psbt_claiming_the_wrong_key();
+        for (label, result) in [
+            ("no account in scope", inspect(&psbt, &fixture::context())),
+            (
+                "the device's accounts",
+                inspect_with_accounts(&psbt, &fixture::context(), &fixture::device_accounts()),
+            ),
+        ] {
+            let err = result.unwrap_err();
+            assert_eq!(err, CheckFailure::ClaimedKeyNotInScript { index: 0 }, "{label}");
+            assert_eq!(err.check(), Check::InputOwnership, "{label}");
+        }
+    }
+
     #[test]
     fn check_1_refuses_two_of_our_keys_on_one_input() {
         let psbt = fixture::psbt_with_two_of_our_claims();
@@ -3440,6 +3598,31 @@ mod tests {
         let err = inspect(
             &fixture::p2sh_psbt_claiming_our_key(),
             &fixture::context_with(&registry),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            CheckFailure::ClaimedInputNotSingleSig {
+                index: 0,
+                kind: ScriptKind::P2sh
+            }
+        );
+        assert_eq!(err.check(), Check::MultisigBinding);
+    }
+
+    /// The wrapped-segwit coin OF OURS whose redeem script the coordinator left out, which
+    /// is the other file that reaches this refusal and the one a sender can fix.
+    ///
+    /// It survives 0.2.2 unchanged, and that is the boundary of what admitting P2PKH did.
+    /// Legacy was refused for a reason that had stopped being true; this is refused for one
+    /// that is still true - without the field there is nothing to tell a BIP-49 program from
+    /// a P2SH of any other shape, and guessing is what ARCH check 3 forbids in the
+    /// neighbouring case. It is what R-26's second sentence is written for.
+    #[test]
+    fn check_4_still_refuses_a_wrapped_segwit_coin_with_no_redeem_script() {
+        let err = inspect(
+            &fixture::p2sh_psbt_with_no_redeem_script(),
+            &fixture::context(),
         )
         .unwrap_err();
         assert_eq!(
@@ -4435,6 +4618,125 @@ mod tests {
         assert!(said.contains("signing input 0"), "{said}");
     }
 
+    // -- legacy enters under the strictest amount regime this device has -----------------
+    //
+    // 0.2.2 admits P2PKH into `ScriptKind::is_single_sig` and moves NOTHING about amounts.
+    // The three tests below are where that is measured rather than asserted, one at each
+    // end of check 2's per-input carve-out and one on the whitelist the escape reads.
+    // `docs/RELEASE-0.2.2.md` section 2 is the ratified rule they pin.
+
+    /// THE PIN THAT KEEPS THE SINGLE-INPUT EXEMPTION OFF LEGACY.
+    ///
+    /// 0.2.1 let a transaction with exactly ONE input rest an amount on `witness_utxo`
+    /// alone, and the reason that is safe is BIP-143: a segwit-v0 signature binds its own
+    /// input's amount, so a one-input file has nothing left to lie about and a second round
+    /// has nothing to harvest. A legacy digest binds no amount at all - it hashes the
+    /// scriptCode and the outputs and never the value - so legacy is STRICTLY WEAKER than
+    /// the case that exemption was reasoned about, and a reader who extends it to legacy by
+    /// analogy reopens the 2020 fee attack on the commonest input shape there is.
+    ///
+    /// The file passes the per-input carve-out honestly: the transaction really does have
+    /// one input. It is refused by check 2's whole-file half, because
+    /// `our_signatures_bind_every_amount` falls through to the single-input escape and
+    /// `binds_the_whole_transaction(P2pkh, ..)` is false. The direct assertion on that
+    /// predicate is `the_sighash_whitelist_gates_the_single_input_escape`, which predates
+    /// this release and was not edited by it.
+    #[test]
+    fn a_single_input_legacy_file_may_not_rest_on_a_claimed_amount() {
+        let psbt = fixture::p2pkh_psbt_without_its_prev_tx();
+        assert_eq!(
+            psbt.unsigned_tx.input.len(),
+            1,
+            "the exemption's own precondition, or this test pins nothing"
+        );
+        for (label, result) in [
+            ("no account in scope", inspect(&psbt, &fixture::context())),
+            (
+                "the device's accounts",
+                inspect_with_accounts(&psbt, &fixture::context(), &fixture::device_accounts()),
+            ),
+        ] {
+            let err = result.unwrap_err();
+            assert_eq!(
+                err,
+                CheckFailure::UnprovenAmountBesideOurSignature {
+                    signing: 0,
+                    unproven: 0,
+                },
+                "{label}"
+            );
+            assert_eq!(err.check(), Check::Prevouts, "{label}");
+        }
+    }
+
+    /// The other end of the same rule. With two inputs the carve-out refuses the file
+    /// itself, before anything is reasoned about which signatures bind what.
+    #[test]
+    fn a_multi_input_legacy_file_is_refused_at_the_carve_out() {
+        let psbt = fixture::two_p2pkh_inputs_one_amount_claimed_psbt();
+        let err = inspect(&psbt, &fixture::context()).unwrap_err();
+        assert_eq!(err, CheckFailure::MissingPreviousTransaction { index: 1 });
+        assert_eq!(err.check(), Check::Prevouts);
+    }
+
+    /// THE ONE FLAG A LEGACY INPUT MAY STATE, AND THE THREE IT MAY NOT.
+    ///
+    /// [`sighash_whitelisted`] reads an absent `PSBT_IN_SIGHASH_TYPE` as the default for the
+    /// script type and lets it through, which is why the file behind the field report is
+    /// admitted - bitcoinjs, and so BlueWallet, never writes the field. A coordinator that
+    /// DOES write it is saying exactly the same thing about a legacy input, and the device
+    /// now answers both the same way. It did not before: with P2PKH sharing the empty-slice
+    /// arm of [`whitelisted_sighashes`], check 7 refused a file that stated SIGHASH_ALL with
+    /// a message naming SIGHASH_ALL as what it accepts - refusing what it said it admitted,
+    /// on the commonest coin shape there is.
+    ///
+    /// The three refused flags are why the arm is one element long rather than absent: 0x02
+    /// and 0x03 leave the outputs free to be swapped after signing, 0x81 leaves a second
+    /// input free to be added, and 0x03 on a legacy input is the index-overflow bug
+    /// [`whitelisted_sighashes`] documents and `crate::sign` executes.
+    ///
+    /// Nothing about the amount rule turns on any of it, and the last two assertions are the
+    /// proof: both predicates the single-input escape rests on answer no for P2PKH under the
+    /// widened list, because both answer on the KIND before the list is consulted.
+    #[test]
+    fn a_legacy_input_may_state_sighash_all_and_may_state_nothing_else() {
+        // 1. Stated SIGHASH_ALL: admitted, by both routes to the claim - the origin alone,
+        //    and the derivation the device's own accounts allow.
+        let stated = fixture::p2pkh_psbt_declaring_sighash_all();
+        let by_origin = inspect(&stated, &fixture::context()).unwrap();
+        let by_derivation =
+            inspect_with_accounts(&stated, &fixture::context(), &fixture::device_accounts())
+                .unwrap();
+        assert_eq!(by_origin.inputs[0].kind, ScriptKind::P2pkh);
+        assert_eq!(by_origin.inputs, by_derivation.inputs);
+        // The same file with the field left out reaches the same facts, which is the
+        // asymmetry this test exists to keep closed. The `Inspection`s themselves differ -
+        // they carry a digest of the bytes, and the bytes differ by the field.
+        let absent = inspect(&fixture::p2pkh_psbt(), &fixture::context()).unwrap();
+        assert_eq!(by_origin.inputs, absent.inputs);
+        assert_eq!(by_origin.fee, absent.fee);
+
+        // 2, 3 and 4. Any other flag, refused at check 7 and named for the flag it stated.
+        for flag in [0x02u32, 0x03, 0x81] {
+            let mut psbt = fixture::p2pkh_psbt();
+            psbt.inputs[0].sighash_type = Some(bitcoin::psbt::PsbtSighashType::from_u32(flag));
+            let err = inspect(&psbt, &fixture::context()).unwrap_err();
+            assert_eq!(
+                err,
+                CheckFailure::SighashTypeNotWhitelisted {
+                    index: 0,
+                    found: flag
+                },
+                "{flag:#04x}"
+            );
+            assert_eq!(err.check(), Check::SighashWhitelist, "{flag:#04x}");
+        }
+
+        // And the widened list did not widen the amount rule.
+        assert!(!binds_the_whole_transaction(ScriptKind::P2pkh, &[0x01]));
+        assert!(!commits_to_every_amount(ScriptKind::P2pkh, &[0x01]));
+    }
+
     /// What that refusal is worth, measured on the files themselves so it cannot be read as
     /// a story about a check.
     ///
@@ -4504,6 +4806,14 @@ mod tests {
     /// ANYONECANPAY flag is admitted, so the admitted set is not something to leave to a
     /// comment: widening it has to fail HERE, loudly, rather than quietly withdraw the
     /// premise under an acceptance the device already grants.
+    ///
+    /// P2PKH's entry moved from the empty slice to `[0x01]` when the device gained a legacy
+    /// signer, and it moved BY EDITING THIS LINE, which is the whole point of the pin. That
+    /// edit is the one the ratified record called for (`docs/RELEASE-0.2.2.md` section 1,
+    /// WALLET-API gate 8: SIGHASH_ALL for legacy and segwit v0 and no other flag), and what
+    /// makes it safe is that neither predicate above reads this list before answering on the
+    /// script kind. A reader who wants a SECOND element in any arm here owes the same
+    /// deliberate act and the argument in [`whitelisted_sighashes`]'s doc.
     #[test]
     fn the_admitted_sighash_set_is_the_one_the_amount_rule_rests_on() {
         for (kind, admitted) in [
@@ -4511,7 +4821,7 @@ mod tests {
             (ScriptKind::P2shP2wpkh, &[0x01]),
             (ScriptKind::P2wsh, &[0x01]),
             (ScriptKind::P2tr, &[0x00]),
-            (ScriptKind::P2pkh, &[]),
+            (ScriptKind::P2pkh, &[0x01]),
             (ScriptKind::P2sh, &[]),
             (ScriptKind::OpReturn, &[]),
             (ScriptKind::Other, &[]),
@@ -4579,8 +4889,10 @@ mod tests {
                 "{widened:x?} must close the escape"
             );
         }
-        // Legacy is refused three ways over, and this is the third: no flag makes a legacy
-        // digest bind an amount, because a legacy digest carries none.
+        // No flag makes a legacy digest bind an amount, because a legacy digest carries
+        // none - which is why this answer did not move when P2PKH's whitelist arm did. The
+        // second assertion reads the real list rather than a literal, so it follows that
+        // arm wherever it goes.
         for kind in [
             ScriptKind::P2pkh,
             ScriptKind::P2sh,

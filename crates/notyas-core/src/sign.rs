@@ -28,10 +28,10 @@
 //!
 //! # Crypto provenance
 //!
-//! Nothing here is hand-rolled. The BIP-143 and BIP-341 digests come from rust-bitcoin's
-//! [`SighashCache`]; the signatures come from libsecp256k1 through the same `bitcoin`
-//! pin the rest of the crate uses. This module decides which of their entry points each
-//! input type calls, wipes the secrets afterwards, and nothing else.
+//! Nothing here is hand-rolled. The legacy, BIP-143 and BIP-341 digests all come from
+//! rust-bitcoin's [`SighashCache`]; the signatures come from libsecp256k1 through the same
+//! `bitcoin` pin the rest of the crate uses. This module decides which of their entry
+//! points each input type calls, wipes the secrets afterwards, and nothing else.
 //!
 //! Two of those entry points are chosen deliberately and are load-bearing claims:
 //!
@@ -73,11 +73,11 @@ use bitcoin::hashes::Hash;
 use bitcoin::key::{CompressedPublicKey, TapTweak, TweakedPublicKey, UntweakedKeypair};
 use bitcoin::secp256k1::{Message, SecretKey, XOnlyPublicKey};
 use bitcoin::sighash::{
-    EcdsaSighashType, P2wpkhError, Prevouts, SegwitV0Sighash, SighashCache, TapSighash,
-    TapSighashType, TaprootError,
+    EcdsaSighashType, LegacySighash, P2wpkhError, Prevouts, SegwitV0Sighash, SighashCache,
+    TapSighash, TapSighashType, TaprootError,
 };
 use bitcoin::taproot::TapNodeHash;
-use bitcoin::{Amount, Network, PrivateKey, Script, Transaction};
+use bitcoin::{transaction, Amount, Network, PrivateKey, Script, Transaction};
 
 use crate::derive::{master, secp, SecretXpriv};
 
@@ -103,6 +103,16 @@ pub enum SignError {
     /// past 255. Unreachable for the paths this device builds itself, but a path can
     /// arrive inside a PSBT, and untrusted input must not be able to panic the signer.
     Derivation(bitcoin::bip32::Error),
+    /// The pre-BIP-143 digest could not be taken. One failure mode and no other: the input
+    /// index is not in the transaction. The legacy algorithm reads no prevout and no
+    /// amount, so there is nothing else for it to disagree with, and the SIGHASH_SINGLE
+    /// index-overflow case is answered inside rust-bitcoin rather than returned here.
+    ///
+    /// Its own variant rather than a reuse of [`SignError::SegwitV0`]: the two digests
+    /// commit to different things - a legacy signature binds no amount at all - and a
+    /// failure that named BIP-143 would send a reader hunting for a segwit fault in a file
+    /// that has no segwit input.
+    Legacy(transaction::InputsIndexError),
     /// The BIP-143 digest could not be taken: the input index is not in the transaction,
     /// or - for the two key-hash spends - the script handed in is not a P2WPKH program.
     ///
@@ -121,6 +131,7 @@ impl fmt::Display for SignError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SignError::Derivation(e) => write!(f, "BIP32 derivation failed: {e}"),
+            SignError::Legacy(e) => write!(f, "legacy sighash failed: {e}"),
             SignError::SegwitV0(e) => write!(f, "BIP-143 sighash failed: {e}"),
             SignError::Taproot(e) => write!(f, "BIP-341 sighash failed: {e}"),
         }
@@ -247,6 +258,17 @@ impl SecretSigningKey {
     pub fn sign(&self, hash: &SignHash) -> Signature {
         let secp = secp();
         match *hash {
+            // Same scheme, same low-R grinding, same 71-byte bound: legacy and segwit v0
+            // differ in what was hashed and in nothing after it. Two arms rather than one
+            // because the digest TYPES differ, which is the property that keeps the two
+            // apart everywhere else in this module.
+            SignHash::Legacy {
+                hash,
+                sighash_type,
+            } => Signature::Ecdsa(bitcoin::ecdsa::Signature {
+                signature: secp.sign_ecdsa_low_r(&message(hash.to_byte_array()), &self.secret),
+                sighash_type,
+            }),
             SignHash::SegwitV0 {
                 hash,
                 sighash_type,
@@ -286,6 +308,22 @@ impl SecretSigningKey {
     pub fn verify(&self, hash: &SignHash, signature: &Signature) -> bool {
         let secp = secp();
         match (hash, signature) {
+            (
+                SignHash::Legacy {
+                    hash,
+                    sighash_type,
+                },
+                Signature::Ecdsa(sig),
+            ) => {
+                sig.sighash_type == *sighash_type
+                    && secp
+                        .verify_ecdsa(
+                            &message(hash.to_byte_array()),
+                            &sig.signature,
+                            &self.public_key().0,
+                        )
+                        .is_ok()
+            }
             (
                 SignHash::SegwitV0 {
                     hash,
@@ -356,11 +394,46 @@ fn message(digest: [u8; 32]) -> Message {
 
 /// The per-input facts a sighash needs beyond the transaction itself.
 ///
-/// One variant per input type 0.2.0 signs. A further input type is a further variant and a
-/// further arm of [`SpendKind::sign_hash`]; nothing else in the module changes, which is
-/// the property that let m7 add P2WSH multisig here without touching a digest.
+/// One variant per input type this device signs. A further input type is a further variant
+/// and a further arm of [`SpendKind::sign_hash`]; nothing else in the module changes, which
+/// is the property that let m7 add P2WSH multisig here without touching a digest, and 0.2.2
+/// add legacy without touching one either.
 #[derive(Debug)]
 pub enum SpendKind<'a> {
+    /// BIP44 legacy, the pre-BIP-143 algorithm.
+    ///
+    /// `script_pubkey` is the PREVOUT'S OWN scriptPubKey, `76a914{keyhash}88ac`, passed
+    /// verbatim. Legacy signing has no wrapper and no witness script: the algorithm
+    /// replaces the input's scriptSig with the subscript being spent, and for a P2PKH coin
+    /// the subscript IS the scriptPubKey. The two segwit key-hash variants below name their
+    /// field for the script that is deliberately NOT the scriptPubKey, because passing the
+    /// wrong one of those two is the classic mistake; this field is named for the same
+    /// reason from the other side, so that all three read as a statement rather than a
+    /// guess.
+    ///
+    /// NO AMOUNT, AND THERE IS NO FIELD TO PUT ONE IN. A pre-BIP-143 digest hashes the
+    /// subscript, the outpoints, the sequences and the outputs, and never a value - not
+    /// even this input's own. That absence is the whole reason `psbt::checks` requires a txid-checked
+    /// `non_witness_utxo` for every legacy input and never extends segwit v0's single-input
+    /// amount exemption to one (`docs/RELEASE-0.2.2.md` section 2). A `value` field here
+    /// would be a number the signed bytes could not contradict.
+    ///
+    /// SIGHASH_ALL ONLY, enforced one layer up. This module has no policy (see the module
+    /// doc) and will compute whatever flag it is handed; what keeps every other flag off
+    /// this variant is `checks::whitelisted_sighashes` and WALLET-API gate 8, which admit
+    /// `SIGHASH_ALL (legacy/segwit-v0)` and nothing else. That whitelist is load bearing
+    /// here in a way it is not for segwit, and the reason is the SIGHASH_SINGLE
+    /// index-overflow bug: signing input `i` under SIGHASH_SINGLE when the transaction has
+    /// no output `i` does not fail in the legacy algorithm, it returns the fixed constant
+    /// `uint256(1)` - a "digest" that commits to no transaction at all, so a signature over
+    /// it is replayable into any other transaction that reaches the same case, by anyone
+    /// who has seen it. rust-bitcoin returns that constant faithfully because consensus
+    /// does; nothing here would notice. Widen the whitelist and that is what would be
+    /// signed.
+    P2pkh {
+        script_pubkey: &'a Script,
+        sighash_type: EcdsaSighashType,
+    },
     /// BIP84 native segwit v0. `script_pubkey` is the input's own `0014{keyhash}`
     /// program; BIP-143 expands it into the P2PKH script code internally.
     P2wpkh {
@@ -414,6 +487,19 @@ impl SpendKind<'_> {
         input_index: usize,
     ) -> Result<SignHash, SignError> {
         match *self {
+            SpendKind::P2pkh {
+                script_pubkey,
+                sighash_type,
+            } => Ok(SignHash::Legacy {
+                // `to_u32` because the legacy algorithm hashes four bytes of flag while
+                // only the low one reaches the scriptSig, so rust-bitcoin takes the whole
+                // word rather than the enum. Passing the enum's own `u32` keeps the digest
+                // and the byte appended to the signature the same statement.
+                hash: cache
+                    .legacy_signature_hash(input_index, script_pubkey, sighash_type.to_u32())
+                    .map_err(SignError::Legacy)?,
+                sighash_type,
+            }),
             SpendKind::P2wpkh {
                 script_pubkey,
                 value,
@@ -468,6 +554,19 @@ impl SpendKind<'_> {
 /// signature can never be produced under a flag or a tweak the digest did not assume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignHash {
+    /// The pre-BIP-143 digest, for a P2PKH spend. Signed with ECDSA, by the same call and
+    /// the same grinding segwit v0 uses.
+    ///
+    /// A variant of its own rather than a second producer of [`SignHash::SegwitV0`],
+    /// although the scheme, the key and the flag are identical and only the 32 bytes
+    /// differ. That is precisely why: this enum is where "which bytes are being signed" is
+    /// decided, so keeping the two digests distinguishable at the type level is what stops
+    /// a legacy input from being signed against a BIP-143 digest - a signature no validator
+    /// would ever accept, produced by code that looked right.
+    Legacy {
+        hash: LegacySighash,
+        sighash_type: EcdsaSighashType,
+    },
     /// BIP-143, for P2WPKH and P2SH-P2WPKH. Signed with ECDSA.
     SegwitV0 {
         hash: SegwitV0Sighash,
@@ -486,6 +585,7 @@ impl SignHash {
     /// compare against.
     pub fn to_byte_array(self) -> [u8; 32] {
         match self {
+            SignHash::Legacy { hash, .. } => hash.to_byte_array(),
             SignHash::SegwitV0 { hash, .. } => hash.to_byte_array(),
             SignHash::Taproot { hash, .. } => hash.to_byte_array(),
         }
@@ -567,6 +667,229 @@ mod tests {
 
     fn native_script() -> bitcoin::ScriptBuf {
         bitcoin::ScriptBuf::from_hex("00141d0f172a0ecb48aee1be1f2687d2963ae33f71a1").unwrap()
+    }
+
+    // -- Legacy, the pre-BIP-143 algorithm (0.2.2) ------------------------------------
+    //
+    // NO VENDORED KNOWN-ANSWER FILE STANDS BEHIND THESE, and that is a gap rather than a
+    // choice. `docs/plan-0.2.0/CORPUS.md:77` requires Bitcoin Core's
+    // `src/test/data/sighash.json` (rust-bitcoin's `bitcoin/tests/data/legacy_sighash.json`
+    // is the same file) to be vendored and run as a host test; it is not in the tree, and
+    // the crates.io package of the `bitcoin` pin ships no `tests/` directory to borrow it
+    // from. Nothing here downloads it. What stands in its place until it is vendored is
+    // `the_legacy_digest_is_the_pre_segwit_algorithm_recomputed_by_hand`, which is a second
+    // implementation of the algorithm rather than a second reading of rust-bitcoin's, and
+    // is in one way the stronger pin: a vendored row would prove the LIBRARY computes a
+    // legacy sighash correctly, while this proves the digest THIS DEVICE signs is that
+    // algorithm applied to this device's own choice of script code and flag.
+
+    /// A real P2PKH scriptPubKey, `76a914{keyhash}88ac`, taken from the BIP-143 example
+    /// transaction's own outputs so that no value in these tests is invented.
+    fn legacy_script() -> bitcoin::ScriptBuf {
+        bitcoin::ScriptBuf::from_hex("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac").unwrap()
+    }
+
+    /// The pre-segwit signature hash, transcribed from the algorithm itself.
+    ///
+    /// Deliberately not a call to `legacy_signature_hash`: that is the function under test,
+    /// and a check that ran it twice would only prove it is deterministic. Written from the
+    /// rule instead - blank every scriptSig, put the subscript being spent in the one input
+    /// being signed, serialize the transaction in its legacy (no-witness) form, append the
+    /// four-byte flag, hash twice with SHA-256. Only SIGHASH_ALL is transcribed, because
+    /// only SIGHASH_ALL is admitted (`checks::whitelisted_sighashes`, WALLET-API gate 8);
+    /// the sequence and output rewrites the other flags need are absent on purpose, so that
+    /// this helper cannot quietly grow into a licence for them.
+    ///
+    /// Consensus SERIALIZATION is shared with rust-bitcoin and that is fine: the tx format
+    /// is not what is in doubt here, the sighash algorithm is, and the serializer is pinned
+    /// by every PSBT vector in the suite. The transaction below carries no witnesses, so
+    /// `serialize` emits the legacy form - if it ever did not, the digest would change and
+    /// this test would say so.
+    fn legacy_digest_by_hand(
+        tx: &Transaction,
+        input_index: usize,
+        subscript: &Script,
+        sighash_type: u32,
+    ) -> [u8; 32] {
+        use bitcoin::hashes::sha256d;
+        let mut modified = tx.clone();
+        for (n, txin) in modified.input.iter_mut().enumerate() {
+            txin.script_sig = if n == input_index {
+                bitcoin::ScriptBuf::from_bytes(subscript.to_bytes())
+            } else {
+                bitcoin::ScriptBuf::new()
+            };
+            txin.witness = bitcoin::Witness::default();
+        }
+        let mut preimage = bitcoin::consensus::serialize(&modified);
+        preimage.extend_from_slice(&sighash_type.to_le_bytes());
+        sha256d::Hash::hash(&preimage).to_byte_array()
+    }
+
+    /// The digest [`SpendKind::P2pkh`] produces is the pre-segwit algorithm over the script
+    /// code this device chose, and a signature over it holds.
+    ///
+    /// Run at both input indexes because the index is the one thing a legacy digest varies
+    /// on that a reader cannot see in the output: the subscript goes into exactly one
+    /// scriptSig slot, and an off-by-one there produces a perfectly well formed signature
+    /// over the wrong input.
+    #[test]
+    fn the_legacy_digest_is_the_pre_segwit_algorithm_recomputed_by_hand() {
+        let (tx, key, _) = bip143_native();
+        let script = legacy_script();
+        for index in [0usize, 1] {
+            let mut cache = SighashCache::new(&tx);
+            let hash = SpendKind::P2pkh {
+                script_pubkey: &script,
+                sighash_type: EcdsaSighashType::All,
+            }
+            .sign_hash(&mut cache, index)
+            .unwrap();
+            assert!(matches!(hash, SignHash::Legacy { .. }), "index {index}");
+            assert_eq!(
+                hash.to_byte_array(),
+                legacy_digest_by_hand(&tx, index, &script, 1),
+                "index {index}"
+            );
+            // Not merely reproducible: a digest a key can be held to.
+            let sig = key.sign(&hash);
+            assert!(key.verify(&hash, &sig), "index {index}");
+            assert!(
+                sig.serialize().len() <= MAX_ECDSA_SIGNATURE_LEN,
+                "index {index}"
+            );
+            assert_eq!(sig.serialize().last(), Some(&0x01), "index {index}");
+        }
+        // The two indexes really are different statements, or the loop above proves half of
+        // what it looks like it proves.
+        let mut cache = SighashCache::new(&tx);
+        let at = |cache: &mut SighashCache<&Transaction>, i| {
+            SpendKind::P2pkh {
+                script_pubkey: &script,
+                sighash_type: EcdsaSighashType::All,
+            }
+            .sign_hash(cache, i)
+            .unwrap()
+            .to_byte_array()
+        };
+        assert_ne!(at(&mut cache, 0), at(&mut cache, 1));
+    }
+
+    /// A legacy signature must not verify against a BIP-143 digest of the same input, and
+    /// the reverse.
+    ///
+    /// The two algorithms take the same transaction, the same script and the same flag and
+    /// answer differently, so nothing but the code path distinguishes them - which makes
+    /// "the wrong arm was taken" a silent bug producing a signature no validator accepts.
+    /// The segwit-v0 digest is taken through `p2wsh_signature_hash` because it is the one
+    /// BIP-143 entry point that hashes an arbitrary script verbatim; the comparison is then
+    /// between two ALGORITHMS over identical inputs and nothing else.
+    #[test]
+    fn a_legacy_digest_is_not_the_bip143_digest_of_the_same_input() {
+        let (tx, key, _) = bip143_native();
+        let script = legacy_script();
+        let mut cache = SighashCache::new(&tx);
+        let legacy = SpendKind::P2pkh {
+            script_pubkey: &script,
+            sighash_type: EcdsaSighashType::All,
+        }
+        .sign_hash(&mut cache, 1)
+        .unwrap();
+        let segwit = SpendKind::P2wsh {
+            witness_script: &script,
+            value: Amount::from_sat(600_000_000),
+            sighash_type: EcdsaSighashType::All,
+        }
+        .sign_hash(&mut cache, 1)
+        .unwrap();
+
+        assert_ne!(legacy.to_byte_array(), segwit.to_byte_array());
+        let legacy_sig = key.sign(&legacy);
+        assert!(key.verify(&legacy, &legacy_sig));
+        assert!(!key.verify(&segwit, &legacy_sig));
+        let segwit_sig = key.sign(&segwit);
+        assert!(key.verify(&segwit, &segwit_sig));
+        assert!(!key.verify(&legacy, &segwit_sig));
+    }
+
+    /// An out-of-range index is an error on the legacy path too, and it names the legacy
+    /// path. Same reason as the segwit case: the index arrives inside a PSBT.
+    #[test]
+    fn a_bad_input_index_is_a_legacy_error() {
+        let (tx, _, _) = bip143_native();
+        let script = legacy_script();
+        let mut cache = SighashCache::new(&tx);
+        let err = SpendKind::P2pkh {
+            script_pubkey: &script,
+            sighash_type: EcdsaSighashType::All,
+        }
+        .sign_hash(&mut cache, 7)
+        .unwrap_err();
+        assert!(matches!(err, SignError::Legacy(_)));
+        let said = err.to_string();
+        assert!(!said.is_empty() && said.is_ascii(), "{said}");
+    }
+
+    /// WHY LEGACY IS SIGHASH_ALL ONLY, made measurable instead of argued.
+    ///
+    /// Under SIGHASH_SINGLE, when the transaction has no output at the index of the input
+    /// being signed, the legacy algorithm does not fail - Bitcoin Core's original returns
+    /// the constant `uint256(1)` and every implementation since reproduces the bug because
+    /// consensus depends on it. The two assertions below are what that costs: two DIFFERENT
+    /// transactions produce the same "digest", so the signature over it commits to no
+    /// transaction at all and can be replayed into any other file that reaches the same
+    /// case, by anyone who has seen it.
+    ///
+    /// This device never reaches it. `checks::whitelisted_sighashes` admits SIGHASH_ALL for
+    /// a legacy input and nothing else (WALLET-API gate 8), `psbt::signer` writes that flag
+    /// rather than reading it from the file, and `psbt::checks`'s
+    /// `the_admitted_sighash_set_is_the_one_the_amount_rule_rests_on` pins the set so it
+    /// cannot be widened by accident. THIS TEST IS WHAT A READER WIDENING IT MUST MEET
+    /// FIRST: it is not an argument about what might go wrong, it is the wrong thing,
+    /// executed.
+    #[test]
+    fn the_sighash_single_bug_is_what_the_legacy_whitelist_keeps_out() {
+        let (tx, key, _) = bip143_native();
+        let script = legacy_script();
+        // Two inputs, one output: input 1 has no output 1, which is the whole condition.
+        let mut short = tx.clone();
+        short.output.truncate(1);
+        let mut other = short.clone();
+        other.output[0].value = Amount::from_sat(1);
+
+        let single = |t: &Transaction| {
+            let mut cache = SighashCache::new(t);
+            SpendKind::P2pkh {
+                script_pubkey: &script,
+                sighash_type: EcdsaSighashType::Single,
+            }
+            .sign_hash(&mut cache, 1)
+            .unwrap()
+        };
+
+        let mut one = [0u8; 32];
+        one[0] = 1;
+        assert_eq!(single(&short).to_byte_array(), one);
+        assert_eq!(single(&other).to_byte_array(), one);
+        // Same bytes signed, so the same signature: one file's signature spends the other's
+        // coin. That is the hazard, not a metaphor for it.
+        assert_eq!(
+            key.sign(&single(&short)).serialize(),
+            key.sign(&single(&other)).serialize()
+        );
+        // ... and under the flag this device actually uses, the two transactions are
+        // distinguished, which is the property SIGHASH_ALL is being relied on for.
+        let all = |t: &Transaction| {
+            let mut cache = SighashCache::new(t);
+            SpendKind::P2pkh {
+                script_pubkey: &script,
+                sighash_type: EcdsaSighashType::All,
+            }
+            .sign_hash(&mut cache, 1)
+            .unwrap()
+            .to_byte_array()
+        };
+        assert_ne!(all(&short), all(&other));
     }
 
     /// The digest is BIP-143's, and the signature over it is BIP-143's, byte for byte.
