@@ -10,6 +10,7 @@
 //! the device, and "QR buttons are dead on hardware" is precisely a failure of that round
 //! trip: request raised -> encoded by the core -> handed back -> modal on screen.
 
+use notyas_ui::layout::Rect;
 use notyas_ui::{QrData, RegionId, ScreenId, TouchEvent, Ui, UiRequest, VERSION};
 
 use uisim::catalog::{build, Frame, CATALOG};
@@ -135,8 +136,18 @@ fn the_verify_frames_are_five_distinct_states() {
 #[test]
 fn a_qr_tap_round_trips_through_the_core_encoder() {
     let mut ui = at("schemes/bip84");
-    let closed = pixels(&ui);
     assert!(!ui_has(&ui, RegionId::ModalClose), "no modal to start with");
+
+    // Reached by dragging, because the descriptor block and its explainer lead the tab and
+    // put the bare xpub's button below the fold. `scroll_to` is a no-op on a panel tall
+    // enough to show it already, so this is one code path on every geometry.
+    scroll_to(&mut ui, RegionId::QrXpub);
+    // Photographed AFTER the drag, not before it: this is the picture the last assertion
+    // demands the sheet come back to, and a modal closes onto the scroll position it was
+    // opened from rather than onto the top of the tab. Taken at scroll 0 it would assert
+    // that closing the modal also scrolls the screen back up, which is not what closing a
+    // modal does or should do.
+    let closed = pixels(&ui);
 
     let Some(UiRequest::Qr(target)) = tap(&mut ui, RegionId::QrXpub) else {
         panic!("the xpub QR button raised no request");
@@ -173,23 +184,36 @@ fn a_qr_tap_round_trips_through_the_core_encoder() {
 /// list, and the coverage gap is silent. Scrolling to the clamp and back finds every
 /// region that ever exists on screen - QR or not - so the caller can decide what counts
 /// as a QR button by what TAPPING it returns, not by its name.
+///
+/// "The clamp" is decided on (id, RECT) pairs and never on the id set alone. A drag moves
+/// the content, and on tall content two consecutive viewports can hold the same regions at
+/// different heights - five address rows and no new button between them is enough. Compared
+/// by id alone that reads as "the screen stopped moving", the walk returns after two drags,
+/// and the caller silently covers a fraction of the screen while still passing. Rects settle
+/// only when the scroll does, which is the property the walk is actually waiting for.
 fn every_region_id_on(name: &str) -> Vec<RegionId> {
+    /// Every region the screen is offering right now, with where it is - the state whose
+    /// stability means "this screen has stopped scrolling".
+    fn snapshot(ui: &Ui) -> Vec<(RegionId, Rect)> {
+        ui.regions().iter().map(|r| (r.id, r.rect)).collect()
+    }
+
     let mut ui = at(name);
     let mut ids: Vec<RegionId> = ui.regions().iter().map(|r| r.id).collect();
-    let mut prev = ids.clone();
+    let mut prev = snapshot(&ui);
     for step in 0.. {
         assert!(step < 64, "{name}: scrolling to the clamp never settles");
         ui.touch(TouchEvent::Down { x: 100, y: 400 });
         ui.touch(TouchEvent::Move { x: 100, y: 240 });
         ui.touch(TouchEvent::Up { x: 100, y: 240 });
-        let now: Vec<RegionId> = ui.regions().iter().map(|r| r.id).collect();
-        for &id in &now {
+        let now = snapshot(&ui);
+        for &(id, _) in &now {
             if !ids.contains(&id) {
                 ids.push(id);
             }
         }
         if now == prev {
-            // The clamp: one more drag changed nothing, so nothing further is reachable.
+            // The clamp: one more drag moved nothing at all, so nothing further is reachable.
             break;
         }
         prev = now;

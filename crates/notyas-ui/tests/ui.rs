@@ -99,6 +99,30 @@ fn tap(ui: &mut Ui, id: RegionId) -> Option<UiRequest> {
     ui.touch(TouchEvent::Up { x, y })
 }
 
+/// One finger-drag upward: enough to be a drag rather than a tap (`DRAG_SLOP` is 16 px),
+/// and short enough that a screen cannot skip past a control between two frames.
+fn drag_up(ui: &mut Ui) {
+    ui.touch(TouchEvent::Down { x: 10, y: 400 });
+    ui.touch(TouchEvent::Move { x: 10, y: 240 });
+    ui.touch(TouchEvent::Up { x: 10, y: 240 });
+}
+
+/// Drag until `id` is offered, the way a finger finds a control below the fold.
+///
+/// The bound is 64 drags - over 10,000 px, far past the tallest tab any screen here
+/// builds - so it expires only on a control that is genuinely out of reach, and the
+/// panic says which one. Regions in the gap between two drags are not a concern: a
+/// 160 px step is under a third of the shortest viewport, so nothing is stepped over.
+fn scroll_to(ui: &mut Ui, id: RegionId) {
+    for _ in 0..64 {
+        if ui.regions().iter().any(|r| r.id == id) {
+            return;
+        }
+        drag_up(ui);
+    }
+    panic!("{:?} never offered {id:?}, dragged to the end of its content", ui.screen());
+}
+
 /// Passphrase Done, then the embedder's `tick`: the two halves of one user action, with
 /// the interstitial live in between. Tests that care about the split assert around it
 /// (`deriving_interstitial_*`); everything else just wants to land on Schemes.
@@ -321,9 +345,10 @@ fn walk_all_screens(w: u32, h: u32) {
         check(&ui);
     }
     // QR modal: open from a real request, check it is the only tappable thing, close.
-    // The xpub button is the one QR button visible without scrolling on every geometry.
+    // The descriptor button is the one QR button visible without scrolling on every
+    // geometry - it leads the tab, above the bare xpub it tells the reader not to use.
     tap(&mut ui, RegionId::Tab(2));
-    let req = tap(&mut ui, RegionId::QrXpub).expect("QR tap must raise a request");
+    let req = tap(&mut ui, RegionId::QrDescriptor).expect("QR tap must raise a request");
     let UiRequest::Qr(target) = req else { panic!("QR tap must raise a QR request") };
     ui.show_qr(target, checkerboard(29));
     check(&ui);
@@ -908,16 +933,17 @@ fn ui_at_schemes(w: u32, h: u32) -> Ui {
 fn qr_requests_carry_the_shown_public_values() {
     let mut ui = ui_at_schemes(720, 720);
     tap(&mut ui, RegionId::Tab(2)); // BIP84
-    let Some(UiRequest::Qr(zpub)) = tap(&mut ui, RegionId::QrSlip132) else { panic!("slip132 QR") };
-    assert_eq!(zpub.payload, VECTOR1_BIP84_ZPUB);
+    // Every block below the descriptor is now below the fold on this panel, so each tap
+    // is preceded by the drag a finger would make to reach it. The order is the order
+    // they appear in: bare xpub, its SLIP-132 twin, then the address rows.
+    scroll_to(&mut ui, RegionId::QrXpub);
     let Some(UiRequest::Qr(xpub)) = tap(&mut ui, RegionId::QrXpub) else { panic!("xpub QR") };
     assert!(xpub.payload.starts_with("xpub"), "{}", xpub.payload);
     assert!(xpub.label.starts_with("Account xpub m/84'"), "{}", xpub.label);
-    // The first address row sits below the fold on the 720 panel with the SLIP-132
-    // block present - scroll it into view, exactly as a finger would.
-    ui.touch(TouchEvent::Down { x: 360, y: 400 });
-    ui.touch(TouchEvent::Move { x: 360, y: 100 });
-    ui.touch(TouchEvent::Up { x: 360, y: 100 });
+    scroll_to(&mut ui, RegionId::QrSlip132);
+    let Some(UiRequest::Qr(zpub)) = tap(&mut ui, RegionId::QrSlip132) else { panic!("slip132 QR") };
+    assert_eq!(zpub.payload, VECTOR1_BIP84_ZPUB);
+    scroll_to(&mut ui, RegionId::QrAddress(0));
     let Some(UiRequest::Qr(addr)) = tap(&mut ui, RegionId::QrAddress(0)) else { panic!("address QR") };
     assert_eq!(addr.payload, VECTOR1_BIP84_ADDR0);
     assert_eq!(addr.label, "m/84'/0'/0'/0/0");
@@ -932,7 +958,11 @@ fn qr_modal_opens_and_closes_on_both_geometries() {
     for (w, h) in [(720u32, 720u32), (800, 480)] {
         let mut ui = ui_at_schemes(w, h);
         let before = Fb::render(&ui, w, h);
-        let Some(UiRequest::Qr(target)) = tap(&mut ui, RegionId::QrXpub) else { panic!("request") };
+        // The descriptor block leads the tab, so its button is the one on screen before
+        // any drag on both panels.
+        let Some(UiRequest::Qr(target)) = tap(&mut ui, RegionId::QrDescriptor) else {
+            panic!("request")
+        };
         ui.show_qr(target, checkerboard(33));
         let open = Fb::render(&ui, w, h);
         assert_ne!(before.px, open.px, "{w}x{h}: the modal must actually draw");
@@ -984,32 +1014,178 @@ fn no_qr_is_reachable_from_secret_screens() {
     assert_qr_free(&mut ui, "phrase entry");
 }
 
-/// Off-screen QR buttons are not tappable: on the short panel the last address row
-/// starts below the viewport, and its button only joins the hit regions after
-/// scrolling down.
+/// Off-screen QR buttons are not tappable, and the last address row's button is tappable
+/// at the end of the drag.
 ///
-/// Address 4 is no longer the last thing on the screen - the descriptor block and its
-/// BlueWallet explainer (`DESCRIPTOR_HELP` in schemes.rs) run on below the address rows,
-/// and that explainer alone is taller than the viewport on the 800x480 panel - but the
-/// scroll clamp (`SchemesState::scroll_limit`) keeps the last address row from ever
-/// scrolling past the top of the viewport regardless of how much content follows it, so
-/// dragging as far as a finger physically can (-2000, well past the true content height)
-/// still leaves address 4 tappable. That clamp, not the length of the prose below it, is
-/// the property this test pins.
+/// The address rows are the last thing on the tab now that the descriptor block and its
+/// BlueWallet explainer lead it, so the binding limit is the true content end
+/// (`SchemesState::scroll_limit`) rather than its last-address-row clamp - and the
+/// property the reader depends on is unchanged either way: drag as far as a finger
+/// physically can and address 4's QR button is wholly inside the viewport, because that
+/// button is the only way to show somebody the fifth receive address.
+///
+/// Pinned at BOTH ends, so neither half can be satisfied by accident: address 4 must not
+/// be tappable before the drag (a screen that offered everything at once would pass a
+/// bare "it is tappable afterwards" check), and one further full-length drag past the
+/// clamp must change nothing - which is what makes the state it is checked in the END of
+/// the drag rather than a lucky point along it.
 #[test]
 fn qr_buttons_scroll_with_the_content() {
-    // Both panels the descriptor block ships on: the short 800x480 (where the true
-    // content runs well past a viewport below address 4) and the tall 720x720 (where
-    // it does too, just with more headroom to spare).
+    // Both shipped panels: the short 800x480 and the tall 720x720.
     for (w, h) in [(800u32, 480u32), (720, 720)] {
         let mut ui = ui_at_schemes(w, h);
-        let visible =
-            |ui: &Ui| ui.regions().iter().any(|r| r.id == RegionId::QrAddress(4));
-        assert!(!visible(&ui), "{w}x{h}: address 4 must start below the viewport");
-        ui.touch(TouchEvent::Down { x: 400, y: 400 });
-        ui.touch(TouchEvent::Move { x: 400, y: -2000 });
-        ui.touch(TouchEvent::Up { x: 400, y: -2000 });
-        assert!(visible(&ui), "{w}x{h}: address 4 must be tappable after scrolling to the end");
+        let button = |ui: &Ui| ui.regions().into_iter().find(|r| r.id == RegionId::QrAddress(4));
+        assert!(button(&ui).is_none(), "{w}x{h}: address 4 must start below the viewport");
+
+        // Well past the true content height on either panel, in one drag.
+        let fling = |ui: &mut Ui| {
+            ui.touch(TouchEvent::Down { x: 400, y: 400 });
+            ui.touch(TouchEvent::Move { x: 400, y: -2000 });
+            ui.touch(TouchEvent::Up { x: 400, y: -2000 });
+        };
+        fling(&mut ui);
+        let at_clamp = button(&ui)
+            .unwrap_or_else(|| panic!("{w}x{h}: address 4 is unreachable at the scroll clamp"));
+        // Already the end: another drag of the same length moves nothing.
+        let frame = Fb::render(&ui, w, h);
+        fling(&mut ui);
+        assert_eq!(frame.px, Fb::render(&ui, w, h).px, "{w}x{h}: the clamp is not the end");
+        assert_eq!(
+            button(&ui).map(|r| r.rect),
+            Some(at_clamp.rect),
+            "{w}x{h}: address 4 moved after the clamp"
+        );
+
+        // A region is only offered while it is WHOLLY inside the viewport, so this is the
+        // arithmetic restated where a reader of the test can see it: the button sits below
+        // the tab bar and above the bottom of the body, with no part of it clipped.
+        let body = notyas_ui::layout::Metrics::new(w, h).body();
+        assert!(
+            at_clamp.rect.y > body.y && at_clamp.rect.bottom() <= body.bottom(),
+            "{w}x{h}: address 4's button {:?} is not wholly inside the body {body:?}",
+            at_clamp.rect
+        );
+    }
+}
+
+/// The export view opens on BIP-84 and leads with the descriptor - the two halves of the
+/// funnel that put an owner's coins in a wallet this device would not spend from.
+///
+/// Driven the way the owner drove it: straight to Export, touching no tab. Before this
+/// the card opened on BIP-44, and the first thing under the heading was the bare account
+/// xpub, which is the string BlueWallet reads as a legacy wallet. The label on the
+/// request is what proves the tab, because it carries the account path the screen is
+/// actually showing - asserting the tab index instead would prove only that a number
+/// is 2.
+#[test]
+fn export_opens_on_bip84_and_leads_with_the_descriptor() {
+    for (w, h) in GEOMETRIES {
+        let mut ui = ui_at_schemes(w, h);
+        // The first QR block a reader meets, before any drag, on both panels.
+        let is_qr = |id: RegionId| {
+            matches!(
+                id,
+                RegionId::QrXpub
+                    | RegionId::QrSlip132
+                    | RegionId::QrDescriptor
+                    | RegionId::QrAddress(_)
+            )
+        };
+        let first = ui
+            .regions()
+            .into_iter()
+            .filter(|r| is_qr(r.id))
+            .min_by_key(|r| r.rect.y)
+            .unwrap_or_else(|| panic!("{w}x{h}: the export view offers no QR at all"));
+        assert_eq!(
+            first.id,
+            RegionId::QrDescriptor,
+            "{w}x{h}: the reader meets {:?} before the descriptor",
+            first.id
+        );
+
+        let Some(UiRequest::Qr(desc)) = tap(&mut ui, RegionId::QrDescriptor) else {
+            panic!("{w}x{h}: descriptor QR")
+        };
+        assert_eq!(desc.label, "Descriptor m/84'/0'/0'", "{w}x{h}: opened on the wrong scheme");
+        assert!(desc.payload.starts_with("wpkh(["), "{w}x{h}: {}", desc.payload);
+
+        // The bare key is still there, one drag down, still emitting what it always did.
+        scroll_to(&mut ui, RegionId::QrXpub);
+        let Some(UiRequest::Qr(xpub)) = tap(&mut ui, RegionId::QrXpub) else {
+            panic!("{w}x{h}: the bare xpub must stay reachable")
+        };
+        assert_eq!(xpub.label, "Account xpub m/84'/0'/0'", "{w}x{h}");
+    }
+}
+
+/// BIP-44 is one tap away and everything on its tab still works.
+///
+/// The device signs BIP-44 now, so an owner who already holds legacy coins has to be able
+/// to reach that key and those addresses. Demoting the scheme as a DEFAULT must not cost
+/// them any of that, and this is the test that says so.
+#[test]
+fn the_legacy_scheme_is_still_one_tap_away() {
+    for (w, h) in GEOMETRIES {
+        let mut ui = ui_at_schemes(w, h);
+        tap(&mut ui, RegionId::Tab(0));
+        let Some(UiRequest::Qr(desc)) = tap(&mut ui, RegionId::QrDescriptor) else {
+            panic!("{w}x{h}: BIP-44 descriptor QR")
+        };
+        assert_eq!(desc.label, "Descriptor m/44'/0'/0'", "{w}x{h}");
+        assert!(desc.payload.starts_with("pkh(["), "{w}x{h}: {}", desc.payload);
+        scroll_to(&mut ui, RegionId::QrXpub);
+        let Some(UiRequest::Qr(xpub)) = tap(&mut ui, RegionId::QrXpub) else {
+            panic!("{w}x{h}: BIP-44 xpub QR")
+        };
+        assert_eq!(xpub.label, "Account xpub m/44'/0'/0'", "{w}x{h}");
+        scroll_to(&mut ui, RegionId::QrAddress(0));
+        let Some(UiRequest::Qr(addr)) = tap(&mut ui, RegionId::QrAddress(0)) else {
+            panic!("{w}x{h}: BIP-44 address QR")
+        };
+        assert_eq!(addr.label, "m/44'/0'/0'/0/0", "{w}x{h}");
+        assert!(addr.payload.starts_with('1'), "{w}x{h}: a legacy address: {}", addr.payload);
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Receive
+// ---------------------------------------------------------------------------------------
+
+/// The Receive card shows a BIP-84 address and says on the panel which scheme it is.
+///
+/// This is the defect end to end: the card took `schemes.first()`, which is BIP-44, so the
+/// address an owner was told to hand a sender was a legacy one - and nothing beside it said
+/// so. The address itself is read back through the Save-to-SD request, which carries the
+/// exact string the screen is showing, and the scheme label is checked in the pixels,
+/// because a label the layout drops is a label the reader never sees. `INK_SECONDARY` is
+/// the label's own ink and nothing else on this screen uses it.
+#[test]
+fn receive_shows_a_bip84_address_and_names_the_scheme() {
+    for (w, h) in GEOMETRIES {
+        let mut ui = Ui::new(w, h);
+        tap(&mut ui, RegionId::HomeNewSeed);
+        type_dice(&mut ui, SIXES);
+        tap(&mut ui, RegionId::DiceDone);
+        tap(&mut ui, RegionId::Next);
+        keep_nothing(&mut ui);
+        scroll_to(&mut ui, RegionId::ActReceive);
+        tap(&mut ui, RegionId::ActReceive);
+        assert_eq!(ui.screen(), ScreenId::Receive, "{w}x{h}");
+        check_regions(&ui, w as i32, h as i32);
+
+        let fb = Fb::render(&ui, w, h);
+        assert!(
+            fb.count(theme::INK_SECONDARY) > 200,
+            "{w}x{h}: the scheme label is missing from the receive card"
+        );
+
+        let Some(UiRequest::SaveAddress { address, overwrite }) = tap(&mut ui, RegionId::SaveAddr)
+        else {
+            panic!("{w}x{h}: Save to SD must raise a save request")
+        };
+        assert_eq!(address, VECTOR1_BIP84_ADDR0, "{w}x{h}: Receive must default to BIP-84");
+        assert!(!overwrite, "{w}x{h}: the first save is never an overwrite");
     }
 }
 
@@ -1032,19 +1208,21 @@ fn network_toggle_reaches_the_derivation() {
     tap(&mut ui, RegionId::ActExport);
     assert_eq!(ui.screen(), ScreenId::Schemes);
     tap(&mut ui, RegionId::Tab(2)); // BIP84
+    scroll_to(&mut ui, RegionId::QrAddress(0));
     let Some(UiRequest::Qr(addr)) = tap(&mut ui, RegionId::QrAddress(0)) else { panic!("address QR") };
     assert!(addr.payload.starts_with("tb1"), "testnet BIP84 address: {}", addr.payload);
+    // Checked at the scroll that brought the address rows into view, which is where a
+    // SLIP-132 block would be if this chain had one: it sits directly above them.
     assert!(
         !ui.regions().iter().any(|r| r.id == RegionId::QrSlip132),
         "SLIP-132 is mainnet-only and must vanish on testnet"
     );
-    // A fresh Ui defaults to mainnet: same flow, bc1 address (the SLIP-132 block
-    // above the rows pushes row 0 below the fold - scroll it into view first).
+    // A fresh Ui defaults to mainnet: same flow, bc1 address (the descriptor block, its
+    // explainer and the bare-key blocks above the rows push row 0 below the fold -
+    // scroll it into view first).
     let mut ui2 = ui_at_schemes(720, 720);
     tap(&mut ui2, RegionId::Tab(2));
-    ui2.touch(TouchEvent::Down { x: 360, y: 400 });
-    ui2.touch(TouchEvent::Move { x: 360, y: 100 });
-    ui2.touch(TouchEvent::Up { x: 360, y: 100 });
+    scroll_to(&mut ui2, RegionId::QrAddress(0));
     let Some(UiRequest::Qr(a2)) = tap(&mut ui2, RegionId::QrAddress(0)) else { panic!("address QR") };
     assert!(a2.payload.starts_with("bc1"), "mainnet by default: {}", a2.payload);
 }
@@ -1302,11 +1480,15 @@ fn the_deferred_derivation_uses_the_passphrase_as_typed() {
     keep_nothing(&mut ui);
     tap(&mut ui, RegionId::ActExport);
     tap(&mut ui, RegionId::Tab(2));
+    // The bare key sits under the descriptor block and its explainer now, so reaching it
+    // is a drag rather than a tap.
+    scroll_to(&mut ui, RegionId::QrXpub);
     let Some(UiRequest::Qr(with_pass)) = tap(&mut ui, RegionId::QrXpub) else { panic!("xpub QR") };
 
     // The same seed with the passphrase toggled off must derive something else.
     let mut plain = ui_at_schemes(720, 720);
     tap(&mut plain, RegionId::Tab(2));
+    scroll_to(&mut plain, RegionId::QrXpub);
     let Some(UiRequest::Qr(without)) = tap(&mut plain, RegionId::QrXpub) else { panic!("xpub QR") };
     assert_ne!(with_pass.payload, without.payload, "the passphrase must reach PBKDF2");
     assert!(without.payload.starts_with("xpub"), "{}", without.payload);

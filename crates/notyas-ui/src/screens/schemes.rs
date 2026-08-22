@@ -59,6 +59,31 @@ fn root_fingerprint(report: &Report) -> Fingerprint {
         .expect("Report::root_fingerprint is always this crate's own 8 lowercase hex chars")
 }
 
+/// The scheme a wallet's keys are shown under when nobody has chosen one.
+///
+/// Both entrances to a wallet's public keys - this screen and Receive - open here, and
+/// BIP-84 is the choice because it is the one every modern coordinator assumes: handed a
+/// native-segwit descriptor or a zpub, BlueWallet, Sparrow, Electrum and Bitcoin Core all
+/// build the wallet the device meant. The scheme this replaced as the default was BIP-44,
+/// which is `Scheme::ALL`'s first entry for report-ordering reasons that have nothing to
+/// do with what a reader should be shown first, and which a bare xpub export turns into a
+/// legacy wallet in BlueWallet (see [`BARE_KEY_HELP`]). BIP-44 is still derived, still
+/// signed and still one tap away - the default is about what the device picks SILENTLY,
+/// not about which schemes exist.
+pub(crate) const DEFAULT_SCHEME: Scheme = Scheme::Bip84;
+
+/// Where [`DEFAULT_SCHEME`] sits in `report.schemes`, or 0 for a report that does not
+/// carry it.
+///
+/// Resolved by scheme IDENTITY and not by a literal index, so reordering [`Scheme::ALL`]
+/// cannot silently move the default back onto the legacy scheme - the failure the index
+/// this replaced would have had no way to signal. Total rather than fallible because both
+/// callers have to render something: a wallet derived for BIP-44 alone opens on the only
+/// scheme it has, which is the one its coins are on.
+pub(crate) fn default_scheme_index(report: &Report) -> usize {
+    report.schemes.iter().position(|sr| sr.scheme == DEFAULT_SCHEME).unwrap_or(0)
+}
+
 /// The QR modal, open over this screen: a finished symbol plus its title.
 pub(crate) struct QrModal {
     label: String,
@@ -119,8 +144,15 @@ pub(crate) struct SchemesState {
 impl SchemesState {
     /// The derivation, and where the user came from to see it. Both, always: an export
     /// view that does not know its own way back is the defect this signature prevents.
+    ///
+    /// Opens on [`DEFAULT_SCHEME`]'s tab, resolved through [`default_scheme_index`]. The
+    /// literal `0` this replaced put every wallet's Export card on the legacy tab, whose
+    /// first artifact is a bare xpub, which is the exact string BlueWallet reads as a
+    /// legacy wallet - a default nobody chose, on the scheme with the worst
+    /// interoperability of the four.
     pub fn new(report: Report, origin: Origin) -> SchemesState {
-        SchemesState { report: Some(report), origin, tab: 0, scroll: 0, qr: None }
+        let tab = default_scheme_index(&report);
+        SchemesState { report: Some(report), origin, tab, scroll: 0, qr: None }
     }
 
     /// Answer to [`UiRequest::Qr`]: install the finished symbol and open the modal.
@@ -150,17 +182,34 @@ const QR_BTN_W: i32 = 96;
 const QR_BTN_H: i32 = 56;
 
 /// Why the descriptor block exists, printed under it. A coordinator that only ever sees
-/// the bare xpub above has no fingerprint to put in the PSBTs it builds, so it writes
+/// the bare xpub below has no fingerprint to put in the PSBTs it builds, so it writes
 /// `00000000` - indistinguishable from every OTHER signer that got the same bare key -
 /// and every downstream signer is left guessing whose key that was. BlueWallet in
 /// particular parses this exact bracketed form (its `AbstractHDElectrumWallet.setSecret`
 /// accepts a `wpkh([fp/path]xpub...)` descriptor, and reads the fingerprint straight out
 /// of the brackets), so naming it by that coordinator is concrete rather than generic
 /// advice.
-const DESCRIPTOR_HELP: &str = "Give BlueWallet this descriptor, not the xpub above. \
+const DESCRIPTOR_HELP: &str = "Give BlueWallet this descriptor, not the bare xpub below. \
     BlueWallet reads the fingerprint in the brackets and writes it into every PSBT it \
     builds; handed the bare xpub, it has none to write, and every signer downstream has \
     to guess whose key made each signature.";
+
+/// What a bare extended key costs the reader, printed under the block that offers one.
+///
+/// The reported defect in one sentence and its consequence in the next, because the
+/// consequence is the half an owner cannot see coming: an extended key on its own is
+/// nothing but a chain code and a public point, so the coordinator that receives it has
+/// to invent the two facts it needs - whose key this is, and which derivation it came
+/// from. BlueWallet's documented answer to that second question for a bare `xpub` is
+/// m/44, which is how a wallet exported from this device arrived in a coordinator as a
+/// LEGACY wallet whose coins the owner then could not spend.
+///
+/// Named for the artifact and not for the coordinator: the guessing is a property of
+/// bare extended keys, and BlueWallet is quoted because a named guess is checkable and
+/// "some wallets may interpret this differently" is not.
+const BARE_KEY_HELP: &str = "A bare extended key carries no master fingerprint and no \
+    derivation path, so the coordinator that reads it has to guess the derivation. \
+    BlueWallet guesses legacy (m/44) from a bare xpub.";
 
 impl Screen for SchemesState {
     type Layout = Layout;
@@ -344,13 +393,21 @@ impl Screen for SchemesState {
         }
     }
 
-    /// The true bottom of the content would let a drag push the last address row clean
-    /// off the TOP of the viewport once the descriptor block and its BlueWallet
-    /// explainer (`DESCRIPTOR_HELP`) run past a viewport's worth of content below the
-    /// address rows on a short panel - see [`ContentEnd::last_address_row`]. Clamp to
-    /// whichever is smaller: the true content end, or the point at which the last
-    /// address row's top is flush with the viewport's. A tab with no address rows (or
-    /// no report yet) has no row to protect and falls back to the true end unchanged.
+    /// The last address row stays reachable whatever else is on the tab.
+    ///
+    /// Clamp to whichever is smaller: the true content end, or the point at which the
+    /// last address row's top is flush with the viewport's. A tab with no address rows
+    /// (or no report yet) has no row to protect and falls back to the true end unchanged.
+    ///
+    /// The clamp is stated as an invariant rather than as a fix for one layout, and it
+    /// outlives the layout that needed it: with the descriptor block and its explainer
+    /// last, a drag could push the last address row - and the QR button that is the only
+    /// way to spend into it - clean off the TOP of the viewport on a short panel. Those
+    /// two now sit above the rows, so the true content end is the binding limit today and
+    /// this clamp binds on nothing. It stays because the property it names is the one that
+    /// matters ("the last row can always be reached"), and the next block somebody appends
+    /// below the rows must not be able to strand that row silently - see
+    /// [`ContentEnd::last_address_row`].
     fn scroll_limit(&self, ctx: &Ctx) -> i32 {
         let l = self.layout(ctx);
         let content =
@@ -404,10 +461,55 @@ impl SchemesState {
         text(t, &format!("Account {}", acct.path), body.x, y, HEADING, INK_PRIMARY, PAPER_1)?;
         y += LINE + g;
 
-        y = qr_block(t, m, y, "Account xpub", &acct.xpub, RegionId::QrXpub, &mut buttons)?;
+        // FIRST, above the bare key and above the address rows, because DESCRIPTOR_HELP
+        // directly below it tells the reader this is the artifact to hand a coordinator -
+        // and a screen whose layout disagrees with its own instructions teaches the
+        // opposite of what it says. What this ordering replaced put the descriptor last,
+        // below five address rows, where the reader had to scroll past the bare xpub to
+        // reach the thing the text told them to use; the bare xpub is what they used.
+        //
+        // The block is long - it carries this wallet's key-origin path and fingerprint on
+        // top of the xpub every other block prints - and its explainer is longer, so this
+        // ordering costs the reader a scroll to reach the address rows. That is the right
+        // trade: an address row is read here and used here, while the descriptor is
+        // COPIED OUT, and a copy made from the wrong block is not recoverable on this
+        // screen. `scroll_limit`'s clamp keeps the last address row reachable regardless
+        // of what sits above it.
+        //
+        // `None` only for Bip48 (module docs on `export::descriptor` - multisig needs
+        // cosigner keys this crate does not accept), which is exactly the scheme with no
+        // key-origin story to tell here.
+        if let Some(desc) = export::descriptor(sr.scheme, root_fingerprint(report), acct) {
+            y = qr_block(t, m, y, "Descriptor", &desc, RegionId::QrDescriptor, &mut buttons)?;
+            y += g;
+            for line in wrap_words(DESCRIPTOR_HELP, body.w, BODY) {
+                text(t, &line, body.x, y, BODY, INK_SECONDARY, PAPER_1)?;
+                y += LINE;
+            }
+            y += g;
+        }
+
+        // Kept, and demoted: some coordinators still want the bare key, and withdrawing
+        // what this button has always emitted would break an established workflow. What
+        // it may not do any more is stand first with nothing said about it - the caption
+        // names what makes this key different from the descriptor above, and BARE_KEY_HELP
+        // under it is the consequence the reader was missing when this block led the
+        // screen. The QR request's own label is unchanged ("Account xpub <path>"): the
+        // caption describes the block on THIS screen, and the label titles a symbol
+        // somebody is about to photograph.
+        y = qr_block(t, m, y, "Account xpub (bare)", &acct.xpub, RegionId::QrXpub, &mut buttons)?;
+        y += g;
+        for line in wrap_words(BARE_KEY_HELP, body.w, BODY) {
+            text(t, &line, body.x, y, BODY, INK_SECONDARY, PAPER_1)?;
+            y += LINE;
+        }
 
         if let (Some(slip), Some((_, label))) = (&acct.slip132_pub, sr.scheme.slip132_labels()) {
             y += g;
+            // Below the bare xpub because it IS one, with one difference worth its place
+            // on the screen: SLIP-132's version bytes name the script type, so a zpub at
+            // least tells its reader m/84 where a bare xpub tells it nothing. That is why
+            // BARE_KEY_HELP sits above this block and not below it.
             y = qr_block(
                 t,
                 m,
@@ -441,31 +543,6 @@ impl SchemesState {
             y += g;
         }
 
-        // Last on the screen, not under the xpub block: wrapped, this string plus its
-        // explanation run to several times an ordinary QR block's height (it carries the
-        // wallet's own key-origin path and fingerprint on top of the xpub every other
-        // block already prints), and putting that ahead of the SLIP-132 rendering or the
-        // address rows would shove both below a fold a finger has to find blind. On a
-        // short panel this block plus DESCRIPTOR_HELP below it runs past a viewport's
-        // worth of content on its own, past the last address row - `scroll_limit`'s
-        // `last_address_row` clamp is what keeps that row reachable regardless; this
-        // block and its prose are free to run long because nothing below the last
-        // address row is load-bearing the way that row's own QR button is.
-        //
-        // Offered beside the bare xpub above, never in place of it: some coordinators
-        // still want the bare key, and swapping what that button has always emitted would
-        // break an established workflow. `None` only for Bip48 (module docs on
-        // `export::descriptor` - multisig needs cosigner keys this crate does not accept),
-        // which is exactly the scheme with no key-origin story to tell here.
-        if let Some(desc) = export::descriptor(sr.scheme, root_fingerprint(report), acct) {
-            y += g;
-            y = qr_block(t, m, y, "Descriptor", &desc, RegionId::QrDescriptor, &mut buttons)?;
-            y += g;
-            for line in wrap_words(DESCRIPTOR_HELP, body.w, BODY) {
-                text(t, &line, body.x, y, BODY, INK_SECONDARY, PAPER_1)?;
-                y += LINE;
-            }
-        }
         Ok(ContentEnd { y, last_address_row })
     }
 }
@@ -603,9 +680,12 @@ mod tests {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
          abandon about";
 
-    fn report() -> Report {
+    /// A report over exactly `schemes`, in the order given - which is how a test states
+    /// "this wallet has no BIP-84", or hands the screen a scheme order the shipped
+    /// `Scheme::ALL` does not have, without waiting for a device that derives one that way.
+    fn report_over(schemes: &[Scheme]) -> Report {
         use notyas_core::bip39::MnemonicMode;
-        use notyas_core::derive::{ChildIndex, Scheme};
+        use notyas_core::derive::ChildIndex;
         use notyas_core::report::Parameters;
         Report::from_phrase(
             TEST_PHRASE,
@@ -613,7 +693,7 @@ mod tests {
                 mode: MnemonicMode::Raw,
                 passphrase: "",
                 network: Network::Bitcoin,
-                schemes: &Scheme::ALL,
+                schemes,
                 account: ChildIndex::ZERO,
                 change: ChildIndex::ZERO,
                 count: crate::ADDRESS_ROWS,
@@ -621,6 +701,21 @@ mod tests {
             },
         )
         .expect("a phrase with words in it derives")
+    }
+
+    fn report() -> Report {
+        report_over(&Scheme::ALL)
+    }
+
+    /// The QR buttons the active tab lays out, in the order the content walk draws them.
+    /// Measured against [`NullTarget`] through the same walk that paints, so an ordering
+    /// this asserts is the ordering a reader sees.
+    fn button_order(s: &SchemesState, m: &Metrics) -> Vec<RegionId> {
+        let mut buttons = Vec::new();
+        let _ = s.content(&mut NullTarget, m, 0, Some(&mut buttons));
+        let mut sorted = buttons;
+        sorted.sort_by_key(|b| b.rect.y);
+        sorted.into_iter().map(|b| b.id).collect()
     }
 
     fn info() -> WalletInfo {
@@ -741,6 +836,122 @@ mod tests {
             key_and_suffix.ends_with("/<0;1>/*)"),
             "must carry the multipath receive/change suffix: {key_and_suffix}"
         );
+    }
+
+    /// The open half of K29, at the entrance it came in through: the Export card opened on
+    /// tab 0, which is BIP-44, whose first artifact is a bare xpub - the exact string
+    /// BlueWallet turns into a legacy wallet.
+    ///
+    /// Asserted through `active()` rather than against the literal 2, because the number is
+    /// the thing that must stop mattering: what the screen owes the reader is the BIP-84
+    /// scheme, wherever the report happens to keep it.
+    #[test]
+    fn export_opens_on_bip84_and_not_on_the_legacy_tab() {
+        let s = SchemesState::new(report(), Origin::Fresh);
+        let opened = s.active().expect("a derived wallet has schemes to show");
+        assert_eq!(opened.scheme, Scheme::Bip84, "Export must open on BIP-84");
+        assert_ne!(opened.scheme, Scheme::Bip44, "the funnel this closes");
+        let path = &opened.derived.account.path;
+        assert!(path.starts_with("m/84'"), "{path}");
+    }
+
+    /// ...and it finds that scheme by IDENTITY, not at a remembered index.
+    ///
+    /// Two orders, and a hard-coded index passes at most one of them: the first puts BIP-84
+    /// last, the second puts it first. This is the test that a later reordering of
+    /// `Scheme::ALL` has to survive - the failure mode of the literal `0` this replaced was
+    /// precisely that nothing anywhere said which scheme index 0 was.
+    #[test]
+    fn the_opening_tab_is_resolved_by_scheme_not_by_index() {
+        let shuffled = report_over(&[Scheme::Bip86, Scheme::Bip49, Scheme::Bip84]);
+        let last = SchemesState::new(shuffled, Origin::Fresh);
+        assert_eq!(last.tab, 2);
+        assert_eq!(last.active().unwrap().scheme, Scheme::Bip84);
+        let first = SchemesState::new(report_over(&[Scheme::Bip84, Scheme::Bip44]), Origin::Fresh);
+        assert_eq!(first.tab, 0);
+        assert_eq!(first.active().unwrap().scheme, Scheme::Bip84);
+    }
+
+    /// A wallet with no BIP-84 in it still exports, on the scheme its coins are on.
+    ///
+    /// The fix is about what the device chooses silently, never about withdrawing a scheme:
+    /// an owner holding BIP-44 coins has to be able to reach that key, and a screen that
+    /// renders nothing because its preferred scheme is absent would take an owner's own
+    /// wallet away from them. Drawn on both panels, because "does not panic" is the floor
+    /// and the draw path is where an empty-report assumption would fire.
+    #[test]
+    fn a_bip44_only_wallet_opens_on_its_only_scheme_and_draws() {
+        let s = SchemesState::new(report_over(&[Scheme::Bip44]), Origin::Fresh);
+        assert_eq!(s.tab, 0, "the only scheme it has");
+        assert_eq!(s.active().unwrap().scheme, Scheme::Bip44);
+        for (w, h) in GEOMETRIES {
+            let f = Fixture::new(w, h);
+            s.draw(&mut NullTarget, &f.ctx()).expect("a legacy-only wallet's export card draws");
+            let ids = button_order(&s, &f.m);
+            assert_eq!(
+                ids.first(),
+                Some(&RegionId::QrDescriptor),
+                "{w}x{h}: BIP-44 has an origin-carrying descriptor too, and it still leads"
+            );
+        }
+    }
+
+    /// The layout now agrees with its own instructions: DESCRIPTOR_HELP tells the reader to
+    /// hand a coordinator the descriptor rather than the bare xpub BELOW it, and the
+    /// descriptor is the first thing on the tab.
+    ///
+    /// What this replaced put the descriptor LAST, under five address rows, while the same
+    /// help text called the xpub "above" - so a reader who followed the screen top to bottom
+    /// met the bare key first and never had a reason to keep scrolling. The wording is
+    /// asserted next to the order deliberately: the two are one statement, and moving either
+    /// without the other puts the screen back in the state that misled an owner.
+    #[test]
+    fn the_descriptor_leads_and_the_bare_key_follows_it() {
+        assert!(
+            DESCRIPTOR_HELP.contains("xpub below"),
+            "the descriptor's help text says where the bare xpub is; move both or neither"
+        );
+        for (w, h) in GEOMETRIES {
+            let f = Fixture::new(w, h);
+            let s = SchemesState::new(report(), Origin::Fresh);
+            let ids = button_order(&s, &f.m);
+            let mut expected = vec![RegionId::QrDescriptor, RegionId::QrXpub, RegionId::QrSlip132];
+            expected.extend((0..crate::ADDRESS_ROWS as u8).map(RegionId::QrAddress));
+            assert_eq!(ids, expected, "{w}x{h}: the tab's blocks are in the wrong order");
+        }
+    }
+
+    /// The scroll clamp, measured: the last address row's QR button is fully inside the
+    /// viewport once the screen is dragged as far as it goes, on every tab and both panels.
+    ///
+    /// That button is the only way to show somebody the fifth receive address, so "it exists
+    /// in the content" is not the property - "a finger can reach it at the end of the drag"
+    /// is. The check is made at `scroll_limit` itself rather than after a fixed number of
+    /// drags, so no amount of dragging can pass a screen this fails: `scroll_limit` IS the
+    /// end of the drag.
+    #[test]
+    fn the_last_address_row_is_reachable_at_the_scroll_clamp() {
+        for (w, h) in GEOMETRIES {
+            let f = Fixture::new(w, h);
+            let ctx = f.ctx();
+            for tab in 0..Scheme::ALL.len() {
+                let mut s = SchemesState::new(report(), Origin::Fresh);
+                s.tab = tab;
+                let vp = s.layout(&ctx).viewport;
+                s.scroll = s.scroll_limit(&ctx);
+                let mut regions = Vec::new();
+                s.regions(&ctx, &mut regions);
+                let last = RegionId::QrAddress(crate::ADDRESS_ROWS as u8 - 1);
+                let hit = regions.iter().find(|r| r.id == last).unwrap_or_else(|| {
+                    panic!("{w}x{h} tab {tab}: {last:?} unreachable at the clamp")
+                });
+                assert!(
+                    hit.rect.y >= vp.y && hit.rect.bottom() <= vp.bottom(),
+                    "{w}x{h} tab {tab}: {:?} is not wholly inside {vp:?}",
+                    hit.rect
+                );
+            }
+        }
     }
 
     /// The QR modal at every real symbol size the 0.1.0 targets produce (v3 addresses

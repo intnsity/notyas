@@ -947,9 +947,16 @@ pub const CATALOG: &[Frame] = &[
         variant: "bip44",
         screen: ScreenId::Schemes,
         doc: Doc::Portrait("07-schemes-bip44"),
+        // The legacy tab, asked for BY TAP rather than inherited from wherever the screen
+        // opens. Export opens on BIP-84 now (`schemes::DEFAULT_SCHEME`), so a recipe that
+        // only pressed Export would render the BIP-84 tab under the name bip44 and write
+        // it to docs/screenshots/ui as `07-schemes-bip44` - a frame, a variant name and a
+        // published picture all claiming a screen none of them is. Tab(0) is BIP-44's
+        // position in `Scheme::ALL`, which is what the tab strip is drawn from.
         build: |ui| {
             session_wallet(ui);
             tap(ui, RegionId::ActExport);
+            tap(ui, RegionId::Tab(0));
         },
     },
     Frame {
@@ -967,12 +974,20 @@ pub const CATALOG: &[Frame] = &[
         // The whole QR round trip, over the crate boundary the firmware crosses: the tap
         // raises a request, the CORE encodes the payload (std side, which is the step that
         // was compiled out when the buttons went dead), and the matrix comes back in.
+        //
+        // Photographed on the DESCRIPTOR, which is the block the tab now leads with and the
+        // artifact `DESCRIPTOR_HELP` tells the reader to hand a coordinator: a documentation
+        // picture of a QR symbol is an instruction to scan it, so it shows the symbol we
+        // want scanned. The bare xpub's button keeps its own coverage - it is tapped by
+        // `a_qr_tap_round_trips_through_the_core_encoder`, and every QR button on the tab
+        // including it is tapped by `every_qr_button_of_a_scheme_encodes`, both in
+        // tools/uisim/tests/regressions.rs - so nothing is lost by not photographing it.
         build: |ui| {
             schemes_bip84(ui);
-            let Some(UiRequest::Qr(target)) = tap(ui, RegionId::QrXpub) else {
-                panic!("the xpub QR button raised no request");
+            let Some(UiRequest::Qr(target)) = tap(ui, RegionId::QrDescriptor) else {
+                panic!("the descriptor QR button raised no request");
             };
-            let matrix = notyas_core::qr::matrix(&target.payload).expect("encode xpub");
+            let matrix = notyas_core::qr::matrix(&target.payload).expect("encode descriptor");
             let data = QrData::from_matrix(&matrix).expect("square matrix");
             ui.show_qr(target, data);
         },

@@ -1029,28 +1029,28 @@ Closing it: wire `read_sd_file` to `crate::sd::with_card` and the bounded read i
 `notyas_wallet::sd`, which is the same call the flow layer already makes, and either fix or
 withdraw the help line until it is done.
 
-### K29. Receive and Export hand out legacy addresses this device cannot spend from
+### K29. Receive and Export handed out legacy addresses this device could not spend from
 
 **Found:** 2026-08-22, from a user report that a spend of his own coins was refused. Tracing
 where the coins came from found the device itself, not his wallet software.
 
 Every wallet on this device derives all four schemes with no user choice, and `Scheme::ALL`
-puts BIP-44 first (`crates/notyas-core/src/derive.rs:106`). Three screens take that order at
-face value:
+puts BIP-44 first (`crates/notyas-core/src/derive.rs:106`). At `ccc85c7` three screens took
+that order at face value:
 
-- Receive shows exactly one scheme and picks it with `report.schemes.first()?`
-  (`crates/notyas-ui/src/screens/receive.rs:39`), so the addresses it offers for deposit are
-  `1...` legacy P2PKH, for every wallet, with no warning anywhere. The word "legacy" appears
-  in `notyas-ui`'s user-facing copy exactly once, as a review-row label
+- Receive showed exactly one scheme and picked it with `report.schemes.first()?`
+  (`crates/notyas-ui/src/screens/receive.rs:39`), so the addresses it offered for deposit
+  were `1...` legacy P2PKH, for every wallet, with no warning anywhere. The word "legacy"
+  appeared in `notyas-ui`'s user-facing copy exactly once, as a review-row label
   (`crates/notyas-ui/src/screens/review.rs:263`), and never on Receive.
-- Export opens preselected on the BIP44 tab (`crates/notyas-ui/src/screens/schemes.rs:123`,
+- Export opened preselected on the BIP44 tab (`crates/notyas-ui/src/screens/schemes.rs:123`,
   `tab: 0`), again for every wallet.
-- On every tab the first and most prominent block is the bare account xpub
+- On every tab the first and most prominent block was the bare account xpub
   (`schemes.rs:407`). BIP-44 and BIP-86 have no SLIP-132 form (`derive.rs:148`), so both
   render as a plain `xpub...`, and BlueWallet's documented default builds a LEGACY
   `m/44'/0'/0'` wallet from any bare xpub. The origin-carrying descriptor - the artifact the
-  screen's own `DESCRIPTOR_HELP` tells the reader to use - is the LAST block, below five
-  address rows (`schemes.rs:460`). The layout contradicts its own help text.
+  screen's own `DESCRIPTOR_HELP` tells the reader to use - was the LAST block, below five
+  address rows (`schemes.rs:460`). The layout contradicted its own help text.
 
 When this entry was written the signer could not spend any of it: `is_single_sig` excluded
 P2pkh, `whitelisted_sighashes(P2pkh)` was the empty slice, and `sign::SpendKind` had no
@@ -1058,30 +1058,72 @@ legacy arm. So the device derived, displayed, exported and solicited deposits fo
 it would then refuse to spend, and `export::descriptor` even emitted a `pkh()` descriptor
 for it (`crates/notyas-core/src/export.rs:256`).
 
-That half is closed: 0.2.2 completes the legacy signing the ratified record always called
-for, so a legacy coin of this device's own can now be spent by it. What remains open in
-this entry is the FUNNEL, which is a separate defect and is not closed by signing: Receive
-still takes `schemes.first()` and Export still opens on the legacy tab with the bare xpub
-first, so the device still steers a user into BIP-44 without saying so.
+**Resolved, the signing half:** 2026-08-22. 0.2.2 completes the legacy signing the ratified
+record always called for, so a legacy coin of this device's own can be spent by it. The
+demonstration was a PSBT with one legacy P2PKH input at `m/44'/0'/0'/0/0` of this device's
+own seed, full previous transaction present, refused at load: the device proved the input
+was its own by derivation and then refused to sign it. That file now signs, and the `legacy`
+case in `tools/psbtgen` is it, verified end to end by a verifier that derives everything
+independently. The refusal it used to draw, and the false multisig alarm that refusal wore,
+is K31.
 
-The demonstration was a PSBT with one legacy P2PKH input at `m/44'/0'/0'/0/0` of this
-device's own seed, full previous transaction present, refused at load: the device proved the
-input was its own by derivation and then refused to sign it. That file now signs, and the
-`legacy` case in `tools/psbtgen` is it, verified end to end by a verifier that derives
-everything independently. The refusal it used to draw, and the false multisig alarm that
-refusal wore, is K31.
+**Resolved, the funnel:** 2026-08-22. Both entrances to a wallet's public keys open on
+BIP-84, resolved through one constant (`screens::schemes::DEFAULT_SCHEME`) and found by
+scheme IDENTITY rather than at a remembered index, so a later reordering of `Scheme::ALL`
+cannot put the default back on the legacy tab silently. The Receive card names the
+derivation it is showing, printing the scheme and the path together under the address
+("BIP-84 native segwit - m/84'/0'/0'/0/0"), which is the sentence that was missing when the
+address string was the only thing on screen. And on every Export tab the origin-carrying
+descriptor leads, with `DESCRIPTOR_HELP` under it; the bare account key follows it under the
+caption "Account xpub (bare)", with the consequence spelled out beneath - a bare extended
+key carries no fingerprint and no path, so the coordinator that reads it has to guess the
+derivation, and BlueWallet guesses legacy - then the SLIP-132 rendering where the scheme has
+one, then the address rows.
+
+The demonstration is the owner's own gesture, driven rather than described: open a stored
+wallet, tap Export, touch no tab, and take the first QR block the screen offers. At
+`ccc85c7` that was the bare account xpub of `m/44'/0'/0'`, which is exactly the string
+BlueWallet turns into a legacy wallet. It is now `Descriptor m/84'/0'/0'`, whose payload
+begins `wpkh([` and carries the master fingerprint and the derivation path, so a coordinator
+has nothing left to guess. That gesture is
+`export_opens_on_bip84_and_leads_with_the_descriptor` in `crates/notyas-ui/tests/ui.rs`: it
+drives both panels, picks the topmost QR block by RECT rather than trusting construction
+order, and then drags down and taps the bare key to prove it is still reachable and still
+emitting what it always did. Beside it,
+`receive_shows_a_bip84_address_and_names_the_scheme` derives a wallet from dice, opens
+Receive and saves the address, and the string that comes out is the BIP-84 vector address
+rather than the legacy one; and `the_legacy_scheme_is_still_one_tap_away` is the other half
+of the same statement, because demoting BIP-44 as a DEFAULT must cost an owner holding
+legacy coins none of his access to it.
+
+The render gate moved with the screens rather than being told to ignore them: twenty lines
+in `tools/uisim/goldens.txt`, which is four frames - `receive/address`, `schemes/bip44`,
+`schemes/bip84`, `schemes/qr` - on each of the five shipped panels, re-approved through
+`cargo run -p uisim -- approve`, which re-runs the bounds and coverage gates before it will
+write. The committed pictures moved with them, so what is published is what ships:
+`07-schemes-bip44`, `08-schemes-bip84`, `09-schemes-qr`, `90-receive` and
+`91-receive-800x480`.
+
+The diff in that file is larger than those twenty lines, and the rest is not this entry's:
+thirty-seven more moved because the version string in the image went from 0.2.1 to 0.2.2,
+which the home footer, the lock footer and the simulator's own verify fixtures all render -
+`home/*` and `lock/*` on all five panels, `verify-device/*` on the panels whose page holds
+the Version row, and `refusal/details`. Six more pictures moved for the same reason
+(`01-home`, `16-lock`, `16b-lock-no-name` and their 800x480 siblings, `21-verify-digests`).
+Recorded here because `goldens.txt` says a diff in it IS the approval record, and a reviewer
+walking that record should not find thirty-seven lines with nothing to reconcile them against.
 
 Funds were never lost - the recovery phrase re-derives `m/44'` in any standard wallet - and
-as of 0.2.2 the device can move them itself. All four schemes are now spendable end to end.
-The residual is that the device still invites deposits to the one scheme it silently
-defaults to, which is what the remaining half of this entry tracks.
+as of 0.2.2 the device can move them itself. All four schemes are spendable end to end, and
+a legacy address is now something an owner asks for, on a screen that names it, rather than
+something the device hands out without saying so.
 
-**Does it block 0.2.2? Yes**, and it is what 0.2.2 is for. `docs/RELEASE-0.2.2.md` sections 1
-and 4 carry the two halves: implement P2PKH signing, which the design record already
-ratified (`ARCHITECTURE.md:550`, `WALLET-API.md:1325` and `:1330`, `CORPUS.md:274`,
-`MILESTONES.md:877`), and change the Receive and Export defaults so legacy becomes something
-a user asks for rather than something the device hands out. Closing this entry needs both,
-plus the two-board hardware pass in that document's section 5.
+**Does it block 0.2.2? Yes**, and it is what 0.2.2 is for. Both halves are implemented and
+the host gate is green over them. What this entry is still waiting on is evidence rather
+than code: the two-board hardware pass in `docs/RELEASE-0.2.2.md` section 5 - the corpus
+legacy case signed and verified on hardware, the claimed-amount negative refused on
+hardware, and a P2SH input claiming our key still refused at check 4. This entry closes when
+that pass has run on both boards, and not before.
 
 ### K30. Ten more refusal rows render copy that is false for a situation they cover
 
@@ -1509,6 +1551,57 @@ Two residuals, both deliberate and both recorded rather than quietly carried:
   does not cover the new code; its three strings are pinned in `review_model.rs` instead.
   Adding it to `CODES` is a one-line change and belongs with the next edit to that file.
 
-What this entry does NOT close is why his coins were on a legacy address in the first place,
-or that the device still cannot spend them: that is K29, and `docs/RELEASE-0.2.2.md` sections
-1 and 4 carry the decision.
+What this entry does NOT close is why his coins were on a legacy address in the first
+place: that is K29, and `docs/RELEASE-0.2.2.md` sections 1 and 4 carry the decision. The
+other half of the sentence this paragraph used to carry - that the device still could not
+spend them - stopped being true when section 1 landed.
+
+### K32. check-heap-residue is a dead gate: notyas-ui has not compiled standalone since the Receive screen landed
+
+**Found:** 2026-08-22, by running every CI gate during 0.2.2 release prep rather than the four the
+release process names. `tools/ci/check-heap-residue.sh` invokes
+`cargo test --locked -p notyas-ui --test review_capacity_and_wipe` - one crate, alone - and that
+build fails with `E0433: cannot find qr in notyas_core` plus two `E0277`s. The gate has been
+exiting 1 and reporting three SECURITY.md-backed assertions as unverified ever since.
+
+The cause is an invariant that stopped being true without its comment being updated.
+`crates/notyas-ui/Cargo.toml` takes `notyas-core` with `default-features = false`, and the comment
+above that line states the reason: this crate NEVER computes a QR code, it renders precomputed
+matrices handed in through `Ui::show_qr`. `crates/notyas-ui/src/screens/receive.rs` calls
+`notyas_core::qr::matrix` directly, twice, and `qr` is a feature of notyas-core. The crate builds
+at all only because a workspace-wide cargo invocation unifies that feature on via `tools/uisim`
+and `tools/xverify`, both of which take notyas-core with default features. So every developer and
+every workspace-wide CI step sees a green build, and the one gate that compiles the crate on its
+own sees the truth.
+
+Two things are wrong and they want different fixes. The gate is dead, which is the urgent half: a
+security gate that cannot run is worse than one that fails, because nothing reports it. And the
+architectural rule that notyas-ui does not compute QR codes has a violation in it, which is the
+half worth fixing properly - the Receive screen should raise `UiRequest::Qr` and receive its matrix
+the way every other QR on this device does, rather than reaching into the core for an encoder.
+
+**Does it block 0.2.2?** No, and that is a judgement rather than an absence of risk. It is
+byte-identically broken at `bdcfa2f`, so 0.2.2 does not introduce it, and the assertions it covers
+are covered again by the workspace-wide suite that does run. It is recorded here at MEDIUM rather
+than deferred silently, because "a gate nobody noticed had stopped running" is exactly the shape of
+failure this file exists to keep visible.
+
+### K33. The scheme tab strip is labelled from Scheme::ALL while its content comes from report.schemes
+
+**Found:** 2026-08-22, during the 0.2.2 funnel audit. `crates/notyas-ui/src/screens/schemes.rs`
+draws the tab strip from `Scheme::ALL` and builds its `Tab` regions from `Scheme::ALL.len()`, while
+`active()` indexes `report.schemes` and the new `default_scheme_index` resolves the opening tab by
+scheme IDENTITY. For any report whose scheme list is not `Scheme::ALL` in order, the highlighted
+tab's LABEL can disagree with the content drawn beneath it.
+
+The case exists in the tree already: the test `the_opening_tab_is_resolved_by_scheme_not_by_index`
+supplies `[Bip84, Bip44]`, which resolves to tab 0 - drawn as BIP-84 content under a strip that
+labels position 0 "BIP44". The test asserts the content and never looks at the label, which is
+correct for what it pins and is also why nothing caught this.
+
+**Does it block 0.2.2?** No. It is unreachable on a device today: both production call sites pass
+`&Scheme::ALL` itself (`firmware/src/wallet/mod.rs`, `crates/notyas-ui/src/screens/deriving.rs`),
+so the list is always in order and the labels always agree. It is recorded because 0.2.2 introduced
+an identity-resolved lookup onto a screen whose labels are still index-resolved, and a mislabelled
+derivation on an export screen is precisely the class of defect K29 was about. The fix is to draw
+the strip from the report rather than from the constant, so the two halves cannot drift.

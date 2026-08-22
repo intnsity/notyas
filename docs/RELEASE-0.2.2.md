@@ -6,6 +6,12 @@ carries three separate decisions, recorded here before the code that implements 
 `tools/ci/check-ratified.sh`'s own rule: the tree is wrong until the owner says otherwise,
 and a deliberate change of mind is made by editing the documents FIRST.
 
+All three are now implemented. Sections 1, 3 and 4 describe code that is in the tree and
+under the host gate, not code that is going to be written; where a section quotes the tree
+as it was at `ccc85c7` it says so. What remains before a tag is the two-board hardware pass
+in section 5, and until that has run this document still describes what 0.2.2 is rather
+than what any built image has been shown to do.
+
 Nothing in section 0 of `docs/RELEASE-0.2.0.md` about what a unit can, cannot, and has not
 been shown to do is superseded except where this document or `docs/RELEASE-0.2.1.md` says
 so explicitly. Read all three.
@@ -94,24 +100,38 @@ against the file rather than repeated from a report:
 
 Nothing strikes any of it. `OPEN-QUESTIONS.md`, `KNOWN-ISSUES.md`, `RELEASE-0.2.1.md` and
 `QA.md` record no decision to drop legacy, and `tools/ci/check-ratified.sh` makes no
-assertion about script types at all. The contrary position exists only in code comments -
-`checks.rs:845` ("The three that answer yes are exactly BIP84, BIP49 and BIP86 key-path"),
-`checks.rs:1826` and `checks.rs:1848` ("this device does not sign legacy") - which is
-precisely the class of unratified deviation `check-ratified.sh` was written for, after a
-build shipped with a PIN floor the owner had never agreed to.
+assertion about script types at all. The contrary position existed only in code comments -
+at `ccc85c7`, `checks.rs:845` ("The three that answer yes are exactly BIP84, BIP49 and
+BIP86 key-path"), `checks.rs:1826` and `checks.rs:1848` ("this device does not sign
+legacy") - which is precisely the class of unratified deviation `check-ratified.sh` was
+written for, after a build shipped with a PIN floor the owner had never agreed to. Those
+three comments now state the ratified position and cite this document, so the next reader
+finds the decision rather than the deviation.
 
-It also matters because the device does not merely tolerate BIP-44, it hands it out.
-`Scheme::ALL` puts Bip44 first (`crates/notyas-core/src/derive.rs:106`), the Receive card
-shows whatever `schemes.first()` returns (`crates/notyas-ui/src/screens/receive.rs:39`), the
-export screen opens on the BIP44 tab (`crates/notyas-ui/src/screens/schemes.rs:123`), and
-`export::descriptor` emits a `pkh()` descriptor for it
-(`crates/notyas-core/src/export.rs:256`). A device that solicits deposits to an address it
-cannot spend from is a trap regardless of what any document says; see section 4.
+It also mattered because the device did not merely tolerate BIP-44, it handed it out. At
+`ccc85c7` `Scheme::ALL` put Bip44 first (`crates/notyas-core/src/derive.rs:106`), the
+Receive card showed whatever `schemes.first()` returned
+(`crates/notyas-ui/src/screens/receive.rs:39`), the export screen opened on the BIP44 tab
+(`crates/notyas-ui/src/screens/schemes.rs:123`), and `export::descriptor` emitted a `pkh()`
+descriptor for it (`crates/notyas-core/src/export.rs:256`). A device that solicits deposits
+to an address it cannot spend from is a trap regardless of what any document says. Section 4
+is what closes that half; this section is what makes the coins already sitting there
+spendable.
 
-The coins are not lost either way - the recovery phrase re-derives `m/44'` in any standard
+The coins were not lost either way - the recovery phrase re-derives `m/44'` in any standard
 wallet - but the only on-device route out of a legacy coin is legacy signing, so refusing to
-build it would strand the user's existing coins behind a seed export, which is the exact
-harm this product exists to prevent.
+build it would have stranded the user's existing coins behind a seed export, which is the
+exact harm this product exists to prevent.
+
+**What landed.** `ScriptKind::P2pkh` joins `is_single_sig`, whose one caller in the tree is
+the admission gate in `inspect_with_accounts`; `whitelisted_sighashes(P2pkh)` becomes
+`[0x01]` and nothing else; `sign::SpendKind` gains a `P2pkh` arm carrying the prevout's own
+scriptPubKey and no amount field, because a pre-BIP-143 digest has nowhere to put one; and
+the post-sign verification gate gains the matching branch, so a legacy signature is
+independently re-derived and checked before anything is written, exactly as every other kind
+already was. The digest itself is rust-bitcoin's `SighashCache`, the same source the BIP-143
+and BIP-341 paths already use - nothing here is hand-rolled. All four schemes the device
+derives are now signable end to end.
 
 ---
 
@@ -144,9 +164,14 @@ exemption to legacy by analogy and reopen a fee attack on the commonest shape th
 - a multi-input legacy file with a claimed amount is refused `MissingPreviousTransaction` at
   the carve-out itself.
 
-Both are intended, both get permanent pins in the suite, and one of them is demonstrated on
-hardware before the release is cut. The rule's own half is already pinned, and the pins
-predate this release: `the_sighash_whitelist_gates_the_single_input_escape` asserts
+Both are intended, and both are now pinned. In
+`crates/notyas-core/src/psbt/checks.rs`,
+`a_single_input_legacy_file_may_not_rest_on_a_claimed_amount` and
+`a_multi_input_legacy_file_is_refused_at_the_carve_out` assert exactly the two refusals
+above, so a later relaxation of either has to be written on purpose. One of them is still to
+be demonstrated on hardware; that is part of section 5 and it has not run yet. The rule's
+own half was already pinned before this release:
+`the_sighash_whitelist_gates_the_single_input_escape` asserts
 `!binds_the_whole_transaction(P2pkh, [0x01])` directly - under SIGHASH_ALL, which is the one
 flag legacy will ever be signed under - and
 `the_admitted_sighash_set_is_the_one_the_amount_rule_rests_on` enumerates the admitted flag
@@ -191,8 +216,13 @@ The headline names no multisig, no cosigner and no registration, because none of
 situations that reach this code involve any.
 
 **What reaches it.** Every `ClaimedInputNotSingleSig`, which is an input claiming this
-device's key whose script is none of the kinds the signer builds. After section 1 lands that
-is P2SH, OP_RETURN and Other; until then it is also P2PKH. The P2SH row is worth naming: it
+device's key whose script is none of the kinds the signer builds. Section 1 has landed, so
+that is P2SH, OP_RETURN and Other. Until it landed it was also P2PKH, which is the whole of
+the field report in section 0: the user's legacy input reached this variant and wore R-04's
+copy on the way out. It no longer reaches this variant at all, because a legacy input of
+ours is signed now - so this section and section 1 close the report from opposite ends, one
+by fixing what the user was told and the other by removing the reason he was told anything.
+The P2SH row is worth naming: it
 covers both a genuine P2SH multisig, which this release still does not sign (Q7), and a
 BIP-49 wrapped-segwit coin OF OURS whose redeem script the coordinator omitted from the file
 - a file defect the sender can fix, which is why the second sentence of "what to do" is
@@ -231,56 +261,105 @@ considered strings becomes a set nobody has read.
 ## 4. Decision 3: the funnel that put the coins there
 
 The user's coins are on legacy leaves of the device's own BIP-44 account because the device
-put them there. Three defaults compound:
+put them there. Three defaults compounded, all of them at `ccc85c7`:
 
-- **Receive shows one scheme and takes the first one.** `receive.rs:39` is
+- **Receive showed one scheme and took the first one.** `receive.rs:39` was
   `report.schemes.first()?` and `Scheme::ALL[0]` is Bip44 (`derive.rs:106`), so the Receive
-  card hands out `1...` addresses for every wallet on the device.
-- **Export opens on the legacy tab.** `schemes.rs:123` sets `tab: 0`, regardless of anything
+  card handed out `1...` addresses for every wallet on the device.
+- **Export opened on the legacy tab.** `schemes.rs:123` set `tab: 0`, regardless of anything
   about the wallet.
-- **The first, most prominent block on every tab is the bare account xpub**
+- **The first, most prominent block on every tab was the bare account xpub**
   (`schemes.rs:407`), while the origin-carrying descriptor - the artifact the screen's own
-  help text tells the reader to use - is the last block, below five address rows
+  help text tells the reader to use - was the last block, below five address rows
   (`schemes.rs:460`). BIP-44 and BIP-86 have no SLIP-132 form (`derive.rs:148`), so both
   export as a plain `xpub...`, and BlueWallet's documented default builds a LEGACY
-  `m/44'/0'/0'` wallet from any bare xpub. The screen's layout contradicts its own
+  `m/44'/0'/0'` wallet from any bare xpub. The screen's layout contradicted its own
   `DESCRIPTOR_HELP`.
 
-0.2.2 changes the defaults: Receive selects BIP-84 and falls back to the first scheme only
-if a report carries no BIP-84 entry; Export opens on the BIP-84 tab; and the export blocks
-are reordered so the descriptor leads, captioned as the recommended artifact, with the bare
-account xpub last and captioned as advanced. The bare key keeps being emitted - some
-coordinators want it, and removing it would break an established workflow - but it stops
-being the default gesture. `export::descriptor` keeps emitting `pkh()` for BIP-44, because
-section 1 makes the device able to sign what that QR invites.
+**What 0.2.2 does instead.** Four changes, all in `notyas-ui`, none of them touching a key,
+a derivation or a signature:
+
+- Both entrances to a wallet's public keys open on BIP-84. One constant,
+  `screens::schemes::DEFAULT_SCHEME`, is what Receive and Export both read, and the tab it
+  selects is resolved by scheme IDENTITY rather than by a remembered index - so reordering
+  `Scheme::ALL` later cannot silently put the default back on the legacy tab.
+- A wallet that carries no BIP-84 entry falls back to the report's first scheme and renders
+  normally. A screen that showed nothing rather than name a legacy scheme would take an
+  owner's own addresses away from him, which is a worse failure than the one being fixed.
+- The Receive card names the derivation it is showing. Under the address it now prints the
+  scheme and the path together, in that order - "BIP-84 native segwit - m/84'/0'/0'/0/0" -
+  because an address string does not say which wallet it belongs to, and `1...` against
+  `bc1q...` reads as two formats rather than as two wallets. A legacy address is still
+  reachable, and it now says what it is.
+- On every Export tab the origin-carrying descriptor leads, with `DESCRIPTOR_HELP` under it,
+  and the bare account key follows it captioned "Account xpub (bare)" with the consequence
+  spelled out beneath: a bare extended key carries no fingerprint and no path, so the
+  coordinator that reads it has to guess the derivation, and BlueWallet guesses legacy.
+  The SLIP-132 rendering (a `zpub`, where the scheme has one) sits below that, and the
+  address rows below it. The bare key keeps being emitted - some coordinators want it, and
+  removing it would break an established workflow - but it no longer stands first with
+  nothing said about it.
+
+`export::descriptor` keeps emitting `pkh()` for BIP-44, because section 1 makes the device
+able to sign what that QR invites.
+
+The cost of the reorder is one scroll: the descriptor block and its explainer are long, so
+the address rows on a tab now start below the first viewport on the short panel. That is the
+right trade. An address row is read on this screen and used on this screen; the descriptor is
+COPIED OUT, and a copy made from the wrong block is not recoverable here. What must not be
+paid for it is reach: the last address row's QR button is the only way to show somebody the
+fifth receive address, and the test that says so is measured at `scroll_limit` itself - the
+end of the drag - on every tab and both panels, so no amount of dragging can pass a layout
+that strands it.
+
+**If you already hold coins on a BIP-44 address of this device.** Nothing is required of you
+and nothing is at risk. No scheme was withdrawn and no key, path or wallet changed: what
+changed is which scheme the device picks when nobody has chosen one. Concretely:
+
+- **To keep using your legacy addresses**, tap Export, then the BIP44 tab, and use the
+  address rows there. They are the same addresses they always were.
+- **To spend legacy coins**, just spend them. From 0.2.2 this device signs a P2PKH input of
+  its own, which it refused to do before, so the coins that could only be moved by exporting
+  the recovery phrase to other software can now be moved by the device itself. The file must
+  carry the full previous transaction for every legacy input - Sparrow, Electrum and Bitcoin
+  Core all attach it - because a legacy signature commits to no amount at all (section 2).
+- **To move onto native segwit**, build an ordinary transaction spending the legacy coins to
+  a BIP-84 address of the same wallet, which Receive now shows by default, and sign it here.
+- **When you set a coordinator up**, hand it the descriptor from the top of the Export tab
+  rather than the bare xpub. The descriptor carries the master fingerprint and the derivation
+  path, so nothing is left for the coordinator to guess - which is the mistake that put these
+  coins on a legacy address in the first place.
 
 A returning user's remembered "Address #0" changes from a `1...` address to a `bc1q...`
-address as a result. That is intended and is stated in section 8. Legacy addresses stay
-visible under Export > BIP44, and coins already received on them become spendable by this
-device for the first time under section 1.
+address as a result. That is intended and is stated in section 8.
 
 ---
 
 ## 5. Where this release stands
 
 The three decisions above are ratified by this document. They land in five steps, in this
-order, each one revertable on its own and each one proved before the next begins:
+order, each one revertable on its own and each one proved before the next begins. Four are
+done; the fifth is the release gate and has not run.
 
-1. this document, the `KNOWN-ISSUES` entries, and the R-26 rows in `UX-SCREENS.md`, plus
-   the legacy amount rule in `WALLET-API.md` - the ratification act, which changes no
+1. DONE - this document, the `KNOWN-ISSUES` entries, and the R-26 rows in `UX-SCREENS.md`,
+   plus the legacy amount rule in `WALLET-API.md` - the ratification act, which changes no
    behaviour;
-2. R-26 itself: one arm in `model.rs`, one code in `notyas-ui`, host tests both ways, and
-   the uisim frame that puts the new band on both panels;
-3. legacy admission in `checks.rs`, and the legacy digest, signer arm and post-sign gate
-   branch in `sign.rs` and `psbt/signer.rs`, with the amount-rule pins from section 2;
-4. the Receive and Export defaults from section 4;
-5. the two-board hardware pass, which is the release gate: the corpus legacy case signed and
-   verified on hardware, the claimed-amount negative refused on hardware, and a P2SH input
-   claiming our key still refused at check 4 - evidence the refusal was not loosened for the
-   kinds that remain unsignable.
+2. DONE - R-26 itself: one arm in `model.rs`, one code in `notyas-ui`, host tests both ways,
+   and the uisim frame that puts the new band on both panels;
+3. DONE - legacy admission in `checks.rs`, and the legacy digest, signer arm and post-sign
+   gate branch in `sign.rs` and `psbt/signer.rs`, with the amount-rule pins from section 2.
+   The `legacy` case in `tools/psbtgen` is the CORPUS P3 file, signed on the host and checked
+   by a verifier that re-derives everything independently, with a bit-flip negative beside
+   it;
+4. DONE - the Receive and Export defaults from section 4, with the host suite green and the
+   uisim goldens re-approved for the four frames the reorder moves;
+5. NOT RUN - the two-board hardware pass, which is the release gate: the corpus legacy case
+   signed and verified on hardware, the claimed-amount negative refused on hardware, and a
+   P2SH input claiming our key still refused at check 4 - evidence the refusal was not
+   loosened for the kinds that remain unsignable.
 
 A tag is cut only after step 5. Until then this document describes what 0.2.2 is, not what
-any built image does.
+any built image has been shown to do.
 
 ---
 
@@ -323,14 +402,23 @@ All twelve items in `docs/RELEASE-0.2.0.md` section 5 and item 13 in
 
 14. **Receive now offers a native segwit address where 0.2.1 offered a legacy one.** A
     device upgraded from 0.2.1 shows `bc1q...` as Address #0 for the same wallet that showed
-    `1...` before. No key, path or wallet changed, and nothing was lost: the legacy
-    addresses are still derived, still listed under Export > BIP44, and coins on them are
-    spendable by this device from 0.2.2 onward. Anything already handed out keeps working.
+    `1...` before, and prints the scheme beside the path under it. No key, path or wallet
+    changed, and nothing was lost: the legacy addresses are still derived, still listed
+    under Export > BIP44, and coins on them are spendable by this device from 0.2.2 onward.
+    Anything already handed out keeps working. If you want a legacy address, Export > BIP44
+    is where the address rows are. Section 4 says what to do if you already hold coins on
+    one.
 15. **A P2SH input is refused with R-26**, including a wrapped-segwit input of yours whose
     redeem script the coordinator left out of the file. For that case the remedy is in the
     refusal text: re-export the transaction with the redeem script included. For genuine
     P2SH multisig there is no remedy in this release; it is not a script type this device
     signs.
+16. **The address rows on an Export tab now start below the first screenful.** The
+    descriptor block and its explanation lead the tab, so on the 800x480 panel the receive
+    addresses and their QR buttons are reached by dragging rather than being visible on
+    arrival. Every row including the last stays reachable - that is asserted at the scroll
+    clamp on both panels and every tab - but a user who expected Address #0 without
+    scrolling has to scroll. Section 4 says why the descriptor was given the top.
 
 ---
 
@@ -359,7 +447,7 @@ Paste into the GitHub release, in this order:
 2. Section 2 of this document in full: the legacy amount rule, which is the security
    statement of this release and the sentence a reviewer should check the code against.
 3. Sections 1, 3 and 4: the three fixes, with what each was and what it becomes.
-4. Section 8: the two new buyer-facing limitations.
+4. Section 8: the three new buyer-facing limitations.
 5. Verification: point at `docs/VERIFYING.md` and give the key fingerprint inline (section 9
    above).
 6. Reproducibility status: the exact line `tools/release.sh sign` prints for this tag.

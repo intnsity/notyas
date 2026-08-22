@@ -357,6 +357,12 @@ fn a_stored_wallet_reaches_its_public_keys_when_the_embedder_sends_them() {
         regions_are_sane(&ui, w, h);
         // What S-26 is FOR: the account xpub and the receive addresses under it, each
         // offerable as a QR. This is the whole of "a stored wallet offers no addresses".
+        // Scrolled to rather than expected at the top of the tab: the export card leads
+        // with the origin-carrying descriptor and its explainer, so the bare account key
+        // sits below the first viewport on the short panel. The claim here is that the key
+        // is REACHABLE, which is what the drag proves - exactly as it does for the address
+        // row two lines below.
+        scroll_to(&mut ui, RegionId::QrXpub, w, h);
         assert!(has(&ui, RegionId::QrXpub), "{w}x{h}: the account xpub must be exportable");
         scroll_to(&mut ui, RegionId::QrAddress(0), w, h);
         let Some(UiRequest::Qr(target)) = tap(&mut ui, RegionId::QrAddress(0)) else {
