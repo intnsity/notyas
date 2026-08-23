@@ -116,11 +116,17 @@ hold the radio in reset from power-on. Details: [docs/SECURITY.md](docs/SECURITY
 6. **To save wallets or sign transactions**, provision the board first:
    [docs/PROVISIONING.md](docs/PROVISIONING.md). This burns one eFuse key block and is irreversible.
 
+![Setting the first PIN](docs/media/first-pin.gif)
+
+*Setting the first PIN: entered twice, and a mismatch drops both entries.*
+
 ---
 
 ## Setting up your wallet software
 
 **Give your wallet software the output descriptor from the Export tab, not the bare xpub below it.**
+
+![A stored wallet: receive, export, and the actions it offers](docs/media/wallet-details.gif)
 
 The descriptor carries the wallet's root fingerprint and derivation path. A bare xpub does not -
 so wallet software has to guess, and it often guesses wrong. BlueWallet defaults bare xpubs to
@@ -154,6 +160,12 @@ been tested is a single Bitcoin Core 29.4 round trip via the development console
 4. Sign. Every signature is re-verified against a recomputed sighash before the file is released.
 5. Write back to the card, or show as a QR (if 1089 bytes or less).
 6. Finalize and broadcast in your wallet software.
+
+![Reviewing and signing a PSBT](docs/media/psbt-signing.gif)
+
+*The file off the card, the review pages, the hold, and the written file. The last frame shows
+the Deliver screen drawing its status card over the scroll footer - that is a real open defect,
+[K35](docs/KNOWN-ISSUES.md), not an artefact of this recording.*
 
 If the device refuses the file, it shows a full-screen refusal with a code, what happened, why it
 matters, and what to do. The most common refusals:
@@ -201,6 +213,10 @@ to download - the release container never built until 0.2.3.
    any spending authority exists.
 
 Full threat model and accepted risks: [docs/SECURITY.md](docs/SECURITY.md).
+
+![Verify device](docs/media/device-fingerprint.gif)
+
+*Verify device: what the board reports about itself, read from the running system.*
 
 ---
 
