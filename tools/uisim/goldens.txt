@@ -168,6 +168,11 @@ keep-or-save/fork                  720x1280  a3dc75c9578e7a69 ink=0,0,720,1254  
 keep-or-save/fork                  800x480   9aaf18cde1346a42 ink=0,0,800,452         px=235884   reg=3:a32ab79e
 keep-or-save/fork                  800x1280  7258445efcb89922 ink=0,0,800,1252        px=416652   reg=3:d2819362
 keep-or-save/fork                  1024x600  6abb3a09cfcd57fe ink=0,0,1024,566        px=399596   reg=3:b31ab257
+keep-or-save/fork-with-pin         720x720   aaac2da297828390 ink=0,0,720,694         px=351596   reg=3:3185518e
+keep-or-save/fork-with-pin         720x1280  ce505386238a483d ink=0,0,720,1254        px=376172   reg=3:e022496d
+keep-or-save/fork-with-pin         800x480   94e28f2fc3f8680a ink=0,0,800,452         px=235884   reg=3:a32ab79e
+keep-or-save/fork-with-pin         800x1280  feb7b63743a9a3f8 ink=0,0,800,1252        px=416652   reg=3:d2819362
+keep-or-save/fork-with-pin         1024x600  c4c6a376a660c6df ink=0,0,1024,566        px=399596   reg=3:b31ab257
 lock/named                         720x720   fa8ea2c3043c3094 ink=0,0,720,694         px=70823    reg=2:17b0ffdc
 lock/named                         720x1280  608e951e70fc8e79 ink=0,0,720,1254        px=76583    reg=2:e431c94b
 lock/named                         800x480   7de16283e07401dd ink=0,0,800,452         px=64423    reg=2:0ab9c717
@@ -543,6 +548,11 @@ settings/remove-pin-typed          720x1280  981964701bff91a0 ink=24,24,672,1232
 settings/remove-pin-typed          800x480   e2b7f93dbd4dc66a ink=26,26,748,428       px=151716   reg=33:4e70f085
 settings/remove-pin-typed          800x1280  a0efcc462627a32c ink=26,26,748,1228      px=286192   reg=33:e1870708
 settings/remove-pin-typed          1024x600  99fdffd0ee257efa ink=32,32,960,536       px=178302   reg=33:b8d13564
+settings/scrolled                  720x720   85ff510c025ce4a9 ink=0,0,720,696         px=353280   reg=7:f2ae80bd
+settings/scrolled                  720x1280  fdc975888f89879e ink=0,0,720,1256        px=418176   reg=8:28728fc2
+settings/scrolled                  800x480   993447c5c121916e ink=0,0,800,454         px=248672   reg=5:a159c33a
+settings/scrolled                  800x1280  2dccd572419bb263 ink=0,0,800,1254        px=465344   reg=8:79be2c07
+settings/scrolled                  1024x600  ac74bdb8cdab99a5 ink=0,0,1024,568        px=405504   reg=6:9ce79d33
 sign-source/empty                  720x720   b71f44d4ecee18cc ink=0,0,720,672         px=423168   reg=3:a15f88cc
 sign-source/empty                  720x1280  7c01a79d324f8cd6 ink=0,0,720,696         px=439680   reg=3:7bd8e36e
 sign-source/empty                  800x480   aadd73db612cd905 ink=0,0,800,417         px=283457   reg=3:c1ef4b67

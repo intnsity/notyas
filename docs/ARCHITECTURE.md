@@ -123,9 +123,12 @@ plain layout: full-width cards, hairline rules, no animation.
 
 ## Build system
 
-- Working tree lives on the NAS share (canonical, git). Builds set CARGO_TARGET_DIR to
-  a local disk via tools/build.ps1 (UNC + heavy cmake builds do not mix; sources on
-  UNC, artifacts local).
+- A clone builds into its own target/, like any other Rust project. The development
+  workstation keeps its working tree on local disk with a NAS mirror, and pins target-dir
+  off the tree in an untracked .cargo/config.toml; tools/build.ps1 sets a per-board
+  CARGO_TARGET_DIR for the firmware, and an environment variable outranks that pin.
+  tools/ci/check-target-dir.sh refuses a build whose artifacts would land on a share
+  (UNC + heavy cmake builds do not mix; sources on UNC, artifacts local).
 - Rust nightly (pinned in rust-toolchain.toml) + ldproxy + espflash. ESP-IDF v5.5.x
   installed/managed by esp-idf-sys (embuild), version pinned in firmware config.
 - **Chip revision**: firmware is built for the pre-v3.0 P4 family (dev board is rev

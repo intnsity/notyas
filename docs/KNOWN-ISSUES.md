@@ -1172,6 +1172,39 @@ added for this must be added there too or it is uncovered by the section gate.
 
 ---
 
+### K35. The Deliver screen draws its status card over the scroll footer
+
+**Found:** 2026-08-23, while auditing the pictures a first-time reader would be shown. Not by a
+gate: `tools/uisim` renders the collision faithfully and `check-screenshots.sh` compares the
+render against itself, so a frame that is wrong on the glass is byte-identical to a frame that
+is wrong in the golden. Two eyes on the image found it; nothing automated can.
+
+On `deliver/written` the status card is drawn without a clip against the scroll footer, so four
+runs land in one band. At 720x720 (`docs/screenshots/ui/112-deliver-written.png`, and 114 at
+800x480) the reader sees `Signatures re-checked: 2 of 2` and the reviewed-file digest sitting
+on top of `2712 bytes; QR limit 1089.` and `more below`. Every one of those is legible alone
+and none of them is legible together.
+
+It matters more than a cosmetic defect because of WHERE it is. This is the screen a user reaches
+the instant after a signature exists, and two of the four colliding runs are the ones that say
+what was signed: how many inputs carry a signature, and the digest of the file that was
+reviewed. A user checking that the device signed what they approved is reading exactly the text
+this bug obscures.
+
+It is the same shape as the Receive screen overlap fixed in 0.2.1 - a block positioned from an
+assumed height rather than a measured one - and the fix is likely the same, `mono_wrapped_height`
+against the drawn content instead of a constant, plus a clip at the viewport edge.
+
+**Does it block 0.2.3?** No, and that is a deliberate call rather than a shrug. 0.2.3 is tagged
+and signed, its artifacts are built and reproduced, and one board has already signed a mainnet
+transaction on this code. Re-rendering the screen changes firmware bytes and would invalidate a
+signature that has already been published. The honest response is to record it, stop showing the
+frame as a normal success state, and fix it in 0.2.4 where the change can be reviewed on its own
+rather than smuggled in behind a tag.
+
+Until then `docs/TOUR.md` names it where the picture appears rather than letting a reader assume
+their device is broken, and the signing animation on the README ends a step earlier.
+
 ## CLOSED
 
 ### K11. A cosigner's unproven amount beside our segwit v0 input could hand a whole coin to the miner

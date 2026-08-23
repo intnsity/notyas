@@ -18,6 +18,10 @@
 //!   read off a device and nothing here is a usable seed.
 //! - [`drive`] - tapping region centres. No screen is reached any way a finger could not.
 //! - [`catalog`] - the render set as DATA, plus the per-screen state obligations.
+//! - [`flows`] - the RECORDED routes as data: the catalogue's screens put back in order,
+//!   photographed step by step. Illustration, not gate; see the module docs.
+//! - [`index`] - what each committed picture SHOWS, and the generated file index. The
+//!   captions are keyed on the frame, so a promotion without one fails the tests.
 //! - [`gate`] - the three tiers, the manifest format, and the approval policy.
 //!
 //! The simulator plays the firmware's role in the QR round trip: notyas-ui only ever
@@ -27,5 +31,7 @@
 pub mod catalog;
 pub mod drive;
 pub mod fixtures;
+pub mod flows;
 pub mod gate;
+pub mod index;
 pub mod panel;

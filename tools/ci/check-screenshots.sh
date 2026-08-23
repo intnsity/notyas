@@ -5,8 +5,10 @@
 # tools/uisim drives notyas-ui through its public touch API and renders every
 # screen to PNG. Those PNGs are committed: they are the UI review surface, they
 # are what a reader of the README sees, and they are the only artifact of the UI
-# that survives outside a running device. Two failures they are prone to, both
-# silent:
+# that survives outside a running device. INDEX.md, which says what each picture
+# shows, is written by the same run from tools/uisim/src/index.rs and is checked
+# here for the same reason: a caption that has stopped matching its picture is a
+# stale screenshot in prose. Two failures they are prone to, both silent:
 #
 #   1. Stale. A UI change lands, nobody re-runs the simulator, and the pictures
 #      go on showing a screen that no longer exists.

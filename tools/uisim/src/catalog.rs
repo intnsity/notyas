@@ -108,7 +108,7 @@ pub struct Frame {
 // readable in the recipe instead of being twelve taps deep.
 
 /// A device the embedder has told about itself, on Home.
-fn home(ui: &mut Ui) {
+pub(crate) fn home(ui: &mut Ui) {
     ui.set_verify_info(dummy_verify_info());
 }
 
@@ -162,16 +162,28 @@ fn at_fork_provisioned(ui: &mut Ui) {
     at_fork(ui);
 }
 
-/// ...-> S-06 step 1, on the store state this screen exists to format: a device key
-/// present, nothing sealed, no PIN. `pin` and `attempts_left` are `None` because a blank
-/// store has no PIN to have a shape or an attempt budget.
-fn at_new_pin(ui: &mut Ui) {
+/// A provisioned device that has written nothing: a device key present, nothing sealed,
+/// no PIN. `pin` and `attempts_left` are `None` because a blank store has no PIN to have
+/// a shape or an attempt budget.
+///
+/// Named rather than inlined because a frame and a recording have to be able to state the
+/// SAME store: the store status decides which of the two Save-card lines the fork prints
+/// and whether the save leg stops to set a PIN, so a recipe that let it default would be
+/// photographing whichever device `LockInfo::default` happens to describe.
+pub(crate) fn blank_store(ui: &mut Ui) {
+    home(ui);
     ui.set_lock_info(LockInfo {
         status: StoreStatus::Blank,
         attempts_left: None,
         pin: None,
         ..dummy_lock_info()
     });
+}
+
+/// ...-> S-06 step 1, from that store: the fork's save leg on a device with no PIN stops
+/// here before anything is written.
+fn at_new_pin(ui: &mut Ui) {
+    blank_store(ui);
     at_fork(ui);
     tap(ui, RegionId::SaveToDevice);
 }
@@ -294,8 +306,18 @@ fn multisig_registry(ui: &mut Ui, claims: u8, held: Vec<notyas_ui::RegistrationI
 /// The only state in which S-21 offers Sign, and the reason it is a route of its own: the
 /// wallet home gates the card on holding a `Report`, because signing runs on a seed the
 /// embedder only ever has after unsealing a slot. Everything below S-27 starts here.
-fn wallet_home_signable(ui: &mut Ui) {
+pub(crate) fn wallet_home_signable(ui: &mut Ui) {
     unlocked_with_dummy_wallets(ui);
+    open_first_wallet(ui);
+}
+
+/// The first row of the DUMMY list, tapped and answered with its derivation.
+///
+/// Split out of [`wallet_home_signable`] because a recording has to stop between the two:
+/// the wallet list is one frame and the wallet home is the next, and the tap that separates
+/// them is what a viewer is being shown. Still one definition, because the tap and the
+/// embedder's answer are a single act - a second copy of it would drift.
+pub(crate) fn open_first_wallet(ui: &mut Ui) {
     let Some(UiRequest::OpenWallet(slot)) = tap(ui, RegionId::ListRow(0)) else {
         panic!("a wallet row must ask the embedder to unseal it");
     };
@@ -409,6 +431,18 @@ fn multisig_saved(ui: &mut Ui) {
     ui.registration_result(RegistrationOutcome::Saved(dummy_saved_registration()));
 }
 
+/// Answer a [`UiRequest::Qr`] the way the firmware does, and put the symbol on the panel.
+///
+/// notyas-ui only ever RENDERS a precomputed matrix - it stays no_std and carries no
+/// encoder - so the std-side encode is the embedder's job on the device and this crate's
+/// job here. One helper because it is one round trip: a second copy of it would be a second
+/// chance to answer a request with a matrix that came from somewhere else.
+pub(crate) fn show_qr(ui: &mut Ui, target: notyas_ui::QrTarget) {
+    let matrix = notyas_core::qr::matrix(&target.payload).expect("encode a QR payload");
+    let data = QrData::from_matrix(&matrix).expect("square matrix");
+    ui.show_qr(target, data);
+}
+
 /// The schemes screen on its BIP84 tab, the one scheme with both a SLIP-132 rendering
 /// and address rows.
 fn schemes_bip84(ui: &mut Ui) {
@@ -417,10 +451,15 @@ fn schemes_bip84(ui: &mut Ui) {
     tap(ui, RegionId::Tab(2));
 }
 
-/// The Verify screen with a session open, which is the state that carries every row.
-fn verify_unlocked(ui: &mut Ui) {
+/// Home, with a session open. What [`verify_unlocked`] is standing on before it taps.
+pub(crate) fn home_unlocked(ui: &mut Ui) {
     ui.set_verify_info(dummy_verify_info());
     ui.set_lock_info(LockInfo { status: StoreStatus::Unlocked, ..dummy_lock_info() });
+}
+
+/// The Verify screen with a session open, which is the state that carries every row.
+fn verify_unlocked(ui: &mut Ui) {
+    home_unlocked(ui);
     tap(ui, RegionId::HomeVerifyDevice);
 }
 
@@ -521,6 +560,11 @@ pub const CATALOG: &[Frame] = &[
         name: "home/store-blank",
         variant: "store-blank",
         screen: ScreenId::Home,
+        // Not pictured, and the reason is the finding: this renders byte for byte the same
+        // as `home/fresh` on all five panels, because Home reads no store field. That is
+        // the property, not an omission - a device between provisioning and its first PIN
+        // is indistinguishable, from the entrance, from one that was never provisioned.
+        // Committing the same bytes under a second name would suggest otherwise.
         doc: Doc::None,
         // A device key is burned but the ledger was never formatted: still stateless,
         // still no anti-phishing words, and the lock screen is unreachable (R20). The
@@ -656,6 +700,18 @@ pub const CATALOG: &[Frame] = &[
         screen: ScreenId::KeepOrSave,
         doc: Doc::Both("41-keep-or-save", "74-keep-or-save-800x480"),
         build: at_fork,
+    },
+    Frame {
+        name: "keep-or-save/fork-with-pin",
+        variant: "fork-with-pin",
+        screen: ScreenId::KeepOrSave,
+        doc: Doc::Both("159-keep-or-save-with-pin", "160-keep-or-save-with-pin-800x480"),
+        // The same fork on a device that already has a PIN. The Save card changes what it
+        // promises - "Stored encrypted. The PIN is the key." rather than "Sets a PIN
+        // first." - because there is no PIN left to set, and the save leg goes straight to
+        // naming the wallet. Both wordings are pictured because a reader who met one and
+        // then met the other would otherwise have no way to tell which device they are on.
+        build: at_fork_provisioned,
     },
     // --- S-20 Name the wallet ----------------------------------------------------------
     Frame {
@@ -889,7 +945,7 @@ pub const CATALOG: &[Frame] = &[
         name: "mnemonic/stored-masked",
         variant: "stored-masked",
         screen: ScreenId::MnemonicDisplay,
-        doc: Doc::None,
+        doc: Doc::Portrait("143-stored-words-masked"),
         // The same screen, the same bullet run, reached from a STORED wallet instead of
         // from the dice. If the masking law ever grew a second implementation this frame is
         // where the two would stop matching.
@@ -903,7 +959,7 @@ pub const CATALOG: &[Frame] = &[
         name: "mnemonic/stored-revealed",
         variant: "stored-revealed",
         screen: ScreenId::MnemonicDisplay,
-        doc: Doc::None,
+        doc: Doc::Portrait("144-stored-words-revealed"),
         // Through S-13's reveal gate, verbatim, and nowhere else: a stored wallet's words
         // are no cheaper to show than a fresh one's.
         build: |ui| {
@@ -963,7 +1019,7 @@ pub const CATALOG: &[Frame] = &[
         name: "schemes/bip84",
         variant: "bip84",
         screen: ScreenId::Schemes,
-        doc: Doc::Portrait("08-schemes-bip84"),
+        doc: Doc::Both("08-schemes-bip84", "156-schemes-bip84-800x480"),
         build: schemes_bip84,
     },
     Frame {
@@ -987,9 +1043,7 @@ pub const CATALOG: &[Frame] = &[
             let Some(UiRequest::Qr(target)) = tap(ui, RegionId::QrDescriptor) else {
                 panic!("the descriptor QR button raised no request");
             };
-            let matrix = notyas_core::qr::matrix(&target.payload).expect("encode descriptor");
-            let data = QrData::from_matrix(&matrix).expect("square matrix");
-            ui.show_qr(target, data);
+            show_qr(ui, target);
         },
     },
     // --- S-09 Phrase entry -------------------------------------------------------------
@@ -1150,9 +1204,13 @@ pub const CATALOG: &[Frame] = &[
         name: "lock/wipe-off",
         variant: "wipe-off",
         screen: ScreenId::Lock,
+        // Not pictured: identical bytes to `lock/named` on all five panels. This screen
+        // draws the name, "Locked", the hint and the storage word and reads no attempt
+        // field at all, which is Q2(a) holding - a locked device volunteers nothing about
+        // its wipe budget. The frame stays because that has to keep being measured.
         doc: Doc::None,
-        // Wipe policy off: there is no attempt count to state, so the line that usually
-        // carries one is absent.
+        // Wipe policy off, and nothing on the panel moves: there is no attempt count on
+        // this screen in any state, so there is no line for the policy to take away.
         build: |ui| {
             locked(
                 ui,
@@ -1214,7 +1272,7 @@ pub const CATALOG: &[Frame] = &[
         name: "pin/last-attempt",
         variant: "last-attempt",
         screen: ScreenId::PinEntry,
-        doc: Doc::None,
+        doc: Doc::Portrait("142-pin-last-attempt"),
         // One attempt before the store is destroyed. The screen has to say so in a way
         // nobody can read as routine, and it is the state hardest to reach by hand.
         build: |ui| {
@@ -1227,14 +1285,14 @@ pub const CATALOG: &[Frame] = &[
         name: "pin-create/step-1",
         variant: "step-1",
         screen: ScreenId::PinCreate,
-        doc: Doc::None,
+        doc: Doc::Both("138-pin-create", "139-pin-create-800x480"),
         build: at_new_pin,
     },
     Frame {
         name: "pin-create/step-2",
         variant: "step-2",
         screen: ScreenId::PinCreate,
-        doc: Doc::None,
+        doc: Doc::Portrait("140-pin-create-again"),
         build: at_new_pin_confirm,
     },
     Frame {
@@ -1257,7 +1315,7 @@ pub const CATALOG: &[Frame] = &[
         name: "pin-create/mismatch",
         variant: "mismatch",
         screen: ScreenId::PinCreate,
-        doc: Doc::None,
+        doc: Doc::Portrait("141-pin-create-mismatch"),
         // A second entry that differs from the first. The screen returns to step 1 with
         // BOTH entries gone, so what this pictures is an empty step 1 carrying the
         // mismatch line - which is the whole point of photographing it.
@@ -1310,7 +1368,7 @@ pub const CATALOG: &[Frame] = &[
         name: "wallet-list/none",
         variant: "none",
         screen: ScreenId::WalletList,
-        doc: Doc::None,
+        doc: Doc::Portrait("137-wallet-list-empty"),
         // A PIN set and nothing stored yet: the empty state of the device's real home.
         build: |ui| unlocked(ui, Vec::new()),
     },
@@ -1318,7 +1376,7 @@ pub const CATALOG: &[Frame] = &[
         name: "wallet-list/one",
         variant: "one",
         screen: ScreenId::WalletList,
-        doc: Doc::None,
+        doc: Doc::Portrait("136-wallet-list-one"),
         build: |ui| unlocked(ui, dummy_wallets().into_iter().take(1).collect()),
     },
     Frame {
@@ -1345,6 +1403,22 @@ pub const CATALOG: &[Frame] = &[
         screen: ScreenId::Settings,
         doc: Doc::Both("53-settings", "60-settings-800x480"),
         build: settings,
+    },
+    Frame {
+        name: "settings/scrolled",
+        variant: "scrolled",
+        screen: ScreenId::Settings,
+        doc: Doc::Both("157-settings-scrolled", "158-settings-scrolled-800x480"),
+        // The foot of the list, which is the only place the card row can be seen. The
+        // default frame ends on "Scroll for more settings." on every shipped panel, so a
+        // reader of the committed pictures alone could not learn that this device formats
+        // cards at all - and the S-49 pictures would document a screen with no way in.
+        // Reached by dragging to the foot rather than by an index, because a row addressed
+        // by position moves the day a setting is added above it.
+        build: |ui| {
+            settings(ui);
+            let _ = last_list_row(ui);
+        },
     },
     Frame {
         name: "settings/network-testnet",
@@ -1440,15 +1514,16 @@ pub const CATALOG: &[Frame] = &[
     // erased. That ratio is the feature: a format is offered for one fault and refused for
     // every other reason a card will not work.
     //
-    // `Doc::None` throughout. The committed picture set is a curated, historically
-    // numbered sequence, and appending to it is a separate decision from shipping the
-    // screen - the gate covers every one of these on all five panels either way, which is
-    // what stops a layout defect reaching a device.
+    // Six of the eight are pictured, and the two that are not are the second card
+    // refusal and the half-written card. A reader who never opens this screen still has
+    // to be able to learn from the docs that the device formats cards at all, which is
+    // what the committed set now says; the gate covers all eight on all five panels
+    // either way, which is what stops a layout defect reaching a device.
     Frame {
         name: "format-card/offer",
         variant: "offer",
         screen: ScreenId::FormatCard,
-        doc: Doc::None,
+        doc: Doc::Both("145-format-card", "146-format-card-800x480"),
         build: |ui| format_card(ui, FormatOffer::Ready(dummy_format_target())),
     },
     Frame {
@@ -1472,7 +1547,7 @@ pub const CATALOG: &[Frame] = &[
         name: "format-card/refused-firmware",
         variant: "refused",
         screen: ScreenId::FormatCard,
-        doc: Doc::None,
+        doc: Doc::Portrait("150-format-refused-firmware"),
         // The refusal that stops the worst outcome this feature has: the FIRMWARE cannot
         // read cards, so every card looks unreadable, and formatting one would erase
         // somebody's data to work around a build setting.
@@ -1490,21 +1565,21 @@ pub const CATALOG: &[Frame] = &[
         name: "format-card/consequence",
         variant: "consequence",
         screen: ScreenId::FormatCard,
-        doc: Doc::None,
+        doc: Doc::Portrait("147-format-consequence"),
         build: format_consequence,
     },
     Frame {
         name: "format-card/typed",
         variant: "typed",
         screen: ScreenId::FormatCard,
-        doc: Doc::None,
+        doc: Doc::Portrait("148-format-typed"),
         build: format_typed,
     },
     Frame {
         name: "format-card/done",
         variant: "done",
         screen: ScreenId::FormatCard,
-        doc: Doc::None,
+        doc: Doc::Portrait("149-format-done"),
         build: |ui| {
             format_writing(ui);
             ui.format_result(FormatOutcome::Done(String::from(
@@ -1535,7 +1610,7 @@ pub const CATALOG: &[Frame] = &[
         name: "working/formatting-card",
         variant: "formatting-card",
         screen: ScreenId::Working,
-        doc: Doc::None,
+        doc: Doc::Portrait("151-formatting-card"),
         build: format_writing,
     },
     // --- S-44's wrong-PIN policy -------------------------------------------------------
@@ -1764,7 +1839,7 @@ pub const CATALOG: &[Frame] = &[
         name: "review-transaction/fee-stated",
         variant: "fee-stated",
         screen: ScreenId::ReviewTransaction,
-        doc: Doc::None,
+        doc: Doc::Portrait("154-review-fee-stated"),
         // AT LEAST, on every number derived from the fee: a lower bound divided by an exact
         // vsize is still a lower bound.
         build: |ui| review_at(ui, ReviewShape::Stated, 8),
@@ -1780,7 +1855,7 @@ pub const CATALOG: &[Frame] = &[
         name: "review-transaction/warnings-gated",
         variant: "warnings-gated",
         screen: ScreenId::ReviewTransaction,
-        doc: Doc::None,
+        doc: Doc::Portrait("155-review-warnings-gated"),
         // Every page seen, and the hold still absent: an unproven change claim cannot be
         // finished off by a user who read everything and trusted the button.
         build: |ui| review_at(ui, ReviewShape::ClaimedChange, 9),
@@ -1846,7 +1921,7 @@ pub const CATALOG: &[Frame] = &[
         name: "deliver/overwrite-sheet",
         variant: "overwrite-sheet",
         screen: ScreenId::Deliver,
-        doc: Doc::None,
+        doc: Doc::Portrait("152-deliver-overwrite"),
         // A collision is a question, not a failure: nothing was written, and the sheet names
         // the file the user is about to replace.
         build: |ui| {
@@ -1860,7 +1935,7 @@ pub const CATALOG: &[Frame] = &[
         name: "deliver/discard-sheet",
         variant: "discard-sheet",
         screen: ScreenId::Deliver,
-        doc: Doc::None,
+        doc: Doc::Portrait("153-deliver-discard"),
         // The C4b override, offered only after a SECOND failed attempt: one failure is a
         // card to reseat, and a user with a dead slot must still be able to leave.
         build: |ui| {
@@ -2149,7 +2224,11 @@ pub fn required_variants(screen: ScreenId) -> &'static [&'static str] {
         }
         ScreenId::WalletList => &["none", "one", "many", "unreadable-slot"],
         ScreenId::BackupCheck => &["first-word"],
-        ScreenId::KeepOrSave => &["fork"],
+        // Two Save-card wordings, one per store state a user can arrive here in: a device
+        // with no PIN is told saving sets one, a device that has one is told the PIN is
+        // the key. A third is specified for the locked path in
+        // docs/plan-0.2.0/SIMPLE-MODE.md and has no code.
+        ScreenId::KeepOrSave => &["fork", "fork-with-pin"],
         ScreenId::NameWallet => &["empty", "typed", "save-notice"],
         // "stored-with-keys" is the state the PIN is for and the one that used to be
         // unreachable: a wallet the store holds AND whose derivation the embedder handed
@@ -2180,8 +2259,17 @@ pub fn required_variants(screen: ScreenId) -> &'static [&'static str] {
         ScreenId::EraseWallet => &["offer", "words-refused"],
         // The PIN-removal sheet lives on S-44 itself rather than on the policy
         // sub-screen: it is opened from a settings row and draws over settings.
+        // "scrolled" is a state of the LIST rather than of a sheet, and it is here for the
+        // same reason the others are: the card row is below the fold on every shipped
+        // panel, so the default frame cannot show it and no other frame would.
         ScreenId::Settings => {
-            &["default", "network-testnet", "remove-pin-consequence", "remove-pin-typed"]
+            &[
+                "default",
+                "scrolled",
+                "network-testnet",
+                "remove-pin-consequence",
+                "remove-pin-typed",
+            ]
         }
         ScreenId::DeviceName => &["current", "typing", "refused"],
         ScreenId::AboutDeviceWords => &["explainer"],

@@ -34,6 +34,25 @@ pub fn tap(ui: &mut Ui, id: RegionId) -> Option<UiRequest> {
     ui.touch(TouchEvent::Up { x, y })
 }
 
+/// Down on the centre of a region, and left there.
+///
+/// Half a tap, and the beginning of every hold. It returns nothing because a press is not
+/// an activation: no screen in this crate acts on the touch, only on the release or on the
+/// fill, which is the property [`hold`] depends on.
+pub fn press(ui: &mut Ui, id: RegionId) {
+    let r = region(ui, id).rect;
+    ui.touch(TouchEvent::Down { x: r.x + r.w / 2, y: r.y + r.h / 2 });
+}
+
+/// Advance the wall clock by `ms`, with the finger wherever it was left.
+///
+/// The one input here that is not a touch, and the other half of a hold. A press aged part
+/// of the way is a C4c bar caught mid-fill - a state no tap can produce and no still frame
+/// of the catalogue holds, because the gesture is the thing being shown.
+pub fn age(ui: &mut Ui, ms: u32) -> Option<UiRequest> {
+    ui.tick(ms).request
+}
+
 pub fn type_dice(ui: &mut Ui, digits: &str) {
     for c in digits.chars() {
         tap(ui, RegionId::Digit(c as u8 - b'0'));
@@ -88,8 +107,7 @@ pub fn answer_quiz(ui: &mut Ui) {
 /// so the driver has to do both. The finger is left DOWN afterwards, which is what the panel
 /// actually looks like at the moment a hold completes.
 pub fn hold(ui: &mut Ui, id: RegionId) -> Option<UiRequest> {
-    let r = region(ui, id).rect;
-    ui.touch(TouchEvent::Down { x: r.x + r.w / 2, y: r.y + r.h / 2 });
+    press(ui, id);
     let ticked = ui.tick(notyas_ui::HOLD_MS + 1);
     assert!(ticked.dirty, "a filled hold must move the panel");
     ticked.request

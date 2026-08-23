@@ -32,20 +32,18 @@ Sample data - all of it public test-vector material, none of it a real seed:
 - Verify screen: placeholder values, each prefixed DUMMY; on hardware the firmware
   fills them from what it actually read.
 
-| File | Screen |
-|------|--------|
-| 01-home.png | Home menu + mainnet/testnet toggle |
-| 02-dice-entry.png | Dice entry: roll history tail (unmasked typed input), RAW/12/15/18/21/24 mode control, 128 bits collected |
-| 03-mnemonic-masked.png | Mnemonic display, masked (fixed 6-bullet runs) |
-| 04-reveal-confirm.png | Two-step reveal confirm modal |
-| 05-mnemonic-revealed.png | Mnemonic display, revealed |
-| 06-passphrase.png | Passphrase entry, both fields masked ONE bullet per typed character (the INPUT rule), NFKD byte counter |
-| 07-schemes-bip44.png | Schemes, BIP44 tab (xpub + receive addresses, QR buttons) |
-| 08-schemes-bip84.png | Schemes, BIP84 tab (incl. SLIP-132 zpub + QR buttons) |
-| 09-schemes-qr.png | QR modal (account xpub - public values only; no private-key QR exists) |
-| 10-verify-device.png | Verify device (DUMMY values) |
-| 11-phrase-entry.png | Verify existing seed, typed phrase + checksum advisory |
-| 12-exit-modal.png | Exit-confirmation modal over a screen holding derived secrets |
-| 13-passphrase-shown.png | Passphrase entry with Show on: the literal input, spaces drawn as muted bullets |
-| 14-deriving.png | Deriving interstitial - painted and published before PBKDF2 runs |
-| 15-phrase-autocomplete.png | Phrase entry mid-word: the BIP39 completion strip at full width |
+Each stem is a picture of one frame on one panel. A stem with no suffix is the 720x720
+Waveshare 4B; a stem ending `-800x480` is the Elecrow 5inch. Most frames have only the
+720x720 file, and that means the shorter panel shows the same arrangement. A second file is
+committed where what the shorter panel does is worth seeing on its own: usually because the
+screen rearranges, sometimes because it does not and the content runs past the fold instead.
+The other three shipped geometries are gated and not pictured.
+
+**[INDEX.md](INDEX.md) says what every file shows.** It is generated from
+`tools/uisim/src/index.rs` by the same `tour` that writes the pictures, and it carries the
+catalogue frame each one came from, so a picture leads back to the state that produced it
+and to `cargo run -p uisim -- render <frame>`. Match on the whole stem and never on the
+leading number: five prefixes name two different screens each (72, 73, 74, 90 and 91).
+
+Recordings of routes through these screens, rather than single states, are in
+[docs/media/](../../media) and are embedded from [docs/TOUR.md](../../TOUR.md).

@@ -1,6 +1,19 @@
 /target/
 **/target/
 
+# Host build settings: where cargo puts artifacts on THIS machine. Both files pin
+# target-dir to a local-disk path that exists on the development workstation and nowhere
+# else, and on Linux or macOS cargo reads an absolute Windows path as a relative one, so a
+# clone would build into a literal "C:" directory inside itself. They are kept on the
+# working tree - the NAS copy is a robocopy mirror, so the pin travels with it and a cargo
+# run launched against the share still lands off it - and out of the published repository,
+# where a clone builds into its own target/ like any other Rust project.
+# tools/ci/check-target-dir.sh is the tripwire that does belong in the repository.
+# firmware/.cargo/config.toml stays tracked: it carries the target triple, the linker and
+# the IDF pins, and holds no machine-specific path.
+/.cargo/config.toml
+/tools/xverify/.cargo/config.toml
+
 # Release artifacts from the container build (tools/repro/build.sh writes /out,
 # check-repro.sh writes out/check-repro/). They are published from a release page,
 # never committed: a binary in git is a second copy of the thing the whole
