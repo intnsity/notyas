@@ -13,7 +13,7 @@
 # owner decision, quotes it, and checks the one property of the tree that decision makes
 # mechanically checkable. A failure here means the tree and the ratified answer disagree;
 # the tree is wrong until the owner says otherwise, and a deliberate change of mind is
-# made by editing docs/plan-0.2.0/OPEN-QUESTIONS.md (or PIN-MODES.md) FIRST and this file
+# made by editing docs/archive/plan-0.2.0/OPEN-QUESTIONS.md (or PIN-MODES.md) FIRST and this file
 # second. That is the reason every assertion quotes its decision inline: a future reader
 # staring at a red gate has to be able to tell a regression from a decision that moved,
 # without reading 168 KB of question register.
@@ -114,8 +114,8 @@ unevaluable() {
 # only survives while the thing it excuses is still there.
 
 EXEMPT_SPEC="\
-Q4-DOCS|docs/plan-0.2.0/OPEN-QUESTIONS.md|the decision register itself. Q4 records the superseded 6-character proposal and Q62 records the rejected 10-digit option (a); a register that could not quote the answer it replaced would stop being a record.
-Q4-DOCS|docs/plan-0.2.0/UX-REVISION.md|entry D1 is the review that found this exact contradiction and quotes the wrong literal to name it. Deleting the quote would delete the finding.
+Q4-DOCS|docs/archive/plan-0.2.0/OPEN-QUESTIONS.md|the decision register itself. Q4 records the superseded 6-character proposal and Q62 records the rejected 10-digit option (a); a register that could not quote the answer it replaced would stop being a record.
+Q4-DOCS|docs/archive/plan-0.2.0/UX-REVISION.md|entry D1 is the review that found this exact contradiction and quotes the wrong literal to name it. Deleting the quote would delete the finding.
 "
 
 # Which exemptions fired, recorded in a FILE rather than a variable. exempt_filter runs
@@ -893,7 +893,7 @@ case "${1:-}" in
 esac
 
 printf '=== check-ratified: the tree against the ratified answers ===\n'
-printf 'Register: docs/plan-0.2.0/OPEN-QUESTIONS.md and docs/plan-0.2.0/PIN-MODES.md\n'
+printf 'Register: docs/archive/plan-0.2.0/OPEN-QUESTIONS.md and docs/archive/plan-0.2.0/PIN-MODES.md\n'
 
 if ! self_test; then
     printf '\ncheck-ratified: BROKEN - a detector failed its own fixture.\n' >&2
@@ -929,7 +929,7 @@ fi
 if [ "$N_FAIL" -gt 0 ]; then
     printf '\ncheck-ratified: FAILED - %s violation(s) of a ratified answer.\n' "$N_FAIL" >&2
     printf 'Each one is a defect until the owner says otherwise. To change a decision,\n' >&2
-    printf 'edit docs/plan-0.2.0/OPEN-QUESTIONS.md first and this gate second.\n' >&2
+    printf 'edit docs/archive/plan-0.2.0/OPEN-QUESTIONS.md first and this gate second.\n' >&2
     exit 1
 fi
 

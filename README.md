@@ -22,7 +22,7 @@ Screenshots are rendered by the host simulator from the same UI code the device 
 
 ---
 
-## Status: preview firmware — do not use with real funds
+## Status: preview firmware - do not use with real funds
 
 **This is preview firmware. Do not put real funds behind a seed it generates.**
 
@@ -41,21 +41,21 @@ Full details: [docs/SECURITY.md](docs/SECURITY.md) and [docs/KNOWN-ISSUES.md](do
 
 ## What it does
 
-- **Dice-based seed generation** — roll physical dice, device counts entropy in real time.
+- **Dice-based seed generation** - roll physical dice, device counts entropy in real time.
   Six modes: RAW (prefix-free base-6) and fixed 12/15/18/21/24-word.
-- **Mnemonic display and backup** — masked by default, two-step reveal, word-by-word backup
+- **Mnemonic display and backup** - masked by default, two-step reveal, word-by-word backup
   check that cannot be skipped.
-- **Restore from mnemonic** — BIP-39 autocomplete, checksum validation, final-word helper.
-- **Optional BIP-39 passphrase** — explicit opt-in, show/hide toggle, NFKD byte counter.
-- **Key derivation** — BIP-32/44/48/49/84/86. Output descriptors, account xpubs, SLIP-132
+- **Restore from mnemonic** - BIP-39 autocomplete, checksum validation, final-word helper.
+- **Optional BIP-39 passphrase** - explicit opt-in, show/hide toggle, NFKD byte counter.
+- **Key derivation** - BIP-32/44/48/49/84/86. Output descriptors, account xpubs, SLIP-132
   forms, receive addresses with QR codes.
-- **Sealed storage** (provisioned boards) — save wallets to flash under a PIN, survive power
+- **Sealed storage** (provisioned boards) - save wallets to flash under a PIN, survive power
   cycles, anti-phishing words at half-PIN entry, attempt counter with wipe at 15 wrong PINs.
-- **Transaction signing** — load a PSBT from microSD, review it page by page, sign with a
+- **Transaction signing** - load a PSBT from microSD, review it page by page, sign with a
   hold gesture, write the signed file back to the card or show it as a QR.
-- **Multisig** — import and register k-of-n P2WSH `sortedmulti` wallets, up to 15 cosigners.
+- **Multisig** - import and register k-of-n P2WSH `sortedmulti` wallets, up to 15 cosigners.
   The device proves membership before any screen renders the wallet.
-- **Verify device** — firmware version, board, digests, eFuse state, boot self-test, radio-kill
+- **Verify device** - firmware version, board, digests, eFuse state, boot self-test, radio-kill
   readback. Every value is read at boot, not compiled in.
 
 [docs/TOUR.md](docs/TOUR.md) walks through all of it with screenshots and recordings.
@@ -83,7 +83,7 @@ Full list of limitations and open defects: [docs/KNOWN-ISSUES.md](docs/KNOWN-ISS
 
 ## Supported boards
 
-The firmware is compiled separately for each board. There is no runtime detection — the build
+The firmware is compiled separately for each board. There is no runtime detection - the build
 **is** the board.
 
 | Board | Display | Flash | Status |
@@ -99,20 +99,20 @@ schematic, but no physical unit has ever run it. Full board details:
 
 **Board choice is a security choice.** Elecrow boards pull the radio co-processor's enable line
 high through a resistor, so the radio boots its factory firmware for a few hundred milliseconds
-at every power-up before notyas drives it low — the device is briefly RF-visible. Waveshare boards
+at every power-up before notyas drives it low - the device is briefly RF-visible. Waveshare boards
 hold the radio in reset from power-on. Details: [docs/SECURITY.md](docs/SECURITY.md).
 
 ---
 
 ## Getting started
 
-1. **Get a board** — Waveshare 4B or Elecrow 5inch (the two verified boards).
-2. **Download the release** — from [releases](https://github.com/intnsity/notyas/releases).
-3. **Flash it** — [docs/FLASHING.md](docs/FLASHING.md) walks through it step by step, including
+1. **Get a board** - Waveshare 4B or Elecrow 5inch (the two verified boards).
+2. **Download the release** - from [releases](https://github.com/intnsity/notyas/releases).
+3. **Flash it** - [docs/FLASHING.md](docs/FLASHING.md) walks through it step by step, including
    how to verify the download signature before flashing. No prior microcontroller experience needed.
-4. **Press Verify device** — the third button on the home screen. It shows what the board reports
+4. **Press Verify device** - the third button on the home screen. It shows what the board reports
    about itself. Compare the numbers against the `VERIFY.json` from the release.
-5. **Make a wallet** — press "New seed (dice)", roll dice, follow the screens. Use testnet.
+5. **Make a wallet** - press "New seed (dice)", roll dice, follow the screens. Use testnet.
 6. **To save wallets or sign transactions**, provision the board first:
    [docs/PROVISIONING.md](docs/PROVISIONING.md). This burns one eFuse key block and is irreversible.
 
@@ -122,7 +122,7 @@ hold the radio in reset from power-on. Details: [docs/SECURITY.md](docs/SECURITY
 
 **Give your wallet software the output descriptor from the Export tab, not the bare xpub below it.**
 
-The descriptor carries the wallet's root fingerprint and derivation path. A bare xpub does not —
+The descriptor carries the wallet's root fingerprint and derivation path. A bare xpub does not -
 so wallet software has to guess, and it often guesses wrong. BlueWallet defaults bare xpubs to
 legacy derivation (`m/44'/0'/0'`), which may not be what you want.
 
@@ -158,9 +158,9 @@ been tested is a single Bitcoin Core 29.4 round trip via the development console
 If the device refuses the file, it shows a full-screen refusal with a code, what happened, why it
 matters, and what to do. The most common refusals:
 
-- **R-02** — multi-input spend without full previous transactions. Use coin control to select a
+- **R-02** - multi-input spend without full previous transactions. Use coin control to select a
   single coin, or re-export from Sparrow, Electrum, or Bitcoin Core.
-- **R-26** — script type not supported. For wrapped-segwit coins, re-export with the redeem
+- **R-26** - script type not supported. For wrapped-segwit coins, re-export with the redeem
   script included.
 
 Full refusal code table: [docs/REFUSALS.md](docs/REFUSALS.md).
@@ -181,7 +181,7 @@ hashes, check the signature, rebuild the firmware in a pinned container, and com
 byte-for-byte with what was published.
 
 **0.2.3 is the first release with a build artifact.** Earlier tags had release pages with nothing
-to download — the release container never built until 0.2.3.
+to download - the release container never built until 0.2.3.
 
 ---
 
@@ -226,4 +226,4 @@ Sans/Mono" per the Reserved Font Name clause). Details: [docs/THIRD-PARTY.md](do
 
 Report defects, failed rebuilds, or security problems at
 https://github.com/intnsity/notyas/issues. If reporting from the panel, photograph the refusal
-screen's details block — it is hidden until you tap "Show details".
+screen's details block - it is hidden until you tap "Show details".

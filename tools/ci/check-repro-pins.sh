@@ -27,7 +27,7 @@ DOCKERFILE=tools/repro/Dockerfile
 BUILD=tools/repro/build.sh
 WORKFLOW=.github/workflows/repro.yml
 VERIFYING=docs/VERIFYING.md
-RECIPE=docs/plan-0.2.0/REPRODUCIBLE.md
+RECIPE=docs/archive/plan-0.2.0/REPRODUCIBLE.md
 
 FAILURES=0
 CHECKS=0

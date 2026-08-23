@@ -104,7 +104,7 @@ RELEASE_KEY_CREATED=1786752462
 # Every file that must name that fingerprint before a release goes out. A key a
 # verifier cannot find in two independent places is a key they cannot check, and
 # a document that still names the old one sends them to the wrong key entirely.
-KEY_DOCS="docs/VERIFYING.md docs/RELEASE-0.2.3.md docs/SECURITY.md docs/plan-0.2.0/REPRODUCIBLE.md"
+KEY_DOCS="docs/VERIFYING.md docs/RELEASE-0.2.3.md docs/SECURITY.md docs/archive/plan-0.2.0/REPRODUCIBLE.md"
 
 # The version is read from the firmware crate rather than passed in, because that
 # is the value that lands in the app descriptor, in every artifact name, and in
@@ -1207,7 +1207,7 @@ No script in this repository can observe them, so this stage records an
 acknowledgement and nothing more. It is deliberately not a checkbox list the
 tool ticks for you.
 
-  1. Every milestone exit gate in docs/plan-0.2.0/MILESTONES.md, green on both
+  1. Every milestone exit gate in docs/archive/plan-0.2.0/MILESTONES.md, green on both
      boards, evidence recorded in the milestone commit or MEASUREMENTS.md.
   2. The pre-handover gauntlet in docs/QA.md: every flow walked end to end, the
      power-cut robustness set, the adversarial PSBT corpus, both resolutions,

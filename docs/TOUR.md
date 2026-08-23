@@ -168,8 +168,9 @@ collision-checked write path every other card write uses.
 One tab per scheme, opening on BIP-84. Each tab leads with the origin-carrying output
 descriptor, then the bare account xpub, then the SLIP-132 form where the scheme has one,
 then the address rows. Every block has a QR button and every payload is a public value.
-Which block to hand your coordinator, and why the choice matters, is in the README under
-["Setting up a coordinator"](../README.md#setting-up-a-coordinator-hand-it-the-descriptor).
+Which block to hand your coordinator, and why the choice matters, is
+["Hand your coordinator the descriptor"](../README.md#1-hand-your-coordinator-the-descriptor-not-the-bare-xpub)
+in the README, and [docs/START-HERE.md](START-HERE.md) states it in plain language.
 
 | | | |
 |---|---|---|
@@ -387,8 +388,8 @@ the screen, because a review screen full of hex teaches a user to skim.
 
 Which refusals you are most likely to meet, and what to do about each, is
 [docs/REFUSALS.md](REFUSALS.md) for the codes and the README's
-["What it refuses, and why"](../README.md#what-it-refuses-and-why) for the reasoning behind
-the two that surprise people.
+["Two things that will bite you"](../README.md#two-things-that-will-bite-you) for the
+reasoning behind the two that surprise people.
 
 ---
 
