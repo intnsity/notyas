@@ -28,7 +28,7 @@ save whose refusal is silent; a delete and a change-PIN that consent the user an
 a product path with no hardware evidence at all; an external cross-check that has never
 executed; and a release runbook that still describes the product as it was before that day's
 work. The one-paragraph statement of what the release can and cannot do is
-`docs/RELEASE-0.2.0.md` section 0, and per K26 it is currently wrong.
+`docs/archive/RELEASE-0.2.0.md` section 0, and per K26 it is currently wrong.
 
 ---
 
@@ -221,7 +221,7 @@ the connector (K5). Sixty cuts from an uncontrolled distribution are still sixty
 
 ### K5. Two power-cut modes remain: policy and overflow soak, both blocked on K16
 
-**Found:** 2026-08-19, reading `docs/m4a-power-cut-evidence.md` back against the harness
+**Found:** 2026-08-19, reading `docs/archive/m4a-power-cut-evidence.md` back against the harness
 output after the `pin` and `attempt` runs. The previous version of this entry said those two
 modes had not been run. That is no longer true, and what replaced it is a different and
 narrower problem.
@@ -233,7 +233,7 @@ is the strongest storage evidence this project holds. What follows is about the 
 cases.
 
 **What ran.** Board B took 20 valid cuts in `-Mode pin` and 20 in `-Mode attempt` on
-2026-08-19, in the harness output directories `docs/m4a-power-cut-evidence.md` names. Read
+2026-08-19, in the harness output directories `docs/archive/m4a-power-cut-evidence.md` names. Read
 back from those `cuts.csv` files:
 
 - `pin` (a cut inside change-PIN): 20 of 20 cuts detected by port disappearance, no MISSED
@@ -252,7 +252,7 @@ back from those `cuts.csv` files:
 On the substance those are clean runs of the two operations this entry named as the two with
 the most steps to land between and the worst outcome if a cut lands badly.
 
-**What is wrong is the record.** `docs/m4a-power-cut-evidence.md` carries one meta-reference to the `[FILL: ...]` pattern (in its intro text), not 57 unfilled sections as previously stated. The `pin` and `attempt` sections were filled in from the CSVs the harness produced. What remains open is the policy mode and overflow soak, both blocked on K16.
+**What is wrong is the record.** `docs/archive/m4a-power-cut-evidence.md` carries one meta-reference to the `[FILL: ...]` pattern (in its intro text), not 57 unfilled sections as previously stated. The `pin` and `attempt` sections were filled in from the CSVs the harness produced. What remains open is the policy mode and overflow soak, both blocked on K16.
 "a section that still holds `[FILL: ...]` markers is an unrun mode, not a passing one" - so by
 its own construction the evidence record currently states that these modes did not run. A
 gate is the record, not the memory of the bench: a reader in six months has the file and not
@@ -503,7 +503,7 @@ because the store's key ladder needs one; nothing else asks for one, and `psbtsi
 a real signature from the wallet in memory on request. An image with this console compiled in
 is a signer that signs on command over a serial port with no authentication at all. That is
 deliberate - m4a's exit gate cannot be evidenced any other way, and neither could clause 2
-(`docs/clause2-evidence.md`) - and the console is careful in the other direction: its stated
+(`docs/archive/clause2-evidence.md`) - and the console is careful in the other direction: its stated
 invariant is that it prints what the operator supplied and what is public, never a derived
 key, seed, session secret or xprv.
 
@@ -522,7 +522,7 @@ it will not accept either until `tools/ci/selftest-release-symbols.sh` has demon
 the checker REJECTS an image that does carry the console - the stage dies with "a clean report
 from tools/ci/check-release-symbols.sh proves nothing" otherwise (`release.sh:585-607`). That
 selftest is the part worth naming: a gate that has only ever been run against images it
-passes is a gate nobody has proven can fail. `docs/RELEASE-0.2.0.md` section G lists the check
+passes is a gate nobody has proven can fail. `docs/archive/RELEASE-0.2.0.md` section G lists the check
 per board. CI still does not invoke it, and that is now a stated scope rather than an
 oversight: `.github/workflows/ci.yml:16-20` says in its own header that nothing about a LINKED
 IMAGE can run there and names this script and the image tier of `check-airgap.sh` as the two
@@ -734,7 +734,7 @@ means it is the one settings row that can be made to work without K16.
 
 **Found:** 2026-08-19, same pass.
 
-`crates/notyas-ui/src/screens/door.rs` implements `docs/plan-0.2.0/SIMPLE-MODE.md`: the pre-PIN
+`crates/notyas-ui/src/screens/door.rs` implements `docs/archive/plan-0.2.0/SIMPLE-MODE.md`: the pre-PIN
 card on S-03 that pushes the dice flow, plus the whole two-column S-03 rearrangement the card
 forced, with its own fit tests at both geometries. It is complete, it is correct about its
 invariants - it records nothing, opens no store and raises no `UiRequest` - and it is dead.
@@ -793,7 +793,7 @@ from Home with no PIN.
 ### K23. C4 specifies four confirmation grades and the component implements three
 
 **Found:** 2026-08-19, implementation-readiness pass over the ratified screen spec
-(`docs/plan-0.2.0/UX-SCREENS.md` C4).
+(`docs/archive/plan-0.2.0/UX-SCREENS.md` C4).
 
 C4 names four grades and chooses between them by consequence: **C4a** yellow card for the
 reversible (overwriting a file on the card, discarding entered rolls, leaving a review),
@@ -832,7 +832,7 @@ is chosen, `overwrite_sheet` and `leave_sheet` are the two call sites to re-chec
 S-38's "C4a overwrite confirm" line has to end up agreeing with whatever `danger.rs` draws.
 
 **Re-verified 2026-08-19.** Unchanged, and the specification now agrees that it is unchanged:
-`docs/plan-0.2.0/UX-SCREENS.md` C4 carries an "Implementation gap, noted 2026-08-19" paragraph
+`docs/archive/plan-0.2.0/UX-SCREENS.md` C4 carries an "Implementation gap, noted 2026-08-19" paragraph
 pointing back at this entry. `crates/notyas-ui/src/danger.rs` still has three variants. The two
 named call sites are still `Danger::confirm` (`screens/deliver.rs:249,261` and
 `screens/review.rs:716`), and the decision this entry declines to make has still not been made.
@@ -857,7 +857,7 @@ What that means step by step, against MILESTONES.md section 9 clause 2:
   "this entry closes on that read-back, not when `SetPin` compiles - a store that formats but
   whose records do not survive a power cycle is the failure mode this milestone has already had
   once." The read-back has not been performed. The `format` evidence in
-  `docs/clause2-evidence.md` is a `hil-console` `format <pin>` command, which is a different
+  `docs/archive/clause2-evidence.md` is a `hil-console` `format <pin>` command, which is a different
   call site reaching the same `Store::format`.
 - **No device has saved, power-cycled and re-opened a wallet from the touch UI.**
 - **No device has read or written a microSD card in any build.** `firmware/src/sd/` is wired to
@@ -868,7 +868,7 @@ What that means step by step, against MILESTONES.md section 9 clause 2:
 - **No device has registered a multisig from the touch UI**, and no device has signed the
   2-of-3 that clause 2 names, on any interface.
 
-The only end-to-end hardware evidence this project holds is `docs/clause2-evidence.md`, and
+The only end-to-end hardware evidence this project holds is `docs/archive/clause2-evidence.md`, and
 every step of it was driven over the `hil-console` serial interface on an image that the
 release artifact provably is not - which is exactly what `check-release-symbols.sh` and
 `check-hil-fence.sh` passing means. That run is real and it is evidence about the engine. It is
@@ -887,7 +887,7 @@ cannot see by construction.
 Closing it: one full pass on each board with a release-shaped image - set a PIN, save a wallet,
 power cycle, unlock, read the wallet back, register the 2-of-3, verify the address, load a PSBT
 off a card, review it, hold to sign, write the signed file back, and hand it to Bitcoin Core -
-recorded the way `docs/m4a-power-cut-evidence.md` records a gate rather than as a session
+recorded the way `docs/archive/m4a-power-cut-evidence.md` records a gate rather than as a session
 memory. `tools/hil/end-to-end-loop.ps1` exists and drives the console, so it evidences the
 wrong path; the product pass is a human with a card and a camera. Until then, no release-facing
 document may say 0.2.0 signs on hardware without naming this entry in the same paragraph.
@@ -895,11 +895,11 @@ document may say 0.2.0 signs on hardware without naming this entry in the same p
 ### K25. The external cross-check against Bitcoin Core and embit has never run
 
 **Found:** 2026-08-19, reading `out/xverify/attestation.json` while checking what in
-`docs/clause2-evidence.md` is genuinely independent of this tree.
+`docs/archive/clause2-evidence.md` is genuinely independent of this tree.
 
 `tools/xverify/` exists to put Bitcoin Core and embit on the other side of every derivation,
 address and signature this tree produces - 21 cases, 9 of them negative - and
-`tools/ci/check-xverify.sh --require` is release gate B12 in `docs/RELEASE-0.2.0.md` section 2,
+`tools/ci/check-xverify.sh --require` is release gate B12 in `docs/archive/RELEASE-0.2.0.md` section 2,
 described there as "the one bar nothing inside this tree can answer". It has never produced a
 pass. The attestation file records the whole of the current state:
 
@@ -913,14 +913,14 @@ that 0 cases verified cannot read as 0 failures - so this entry is not a defect 
 
 What it means for the release is that the external evidence this project holds is one manual
 `analyzepsbt` and `finalizepsbt` invocation of Bitcoin Core 29.4, against one single-sig PSBT,
-recorded in `docs/clause2-evidence.md`. That is genuine and it is one file. Nothing external
+recorded in `docs/archive/clause2-evidence.md`. That is genuine and it is one file. Nothing external
 has ever checked an address this device derives, a descriptor checksum it computes, a taproot
 signature, a multisig signature, or any of the nine negative cases. The other cross-check in
 that document, `tools/psbtgen`, is in-tree and links `notyas-core`, so it is a self-consistency
 check rather than an independent opinion - which is now stated there in as many words.
 
 **Does it block 0.2.0? Yes.** MILESTONES.md section 9 item 1 permits no outstanding gate and no
-waived one, B12 is a gate, and `docs/RELEASE-0.2.0.md` describes it as answering the one
+waived one, B12 is a gate, and `docs/archive/RELEASE-0.2.0.md` describes it as answering the one
 question the tree cannot answer about itself. A signer whose address derivation has never been
 checked by a second implementation is the specific failure that costs a user their coins
 silently: wrong addresses do not throw, they just cannot be spent from.
@@ -936,12 +936,12 @@ rather than engineering work, which is an argument for doing it rather than defe
 **Found:** 2026-08-19, cross-checking this file's own entries against the documents that cite
 them, after K13, K17, K18 and K19 were retired.
 
-`docs/RELEASE-0.2.0.md` section 0 is the section a stranger reads first, and it says a 0.2.0
+`docs/archive/RELEASE-0.2.0.md` section 0 is the section a stranger reads first, and it says a 0.2.0
 unit cannot sign a transaction (citing K17), cannot read or write a microSD card (K18), cannot
 set a PIN and therefore cannot store anything (K13), and cannot register a multisig wallet
 (K19). All four of those sentences were true when they were written and none of them is true
 now. Section 6 and section 4 carry the same claims in shorter form, at `RELEASE-0.2.0.md:302`,
-`:497` and `:533-545`. `docs/claims-audit-0.2.0.md` section 6 and its findings table carry them
+`:497` and `:533-545`. `docs/archive/claims-audit-0.2.0.md` section 6 and its findings table carry them
 at `:569`, `:578`, `:614` and `:629-635`. `docs/release-readiness-0.2.0.md` section 5 states
 "zero of the six wallet-operation steps are drivable from the device UI" and "zero occurrences
 of psbt in all of crates/notyas-ui/src", both of which the tree now contradicts. `README.md`
@@ -962,8 +962,8 @@ other before the artifact is even consulted. `tools/ci/check-ratified.sh` passed
 the gate checks ratified decisions, not currency, so nothing automated is watching for a
 document that has fallen behind the tree.
 
-Closing it: one editing pass over `docs/RELEASE-0.2.0.md` sections 0, 4 and 6,
-`docs/claims-audit-0.2.0.md` section 6, `docs/release-readiness-0.2.0.md` section 5 and
+Closing it: one editing pass over `docs/archive/RELEASE-0.2.0.md` sections 0, 4 and 6,
+`docs/archive/claims-audit-0.2.0.md` section 6, `docs/release-readiness-0.2.0.md` section 5 and
 `README.md`, rewriting each against the tree rather than against this file - and every rewritten
 sentence has to distinguish "the product path can do this" from "a board has been observed
 doing this", because as of today those are different claims for every step of the loop (K24).
@@ -986,7 +986,7 @@ animated-QR ingress has nowhere to arrive from, and QR EGRESS of a signed transa
 0.2.0-shaped use that no screen offers. The device does render QR codes, for xpubs and
 addresses, through a different path (`UiRequest::Qr`).
 
-**Does it block 0.2.0? No.** Nothing claims it. `docs/RELEASE-0.2.0.md` section 4 lists what is
+**Does it block 0.2.0? No.** Nothing claims it. `docs/archive/RELEASE-0.2.0.md` section 4 lists what is
 not shipped and the release notes should name the QR transport there if they do not already, so
 that a reader who finds `bbqr.rs` in the tree is not left inferring a feature from a filename.
 
@@ -997,7 +997,7 @@ entry's.
 
 ### K28. The HIL console cannot read a PSBT off a card
 
-**Found:** 2026-08-19, tracing why `docs/clause2-evidence.md` loaded its PSBT as console hex
+**Found:** 2026-08-19, tracing why `docs/archive/clause2-evidence.md` loaded its PSBT as console hex
 rather than from the microSD slot the release is built around.
 
 `psbtload sd <path>` is advertised in the console's own help (`firmware/src/hil.rs:504`) and its
@@ -1120,7 +1120,7 @@ something the device hands out without saying so.
 
 **Does it block 0.2.2? Yes**, and it is what 0.2.2 is for. Both halves are implemented and
 the host gate is green over them. What this entry is still waiting on is evidence rather
-than code: the two-board hardware pass in `docs/RELEASE-0.2.2.md` section 5 - the corpus
+than code: the two-board hardware pass in `docs/archive/RELEASE-0.2.2.md` section 5 - the corpus
 legacy case signed and verified on hardware, the claimed-amount negative refused on
 hardware, and a P2SH input claiming our key still refused at check 4. This entry closes when
 that pass has run on both boards, and not before.
@@ -1242,7 +1242,7 @@ an interop regression, and it is real: a PSBT this device accepted earlier on 20
 is now refused, and coordinators that omit `non_witness_utxo` for segwit inputs to save
 space will produce files it refuses. A silently narrowed acceptance set is how a signer
 earns a reputation for being broken, so the regression is disclosed rather than
-discovered - docs/RELEASE-0.2.0.md section 6 states it, names the finalized-input case
+discovered - docs/archive/RELEASE-0.2.0.md section 6 states it, names the finalized-input case
 specifically, and says what a coordinator has to do about it. That disclosure is the
 condition on which this entry is closed; the refusal itself is not negotiable, because it
 buys the closure of a demonstrated one-coin loss.
@@ -1258,7 +1258,7 @@ lower bound. Two or more inputs stays refused, and the reason is that no statele
 can admit it: a coordinator can prove one input's amount and merely claim another's,
 rotating which is which between rounds, so every file he presents carries a single
 unproven amount and still yields one valid signature per round, and S-35 leaves this
-device nothing with which to notice the second presentation. `docs/RELEASE-0.2.1.md`
+device nothing with which to notice the second presentation. `docs/archive/RELEASE-0.2.1.md`
 section 0 states the narrowed rule, what it admits, what it still refuses, and the remedy.
 
 ### K12. Board B stopped enumerating over USB after a camera module was inserted reversed
@@ -1328,7 +1328,7 @@ a device that works; this was the difference between the product described in `R
 and `docs/SECURITY.md` - a device that stores up to eight wallets behind a PIN - and the
 product in the artifact, which was a stateless seed tool and public-key exporter. No wording
 change made those the same device. The choice was between shipping with the store reachable
-and documenting the artifact as what it was; `docs/RELEASE-0.2.0.md` section 0 took the
+and documenting the artifact as what it was; `docs/archive/RELEASE-0.2.0.md` section 0 took the
 second option, and per K26 it still reads that way and is now wrong.
 
 Closing it takes four pieces, of which the vocabulary above is the first: the S-06/S-07
@@ -1419,7 +1419,7 @@ forward. No engine work was outstanding, and none was done - `Review` is still c
 only by `review` and `Signed` only by `Review::sign`. And the review's own defect found by the
 clause 2 run closed in the same pass: `signing::review` now passes
 `derive::device_accounts` into `psbt::inspect_with_accounts`, so check 3 proves single-sig
-change instead of labelling it a payment (`docs/clause2-evidence.md`).
+change instead of labelling it a payment (`docs/archive/clause2-evidence.md`).
 
 What this closure does not include is any hardware evidence. Nothing in this list has run on a
 board; see K24.
@@ -1447,7 +1447,7 @@ With K17 this is the ingress and the egress of the signing loop: 0.2.0 is SD-onl
 
 **Did it block 0.2.0?** It was the same block as K17 rather than a second one - the loop needs
 both halves and neither was wired. It is recorded separately because closing K17's screens does
-not by itself wire this, and because `docs/claims-audit-0.2.0.md` section 6 previously recorded
+not by itself wire this, and because `docs/archive/claims-audit-0.2.0.md` section 6 previously recorded
 m5 as "not started", which is no longer true and would send the next reader hunting for absent
 code rather than unwired code.
 
@@ -1487,7 +1487,7 @@ There is no screen that creates one. No `ScreenId`, no `RegionId` and no `UiRequ
 registration, so on a device the count is always zero and every sentence the UI writes about
 registrations is about a set that can only be empty.
 
-**Did it block 0.2.0?** No. `docs/RELEASE-0.2.0.md` section 4 already lists BSMS and taproot
+**Did it block 0.2.0?** No. `docs/archive/RELEASE-0.2.0.md` section 4 already lists BSMS and taproot
 multisig as not shipped; this entry adds that ordinary multisig REGISTRATION is also not
 reachable on the device, which a reader of the wipe-policy and PIN-removal copy would
 otherwise reasonably assume exists.
@@ -1585,7 +1585,7 @@ Two residuals, both deliberate and both recorded rather than quietly carried:
   Adding it to `CODES` is a one-line change and belongs with the next edit to that file.
 
 What this entry does NOT close is why his coins were on a legacy address in the first
-place: that is K29, and `docs/RELEASE-0.2.2.md` sections 1 and 4 carry the decision. The
+place: that is K29, and `docs/archive/RELEASE-0.2.2.md` sections 1 and 4 carry the decision. The
 other half of the sentence this paragraph used to carry - that the device still could not
 spend them - stopped being true when section 1 landed.
 

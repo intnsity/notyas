@@ -328,7 +328,7 @@ and making one is something you do on the panel afterwards. On a board that alre
 sealed wallet this writes nothing that reaches it: `merged.bin` ends inside the application
 partition, and the `wallets`, `counters` and `settings` regions begin at `0x410000`, past its
 end. Upgrading a board that carries an older partition table is
-[docs/SETTINGS-MIGRATION.md](SETTINGS-MIGRATION.md).
+[docs/archive/SETTINGS-MIGRATION.md](archive/SETTINGS-MIGRATION.md).
 
 ---
 

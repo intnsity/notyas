@@ -12,7 +12,7 @@ and this file is stale.
 ## How the numbering works
 
 - **R-01 to R-10** are the ten ratified validation checks, in the order
-  `docs/plan-0.2.0/ARCHITECTURE.md` section 5.3 numbers them. The mapping from a check to
+  `docs/archive/plan-0.2.0/ARCHITECTURE.md` section 5.3 numbers them. The mapping from a check to
   its code is `code_for` in `firmware/src/flow/model.rs` and it is one-to-one.
 - **R-20 to R-26** sit outside that numbering, for faults that are not check failures: the
   file was never a PSBT, the card is not there, the write failed, or the script is not one
@@ -77,7 +77,7 @@ somebody whose device just failed its own check.
 the file's word about what the coin is worth only when the unsigned transaction has a single
 input; with two or more inputs every amount must be proven by a full previous transaction.
 The attack it forecloses, and why no stateless device can admit the multi-input case, is
-`docs/RELEASE-0.2.1.md` section 0. In practice it means a BlueWallet consolidation or Send
+`docs/archive/RELEASE-0.2.1.md` section 0. In practice it means a BlueWallet consolidation or Send
 Max is refused and a single-coin BlueWallet spend is not, and the remedy is coin control or
 rebuilding in Sparrow, Electrum or Bitcoin Core.
 
@@ -91,7 +91,7 @@ R-26 exists because that failure used to wear R-04's copy. A user spending his o
 coins was told a cosigner key had been substituted and to compare registrations he did not
 have. R-04 is now reserved for a genuine mismatch in a cosigner set, which is the one
 refusal on this device that has to be believed instantly if it ever fires. The whole report
-is `docs/RELEASE-0.2.2.md` sections 0 and 3.
+is `docs/archive/RELEASE-0.2.2.md` sections 0 and 3.
 
 ## Copy that is known to be wrong
 
@@ -123,10 +123,10 @@ Report at https://github.com/intnsity/notyas/issues.
 ## Where the rules behind these codes are written
 
 - `docs/SECURITY.md` invariant 7 - the signing policy engine as the trust boundary.
-- `docs/RELEASE-0.2.1.md` section 0 - the amount-proof rule, the rotation attack it stops,
+- `docs/archive/RELEASE-0.2.1.md` section 0 - the amount-proof rule, the rotation attack it stops,
   and the broader relaxation that was implemented and rejected.
-- `docs/RELEASE-0.2.2.md` section 2 - the legacy amount rule; section 3 - R-26.
-- `docs/plan-0.2.0/ARCHITECTURE.md` section 5.3 - the ten checks, each pinned to the
+- `docs/archive/RELEASE-0.2.2.md` section 2 - the legacy amount rule; section 3 - R-26.
+- `docs/archive/plan-0.2.0/ARCHITECTURE.md` section 5.3 - the ten checks, each pinned to the
   historical attack it defends against.
 - `crates/notyas-core/src/psbt/checks.rs` - the checks themselves, with the negative test
   pins that stop a future change reopening any of them.

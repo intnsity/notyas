@@ -96,7 +96,7 @@ surface and contain nothing but `#include` lines and comments.
 
 Vendor schematics, factory firmware and BSP sources were **read** during board
 bring-up; the facts derived from them (pin numbers, panel timings, register sequences)
-are recorded in `docs/research/` and `docs/HARDWARE.md`. No vendor file is
+are recorded in `docs/archive/research/` and `docs/archive/HARDWARE.md`. No vendor file is
 redistributed in this repository.
 
 3D-printable enclosure models are deliberately **not** published here. Third-party

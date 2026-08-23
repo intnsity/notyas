@@ -658,16 +658,16 @@ recipe bug is as useful as one that turns out to be an attack, and far more like
 ## 10. Where the detail lives
 
 - `docs/PROVISIONING.md` - the one eFuse burn provisioning performs, in full.
-- `docs/plan-0.2.0/REPRODUCIBLE.md` - the recipe and its reasoning: every source of
+- `docs/archive/plan-0.2.0/REPRODUCIBLE.md` - the recipe and its reasoning: every source of
   nonreproducibility in this stack, named, with its fix and the check that proves the fix
   worked.
 - `tools/repro/` - the container definition, the toolchain pin, the build script, the
   double-build check and the manifest tool. The container definition and the CI workflow
   are MIT OR Apache-2.0 so another project can lift them; the rest of notyas is
   GPL-3.0-or-later.
-- `docs/plan-0.2.0/VERIFY.md` - what the device can honestly report about itself, and
+- `docs/archive/plan-0.2.0/VERIFY.md` - what the device can honestly report about itself, and
   exactly where that stops being worth anything.
 - `docs/SECURITY.md` - the security model these checks belong to, including what is
   explicitly out of scope.
-- `docs/RELEASE-0.2.0.md`, and the `docs/RELEASE-*.md` for every point release after it -
+- `docs/archive/RELEASE-0.2.0.md`, and the `docs/RELEASE-*.md` for every point release after it -
   what shipped, what deliberately did not, and the known limitations a buyer should read.

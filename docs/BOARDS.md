@@ -4,7 +4,7 @@ Status: implemented 2026-08-17 (originally authored as a design the same day; de
 between design and implementation are marked "implementation note" inline). Governs how
 the firmware supports more than one physical board. SECURITY.md remains normative for
 the invariants; this file defines how each board satisfies them. Board fact sheets:
-docs/HARDWARE.md (Waveshare 4B), docs/research/elecrow-board.md (Elecrow CrowPanel
+docs/archive/HARDWARE.md (Waveshare 4B), docs/archive/research/elecrow-board.md (Elecrow CrowPanel
 Advanced family).
 
 ## Supported boards and status
@@ -24,7 +24,7 @@ Advanced family).
 
 "UNTESTED scaffold" is a hard status: every constant traces to a published vendor
 source (Elecrow: factory firmware + that board's own V1.0 Eagle schematic; Waveshare:
-docs/research/waveshare-family.md - schematics - plus the vendor's BSP monorepo at a
+docs/archive/research/waveshare-family.md - schematics - plus the vendor's BSP monorepo at a
 pinned commit), the module carries an UNTESTED banner, the firmware logs `UNTESTED
 BOARD CONFIG` at boot, and build.ps1 warns. No verification claim of any kind until a
 physical unit runs it. "PORTRAIT LAYOUT UNVERIFIED" is the additional caveat for the
@@ -38,7 +38,7 @@ silicon. Correction to the original design text: the 7/9/10.1 inch siblings do N
 "share the electronics" with the 5inch - they are a different layout (C6 EN on GPIO32
 not 20, 1-bit SDIO on GPIO14/15/18/19 not 4-bit on 49-54, direct LEDC backlight on
 GPIO31 instead of the STC8 path, touch RST on GPIO40 not the GPIO36 strap). See
-docs/research/elecrow-board.md section 7.
+docs/archive/research/elecrow-board.md section 7.
 
 ## Board selection: one cargo feature, no runtime detection
 
@@ -277,7 +277,7 @@ notice on Elecrow.
 generalizes it wrongly.** A C6-MINI module carries no EN pullup; a bare ESP32-C6FH8 die
 does. Two Waveshare P4 boards use the bare chip and therefore DO boot their radio at every
 power-on - the Touch-LCD-3.5 (R25) and the WIFI6-DEV-KIT (R78), both in the kill-pin table
-in docs/research/waveshare-family.md. Neither has a board module here, and this is part of
+in docs/archive/research/waveshare-family.md. Neither has a board module here, and this is part of
 why. "Waveshare" is not the guarantee; "C6-MINI module, EN unpulled, schematic-verified in
 this file" is.
 
@@ -293,7 +293,7 @@ this file" is.
   high, which this firmware never does. Strictly better than the Elecrow boards' verified
   power-on window, during which a full WiFi and BT stack runs on the C6 (board-elecrow-5),
   and the reason a Waveshare unit is the airgap-preferred choice. Source:
-  docs/research/waveshare-family.md (the no-pullup EN circuit is common to every
+  docs/archive/research/waveshare-family.md (the no-pullup EN circuit is common to every
   Waveshare P4 board carrying a C6 module).
   RADIO_KILL_DOC states it; the boot log says "held down from power-on".
 
@@ -358,7 +358,7 @@ this file" is.
 
 - Kill: **GPIO54 -> C6 CHIP_PU (EN)**, driven low first thing in app_main, never
   released - the family-invariant circuit, schematic-verified per board in
-  docs/research/waveshare-family.md (5: R34; 7B: R33; X series: R54; all 0R).
+  docs/archive/research/waveshare-family.md (5: R34; 7B: R33; X series: R54; all 0R).
   Like the 4B and unlike every Elecrow board, C6 EN carries **no pullup** (module
   C6 with 1 uF to GND only), so the radio is held down from power-on - no boot
   window exists. SDIO host never configured on GPIO14-19. The 7B schematic marks
@@ -471,7 +471,7 @@ Release packaging (tools, later): build both boards, emit
    see the correction at the top and research doc section 7.)
 2. **RESOLVED (2026-08-17) - Waveshare C6 EN has NO pullup: radio off from
    power-on.** The 4B schematic C6 sheet, re-read for the family survey
-   (docs/research/waveshare-family.md), shows CHIP_PU with only C10 1 uF to GND;
+   (docs/archive/research/waveshare-family.md), shows CHIP_PU with only C10 1 uF to GND;
    the 10K (R11) is on C6 IO2. No power-on window exists on this board - the
    Elecrow-style window is a bare-C6FH8-chip design trait (Waveshare 3.5 /
    WIFI6-DEV-KIT), not a 4B one. See "The airgap invariant, per board".

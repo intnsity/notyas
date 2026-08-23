@@ -8,7 +8,7 @@ nothing, and 0.2.0 breaks that identity on purpose.
 
 Every claim in this file is mechanically enforced - by a build gate, by a type, by a
 test, or by hardware - or it is not made. Product copy derives from this file, never
-the reverse. `docs/claims-audit-0.2.0.md` is a dated audit recording the mechanism and the
+the reverse. `docs/archive/claims-audit-0.2.0.md` is a dated audit recording the mechanism and the
 file behind each claim as of the 0.2.0 tree, so a rule can be re-checked rather than
 re-argued; it is a point-in-time record and not a live index.
 
@@ -40,7 +40,7 @@ Stated first, because a lean release invites the reader to assume the missing pa
 present. Eight things a reader of a hardware-wallet security page would reasonably expect
 are absent here, and four of them change what everything else in this file is worth. All
 eight were absent at 0.2.0 and none of the point releases since has closed one
-(`docs/RELEASE-0.2.1.md` section 3, `docs/RELEASE-0.2.2.md` section 7,
+(`docs/archive/RELEASE-0.2.1.md` section 3, `docs/archive/RELEASE-0.2.2.md` section 7,
 `docs/RELEASE-0.2.3.md` section 7).
 
 1. **No Secure Boot v2.** No signature check runs in the boot path. An attacker who has
@@ -427,7 +427,7 @@ exposure and stops there.
    amount at all, not even its own: it needs a full previous transaction always, and signs
    under SIGHASH_ALL only. Taproot needs no previous transaction, because BIP-341's
    `sha_amounts` already binds every claimed amount. The reasoning is
-   `docs/RELEASE-0.2.1.md` section 0 and `docs/RELEASE-0.2.2.md` section 2; the rules are
+   `docs/archive/RELEASE-0.2.1.md` section 0 and `docs/archive/RELEASE-0.2.2.md` section 2; the rules are
    pinned by permanent negative tests in `checks.rs` named for the attacks they refuse.
 
    **Change is proven rather than believed**, by the same derivation test run on outputs.

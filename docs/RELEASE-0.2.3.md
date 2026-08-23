@@ -2,13 +2,13 @@
 
 Owner-facing. 0.2.3 is the packaging repair for 0.2.2. The firmware delta from `v0.2.2`
 (`16dfff2`) is the version string and nothing else; everything a unit does, refuses and
-displays is what 0.2.2 decided, and the three decisions in `docs/RELEASE-0.2.2.md` remain
+displays is what 0.2.2 decided, and the three decisions in `docs/archive/RELEASE-0.2.2.md` remain
 authoritative. What changed is the machinery that turns a tagged commit into a signed
 artifact, which until this release had never once run to completion.
 
-Nothing in section 0 of `docs/RELEASE-0.2.0.md` about what a unit can, cannot, and has not
-been shown to do is superseded, and neither is anything in `docs/RELEASE-0.2.1.md` or
-`docs/RELEASE-0.2.2.md`. Read all four; this one is the shortest because it changes the
+Nothing in section 0 of `docs/archive/RELEASE-0.2.0.md` about what a unit can, cannot, and has not
+been shown to do is superseded, and neither is anything in `docs/archive/RELEASE-0.2.1.md` or
+`docs/archive/RELEASE-0.2.2.md`. Read all four; this one is the shortest because it changes the
 least about the product.
 
 The verifier-facing counterpart is `docs/VERIFYING.md`, unchanged by this release. The gate
@@ -223,7 +223,7 @@ Per board, for `waveshare-4b` and `elecrow-5`, named `0.2.3` in place of `0.2.2`
 `notyas-0.2.3-<board>-app.bin`, `-bootloader.bin`, `-partition-table.bin`, `-merged.bin`,
 `.elf`, `-sdkconfig.txt`, `-BUILDINFO.txt`, `-VERIFY.json`; plus, once,
 `notyas-0.2.3-src.tar.gz`, `notyas-0.2.3-components.tar.gz`, `SHA256SUMS.txt` and
-`SHA256SUMS.txt.asc`. See `docs/RELEASE-0.2.0.md` section 3 for what each file is; nothing
+`SHA256SUMS.txt.asc`. See `docs/archive/RELEASE-0.2.0.md` section 3 for what each file is; nothing
 about the artifact set itself changed. Unlike 0.2.2, these files exist.
 
 The base image digest, which is the pin that matters more than the tag and which
@@ -238,8 +238,8 @@ espressif/idf:v5.5.4@sha256:b9f2d6ea1c19e0c9f7959bdb74a9e3c775642f9d0f3b841937c5
 
 ## 7. What deliberately does not ship
 
-Unchanged from `docs/RELEASE-0.2.0.md` section 4, `docs/RELEASE-0.2.1.md` section 3 and
-`docs/RELEASE-0.2.2.md` section 7: no Secure Boot v2, no flash encryption, no eFuse
+Unchanged from `docs/archive/RELEASE-0.2.0.md` section 4, `docs/archive/RELEASE-0.2.1.md` section 3 and
+`docs/archive/RELEASE-0.2.2.md` section 7: no Secure Boot v2, no flash encryption, no eFuse
 anti-rollback, no eFuse burn beyond the one HMAC key, no artifacts for the eight scaffold
 boards, no crates.io publication, no backup mechanism, no BSMS, no taproot multisig, no
 hardware-held signing key, no third-party build attestation, no persistent
@@ -254,8 +254,8 @@ half and K33 all stay where they are.
 
 ## 8. Known limitations a buyer must read
 
-All twelve items in `docs/RELEASE-0.2.0.md` section 5, item 13 in
-`docs/RELEASE-0.2.1.md` section 4, and items 14 to 16 in `docs/RELEASE-0.2.2.md` section 8
+All twelve items in `docs/archive/RELEASE-0.2.0.md` section 5, item 13 in
+`docs/archive/RELEASE-0.2.1.md` section 4, and items 14 to 16 in `docs/archive/RELEASE-0.2.2.md` section 8
 still apply unchanged. Nothing is added: 0.2.3 changes no behaviour, so it creates no new
 limitation.
 
@@ -286,8 +286,8 @@ See `docs/VERIFYING.md` for how to check it, and
 Paste into the GitHub release, in this order:
 
 1. One paragraph: 0.2.3 is a packaging repair. The firmware is 0.2.2 with a version string
-   that says 0.2.3; `docs/RELEASE-0.2.2.md` is still the authority on what changed in the
-   product, and `docs/RELEASE-0.2.0.md` section 0 on the whole feature set.
+   that says 0.2.3; `docs/archive/RELEASE-0.2.2.md` is still the authority on what changed in the
+   product, and `docs/archive/RELEASE-0.2.0.md` section 0 on the whole feature set.
 2. That `v0.2.2` has no artifacts, and why, with the mechanism named rather than gestured
    at: the release container's step 5 sourced ESP-IDF's `export.sh` inside a `docker build`
    step; that script trusts `IDF_PATH` from the environment only when it sees `/.dockerenv`,
@@ -306,7 +306,7 @@ Paste into the GitHub release, in this order:
 
 ## 11. If a defect surfaces after publication
 
-Same policy as `docs/RELEASE-0.2.0.md` section 8: do not delete or move the tag; disclose on
+Same policy as `docs/archive/RELEASE-0.2.0.md` section 8: do not delete or move the tag; disclose on
 the release page immediately, naming what is wrong and what a holder should do; treat the
 signing/verification chain as unverifiable and republish rather than silently replace if the
 defect is there; record it in `docs/KNOWN-ISSUES.md` with its found-date, its blocking

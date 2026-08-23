@@ -69,7 +69,7 @@ Both entrances run the same screens once you are past them, and both end at the 
 question. That question is the next section.
 
 A card on the lock screen that would reach dice entry without a PIN is specified in
-[docs/plan-0.2.0/SIMPLE-MODE.md](plan-0.2.0/SIMPLE-MODE.md) and is not in this build:
+[docs/archive/plan-0.2.0/SIMPLE-MODE.md](archive/plan-0.2.0/SIMPLE-MODE.md) and is not in this build:
 `crates/notyas-ui/src/screens/door.rs` is written and has no call sites, and
 `crates/notyas-ui/src/screens/lock.rs` still pushes the PIN pad and the Verify chip and
 nothing else. There is no picture of it here because there is nothing to photograph. Two
