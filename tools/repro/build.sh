@@ -261,7 +261,14 @@ assert_pin idf_version "$(git -C "$IDF_PATH" describe --tags --abbrev=0 2>/dev/n
 # bindgen's output differs across libclang versions, so libclang is a build
 # input on par with the compiler (REPRODUCIBLE.md item 16).
 if [ -z "${LIBCLANG_PATH:-}" ]; then
-    LIBCLANG_PATH=$(dirname "$(find "$IDF_TOOLS_PATH" /usr/lib -name 'libclang.so*' -print 2>/dev/null | sort | head -n 1)")
+    # find printing nothing is the case that matters: dirname of the empty
+    # string is ".", which is a directory, so the guard below would pass and
+    # LIBCLANG_PATH would be exported as "." - a missing libclang would then
+    # surface as an unreadable bindgen failure deep inside the cargo build
+    # instead of here. Catch the empty result before dirname sees it.
+    LIBCLANG_SO=$(find "$IDF_TOOLS_PATH" /usr/lib -name 'libclang.so*' -print 2>/dev/null | sort | head -n 1)
+    [ -n "$LIBCLANG_SO" ] || die "no libclang found under $IDF_TOOLS_PATH or /usr/lib; the image must install esp-clang-libs (REPRODUCIBLE.md item 16)"
+    LIBCLANG_PATH=$(dirname "$LIBCLANG_SO")
 fi
 [ -d "$LIBCLANG_PATH" ] || die "no libclang found; set LIBCLANG_PATH in the Dockerfile (REPRODUCIBLE.md item 16)"
 export LIBCLANG_PATH
@@ -471,9 +478,17 @@ cp "$SDKCONFIG" "$OUT/$(name sdkconfig.txt)"
 # which one the pinned image ships is a property of the image rather than a
 # choice; try the modern spelling, then the legacy one, and fail loudly if
 # neither works rather than leaving a half-written file behind.
-if ! "$ESPTOOL" --chip esp32p4 merge-bin -o "$MERGED" --flash-size "$FLASH_SIZE" \
+# The size itself is spelled differently by the two tools, which is why the
+# board table carries espflash's spelling and this derives esptool's: espflash
+# takes a lowercase "32mb", esptool's --flash-size choice list is uppercase
+# ("keep", "4MB", "32MB", ...) and rejects anything else at argument parsing,
+# under both the modern and the legacy spelling. Deriving it keeps one value in
+# the board table instead of two that can drift apart.
+ESPTOOL_FLASH_SIZE=$(printf %s "$FLASH_SIZE" | tr '[:lower:]' '[:upper:]')
+
+if ! "$ESPTOOL" --chip esp32p4 merge-bin -o "$MERGED" --flash-size "$ESPTOOL_FLASH_SIZE" \
         0x2000 "$BOOTLOADER" 0x8000 "$PTABLE" 0x10000 "$APP" 2> /tmp/merge.err; then
-    if ! "$ESPTOOL" --chip esp32p4 merge_bin -o "$MERGED" --flash_size "$FLASH_SIZE" \
+    if ! "$ESPTOOL" --chip esp32p4 merge_bin -o "$MERGED" --flash_size "$ESPTOOL_FLASH_SIZE" \
             0x2000 "$BOOTLOADER" 0x8000 "$PTABLE" 0x10000 "$APP"; then
         cat /tmp/merge.err >&2
         die "esptool could not merge the image under either subcommand spelling"

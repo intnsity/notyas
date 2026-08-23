@@ -1,12 +1,16 @@
 # notyas - Security model (normative)
 
-Applies to 0.2.0. The 0.1.0 text this replaces is in git history at tag `v0.1.0`; it
-described a device that stores nothing, and 0.2.0 breaks that identity on purpose.
+Applies to the 0.2.x series, of which 0.2.3 is the current release. Where a statement is
+true of one release and not another it names the release; everywhere else, a statement about
+"this firmware" or "a shipped build" is a statement about every release in the series. The
+0.1.0 text this replaces is in git history at tag `v0.1.0`; it described a device that stores
+nothing, and 0.2.0 breaks that identity on purpose.
 
 Every claim in this file is mechanically enforced - by a build gate, by a type, by a
-test, or by hardware - or it is not made. Marketing copy derives from this file, never
-the reverse. `docs/claims-audit-0.2.0.md` records the mechanism and the file:line behind
-each claim, so the rule can be re-checked rather than re-argued.
+test, or by hardware - or it is not made. Product copy derives from this file, never
+the reverse. `docs/claims-audit-0.2.0.md` is a dated audit recording the mechanism and the
+file behind each claim as of the 0.2.0 tree, so a rule can be re-checked rather than
+re-argued; it is a point-in-time record and not a live index.
 
 ## The release identity
 
@@ -30,11 +34,14 @@ enforced. `tools/ci/check-ratified.sh` asserts this fingerprint appears in this 
 An earlier document named a retired rsa3072 identity. That key is not a notyas release
 key and a signature from it verifies nothing.
 
-## What 0.2.0 does not have
+## What this firmware does not have
 
 Stated first, because a lean release invites the reader to assume the missing parts are
 present. Eight things a reader of a hardware-wallet security page would reasonably expect
-are absent here, and four of them change what everything else in this file is worth.
+are absent here, and four of them change what everything else in this file is worth. All
+eight were absent at 0.2.0 and none of the point releases since has closed one
+(`docs/RELEASE-0.2.1.md` section 3, `docs/RELEASE-0.2.2.md` section 7,
+`docs/RELEASE-0.2.3.md` section 7).
 
 1. **No Secure Boot v2.** No signature check runs in the boot path. An attacker who has
    held the device can flash a modified image (OPEN-QUESTIONS Q32, deferred to 0.3.0).
@@ -56,8 +63,8 @@ are absent here, and four of them change what everything else in this file is wo
    first-address cross-check covers multisig setup; taproot multisig interop is not stable
    across the coordinators this device targets (Q15, Q16).
 8. **No JTAG or download-mode lockdown.** `DIS_USB_JTAG`, `DIS_PAD_JTAG`,
-   `DIS_DOWNLOAD_MODE` and `DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE` are not burned; 0.2.0 burns
-   the HMAC key and nothing else. The P4's USB-Serial-JTAG peripheral therefore offers a
+   `DIS_DOWNLOAD_MODE` and `DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE` are not burned; provisioning
+   burns the HMAC key and nothing else. The P4's USB-Serial-JTAG peripheral therefore offers a
    debug port and ROM download mode over the ordinary USB cable on any unit an attacker
    can power, whatever the application does or does not compile in.
 
@@ -73,16 +80,18 @@ Firmware that has been replaced controls every step of the chain: it can print t
 of the image it replaced, print `Secure boot enabled` on a blank device, print any eFuse
 state, any storage state, any boot count. There is no arrangement of software running on
 the suspect processor that closes this, because the thing doing the reporting is the thing
-in question (plan-0.2.0/VERIFY.md section 9). **And on a 0.2.0 unit the substitution is
-cheap**: ROM download mode is open over the ordinary USB cable (see "The powered device"
+in question (plan-0.2.0/VERIFY.md section 9). **And on every unit this document covers the
+substitution is cheap**: ROM download mode is open over the ordinary USB cable (see "The
+powered device"
 below), so replacing the firmware needs neither the case opened nor the flash desoldered.
 
 What the screen is genuinely good for is unchanged and is not small: detecting accidental
 corruption and incomplete flashes, comparing one unit against another, and comparing a
 unit against a digest the owner produced themselves from a reproduced build. The
-reproducible-build chain is the answer to firmware substitution, and in 0.2.0 it is
+reproducible-build chain is the answer to firmware substitution, and in this series it is
 exercised by the owner on their own machine rather than certified by the device. That is a
-real difference in who does the work, not a rewording.
+real difference in who does the work, not a rewording. Which releases actually have an
+artifact to reproduce is `docs/VERIFYING.md` section 1: before 0.2.3 none did.
 
 **If you did not build and flash this firmware yourself from a reproduced image, the
 Verify screen tells you what the running firmware says about itself and nothing more.**
@@ -99,11 +108,10 @@ compromised coordinator feeding hostile PSBTs or descriptors (mitigated: the on-
 policy engine and the review UI are the trust boundary).
 
 Out of scope, stated honestly: a determined fault-injection attacker holding the device;
-supply-chain replacement of the hardware itself; in 0.2.0, an attacker who has held the
-device and replaced its firmware, because nothing on the device checks the firmware; and,
-also in 0.2.0, an attacker who gets the device powered and attaches a USB cable, because
-the debug and download paths that would have to be closed are eFuse burns this release
-does not make. That last one has its own section, "The powered device", because it is the
+supply-chain replacement of the hardware itself; an attacker who has held the device and
+replaced its firmware, because nothing on the device checks the firmware; and an attacker
+who gets the device powered and attaches a USB cable, because the debug and download paths
+that would have to be closed are eFuse burns no release in this series makes. That last one has its own section, "The powered device", because it is the
 cheapest attack on the list and the easiest to assume away.
 
 **No vendor genuine-check exists and none will be built on this hardware.** The eFuse
@@ -122,10 +130,16 @@ worth stating before any tier of stored-secret analysis.
   flash, seed in RAM for the session and gone at power-off. This is the 0.1.0 model and it
   remains a legitimate way to own this device. There is nothing to brute-force and nothing
   to extract; every tier below is empty.
-- **State 2, PIN set with the wipe on (the default once anything is saved).** The tiers
-  apply, with N = 15 by default.
+- **State 2, PIN set with the wipe on (what a shipped build produces once anything is
+  saved).** The tiers apply, with N = 15.
 - **State 3, PIN set with the wipe off.** The tiers apply with the attempt limit removed.
-  See the wipe stance for what that costs and why it is nevertheless the user's to choose.
+  **No shipped build can reach this state.** The record format carries it and
+  `Vault::set_policy` implements the commit, but nothing in a release image can call it -
+  invariant 5 below states the mechanism and names the open defect. It is described here
+  because the format carries it and because the HIL console can set it on a bench unit: that
+  console is a non-default cargo feature `firmware/build.rs` refuses to compile into a
+  release profile, and `tools/ci/check-release-symbols.sh` asserts its absence from a
+  shipped binary.
 
 ## The stored-wallet guarantee, tiered
 
@@ -134,10 +148,10 @@ The tiers are the claim. Nothing broader is claimed anywhere.
 1. **Bench attacker (theft, desolder, flash dump).** Gets an AEAD-sealed record. Each PIN
    guess requires this physical board, because the sealing key ladder passes through the
    P4 HMAC peripheral whose key lives in a read-protected eFuse block that software cannot
-   read. On-device guessing meets the attempt counter: 15 consecutive failures by default
-   destroy the sealed records. **The flash is not encrypted** (see "What 0.2.0 does not
-   have"), so the PIN ladder is the whole of the protection, and the attempt counter is
-   user-disableable.
+   read. On-device guessing meets the attempt counter: 15 consecutive failures destroy the
+   sealed records, and no shipped build can raise that number, lower it or switch the wipe
+   off (invariant 5). **The flash is not encrypted** (see "What this firmware does not
+   have"), so the PIN ladder is the whole of the protection.
 2. **Fault-injection lab.** Assume the eFuse key and a flash image are eventually
    extracted; the ESP32 family has a uniform published history of falling to fault
    injection and no P4-specific result exists, so the P4 is treated as NOT proven
@@ -161,14 +175,15 @@ The tiers are the claim. Nothing broader is claimed anywhere.
 mnemonic backup, so a wiped seed is an inconvenience rather than a loss, and a stolen
 device races an owner who can move funds from backup. **The rest of the device's state is
 not re-derivable from anything.** Multisig registrations, labels and settings exist only
-on the device, 0.2.0 ships no backup, and a wipe destroys them permanently. Every wipe
+on the device, no release in this series ships a backup, and a wipe destroys them
+permanently. Every wipe
 surface names them individually rather than implying the mnemonic covers everything.
 
 ## The powered device: USB, JTAG and ROM download mode
 
 The tiers above describe an attacker who took the flash chip. This section describes the
-cheap attack, and on a 0.2.0 unit it is the one that matters: **an attacker who gets the
-device powered and plugs in one USB cable.**
+cheap attack, and on every unit this document covers it is the one that matters: **an
+attacker who gets the device powered and plugs in one USB cable.**
 
 The ESP32-P4's USB-Serial-JTAG peripheral puts a JTAG debug port on the same D+/D- pins
 that carry power and flashing, with no external adapter and nothing for software to
@@ -177,8 +192,8 @@ to start JTAG debugging on this chip. **That no USB data functionality is compil
 true and beside the point.** The peripheral is silicon; it is live from power-on, before
 any code of ours runs, and an application cannot decline it.
 
-What that buys an attacker on a 0.2.0 unit, where no JTAG or download-mode eFuse is
-burned:
+What that buys an attacker on a unit where no JTAG or download-mode eFuse is burned, which
+is every unit running this series:
 
 - **OpenOCD over that one cable halts both cores and reads internal RAM and PSRAM.** For
   the length of an unlocked session, that memory holds the unsealed seed, the derived
@@ -210,8 +225,9 @@ mean is that **an unlocked session in a place you do not control is the exposed 
 and no software change in this release moves that line.
 
 The eFuses that would close these paths - `DIS_USB_JTAG`, `DIS_PAD_JTAG`,
-`DIS_DOWNLOAD_MODE`, `DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE` - are not burned on 0.2.0 units;
-the one eFuse this release burns is the HMAC key the sealed storage binds to. **Burning
+`DIS_DOWNLOAD_MODE`, `DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE` - are not burned on any unit
+running this series; the one eFuse these releases burn is the HMAC key the sealed storage
+binds to. **Burning
 them is not proposed here.** It is the same one-way cliff and the same key-ownership
 question as Secure Boot v2, it is a 0.3.0 decision, and plan-0.2.0/SECUREBOOT.md owns it
 (section 10, the burn sequence and what each step forecloses). This section states the
@@ -245,14 +261,15 @@ exposure and stops there.
    under the PIN-derived key ladder, only on explicit user opt-in, only to the dedicated
    `wallets` partition. The app and bootloader partitions are never written at runtime. NVS
    is never mounted and is not in the partition table. RAM copies are zeroized on lock,
-   screen exit, session timeout and power-off. A device with no stored wallet retains the
-   0.1.0 stateless property verbatim: nothing is ever written to flash. Enforced by: a
+   screen exit, session timeout and power-off. A device that has stored neither a wallet nor a
+   public setting retains the 0.1.0 stateless property verbatim: nothing is written to
+   flash at all. Enforced by: a
    compile-time drop-equals-zeroize check in notyas-ui that names every secret-bearing
    field of every screen against its type, so replacing one with a plain `String` stops the
    crate compiling; `Zeroizing`/`ZeroizeOnDrop` types through notyas-core and
    notyas-wallet; and the partition table itself, which declares nowhere else to write.
 
-   **The one exception, stated rather than buried (0.2.0).** A device that has never
+   **The one exception, stated rather than buried.** A device that has never
    stored a wallet but HAS saved a public setting - a device name, or the network toggle -
    has written to flash: to the `settings` partition, and only there. That region holds no
    secret and no secret-derived value; it exists because the lock screen draws the device
@@ -268,7 +285,7 @@ exposure and stops there.
    **Corollary on QR display, carried forward from 0.1.0.** QR display covers PUBLIC
    values only - receive addresses, account xpub/SLIP-132, descriptors, signed PSBTs and
    final transactions - and never a mnemonic, xprv, seed or WIF. SeedQR display-out is
-   declined for 0.2.0 (Q17), so there is no exception to state and no secret-QR screen
+   declined in this series (Q17), so there is no exception to state and no secret-QR screen
    class; scan-IN of a SeedQR is a separate direction and is unaffected. Enforced
    structurally: the request type carries a label and a payload string, the only code paths
    that construct one are the export screen's three QR buttons (address, account xpub,
@@ -344,17 +361,31 @@ exposure and stops there.
    claim about an attacker who has extracted the key, and not a claim that behaviour under
    a duress PIN is indistinguishable at every UI surface.
 
-   **The wrong-PIN wipe policy is user-settable, from an unlocked session only.** The
-   default is 15 attempts; the user may change N within 3..=25 or disable the wipe
-   entirely. The bounds are format constants, the encoded policy is authenticated inside
-   the AEAD, and a malformed or absent policy resolves to the strict default of wipe ON.
+   **The wrong-PIN wipe policy is 15 attempts in every shipped build, and nothing on the
+   panel can change it or switch it off.** The storage format admits N within 3..=25 or the
+   wipe off, `Vault::set_policy` implements the commit, and the format-time policy this
+   firmware installs is `wipe_after: 15` (`firmware/src/store/mod.rs`). What does not exist
+   is a route from the UI to that call: `UiRequest::SetWipePolicy` is refused in every build
+   (`firmware/src/main.rs:911`), which answers `ui.policy_result(false)` and re-reads the
+   policy still in force, so the wrong-PIN policy screen is a live editor over a value that
+   can be read and never written. That is `docs/KNOWN-ISSUES.md` K16, open, and it is one of
+   the three sealed-store mutations the same entry lists as refused.
 
-6. **Secure boot, honestly - and in 0.2.0 the honest answer is that it is not there.**
-   Secure Boot v2 is not burned on 0.2.0 units, eFuse anti-rollback is not set, and no
-   flash-encryption key is burned (Q32 deferred to 0.3.0; Q63 settled the scope of "no
-   eFuse burned" to mean no secure-boot-related eFuse). The device stays reflashable, which
-   is what keeps the reproducible-build claim usable by the person it is for. **The one
-   eFuse 0.2.0 uses is the HMAC key the sealed storage binds to**, burned host-side with
+   The reason is structural rather than an omission, and all three refusals share its
+   shape: each one re-seals or destroys sealed records, so each one needs the PIN, and the
+   session never holds it. For the policy specifically: the encoded policy is authenticated
+   INSIDE the AEAD, so committing one re-seals the store and `set_policy` takes the PIN to
+   do it, while an unlocked session holds a key derived from the PIN and never the PIN
+   itself. There is nothing in the session to write with. The bounds are format constants,
+   and a malformed or absent policy resolves to the strict default of wipe ON.
+
+6. **Secure boot, honestly - and the honest answer in this series is that it is not
+   there.** Secure Boot v2 is not burned on any unit running these releases, eFuse
+   anti-rollback is not set, and no flash-encryption key is burned (Q32 deferred to 0.3.0;
+   Q63 settled the scope of "no eFuse burned" to mean no secure-boot-related eFuse). The
+   device stays reflashable, which is what keeps the reproducible-build claim usable by the
+   person it is for. **The one eFuse this firmware uses is the HMAC key the sealed storage
+   binds to**, burned host-side with
    `espefuse.py` by whoever provisions the board, before the firmware first runs. A device
    that has not been through that ceremony has no key, stores nothing, and says so as its
    own state rather than as a hardware fault. The three secure-boot digest slots render
@@ -365,51 +396,90 @@ exposure and stops there.
    with the key-ownership question settled first, because it decides whether an owner of
    this device can build and run their own firmware.
 
-7. **The signing policy engine is the trust boundary.** No PSBT input is signed unless:
-   claimed key origins re-derive to the input's actual script; every segwit-v0 and legacy
-   input carries its full previous transaction with matching txid and amount (the BIP-143
-   fee-attack defense); the network matches; the sighash type is whitelisted; and the
-   structural limits on size, counts and derivation depth hold. Outputs are classified,
-   and **change is proven rather than believed**: an output is change only when a
-   registration this device holds rebuilds that exact script on its change keychain at the
-   claimed leaf. An output that merely carries our fingerprint and cannot be proven counts
-   as a payment everywhere money is counted, which is the change-confusion attack refused
-   by construction. The fee is computed from the prevouts, together with whether it is a
-   number this device's own signatures would actually enforce, so a claimed amount is
-   never rendered as a measured one. Validation is a pure function of the PSBT and a
-   context, with no key in scope, and it refuses with one named reason rather than a list.
-   After signing, every signature this device produced is re-verified against a sighash
-   recomputed from the PSBT alone before the file leaves the device; that gate shares
-   rust-bitcoin's digest implementation with the signing path, so it detects a fault or a
-   caller bug rather than standing in for an independent second implementation. Each check
-   is pinned to a historical attack in plan-0.2.0/ARCHITECTURE.md 5.3 and to a case in the
-   regression corpus that CI runs. A maximum-fee ceiling is a review-layer check and is not
-   claimed here.
+7. **The signing policy engine is the trust boundary.** No PSBT input is signed unless the
+   conditions below hold. Each is pinned to a historical attack in
+   plan-0.2.0/ARCHITECTURE.md 5.3 and to a case in the regression corpus that CI runs.
+
+   **Ownership is proven by derivation, not asserted by a fingerprint.** For every input
+   claiming this device, the engine derives the key at the leaf the origin names from an
+   account this device holds, and requires BOTH that the derived key equals the key the
+   origin states AND that the script that key locks equals the script the input actually
+   pays, byte for byte. A master fingerprint is demoted to a routing hint that chooses
+   which key to derive; an all-zero fingerprint is an assumption to discharge rather than a
+   fact to accept. There are four verdicts and not two: proven; **forged**, meaning the
+   script is ours and the file lies about the key at that leaf, which is a refusal read as
+   tamper evidence; **refuted**, meaning an account of ours owns the account the path names
+   and this is not one of its leaves, which is what stops ownership laundering by writing
+   our fingerprint on a stranger's input; and unknown. `OwnWallets::prove` in
+   `crates/notyas-core/src/psbt/checks.rs` is the whole of it, and its doc comment names
+   the three other implementations of the same test it was written against.
+
+   **Amounts follow two regimes, and legacy is the stricter one.** A segwit v0 input's
+   amount may rest on `witness_utxo` alone in exactly one case: the unsigned transaction
+   has a single input, where BIP-143 leaves no second amount to lie about and no second
+   signature for a later round to combine with. With two or more inputs every amount must
+   be proven by a full previous transaction with matching txid and value, because a
+   coordinator can otherwise rotate which amount is left unproven across two presentations
+   of one transaction and harvest a combinable signature from each. The count is taken over
+   `psbt.unsigned_tx.input` and never over the inputs the device classifies as its own,
+   since ownership is asserted by the file. A **legacy** input is exempt from the
+   single-input case in every transaction, because a pre-BIP-143 digest commits to no
+   amount at all, not even its own: it needs a full previous transaction always, and signs
+   under SIGHASH_ALL only. Taproot needs no previous transaction, because BIP-341's
+   `sha_amounts` already binds every claimed amount. The reasoning is
+   `docs/RELEASE-0.2.1.md` section 0 and `docs/RELEASE-0.2.2.md` section 2; the rules are
+   pinned by permanent negative tests in `checks.rs` named for the attacks they refuse.
+
+   **Change is proven rather than believed**, by the same derivation test run on outputs.
+   An output is change only when a registration this device holds, or an account it holds,
+   rebuilds that exact script on its change keychain at the claimed leaf. Both the
+   full-path form and the relative two-component form Electrum writes resolve, through one
+   comparison written once so the two branches cannot come to disagree about what proof is.
+   An output that merely carries our fingerprint and cannot be proven counts as a payment
+   everywhere money is counted, which is the change-confusion attack refused by
+   construction.
+
+   **And the rest.** The network must match; the sighash type must be whitelisted; the
+   structural limits on size, counts and derivation depth must hold. The fee is computed
+   from the prevouts, together with whether it is a number this device's own signatures
+   would actually enforce, so a claimed amount is never rendered as a measured one.
+   Validation is a pure function of the PSBT and a context, with no key in scope, and it
+   refuses with one named reason rather than a list. After signing, every signature this
+   device produced is re-verified against a sighash recomputed from the PSBT alone before
+   the file leaves the device; that gate shares rust-bitcoin's digest implementation with
+   the signing path, so it detects a fault or a caller bug rather than standing in for an
+   independent second implementation. A maximum-fee ceiling is a review-layer check and is
+   not claimed here.
 
 ## Duress and wipe stance
 
-- **Wipe-on-N** (default 15, range 3..=25, user-settable and disableable) destroys the
-  sealed records and bumps a one-way epoch marker. The user is told at setup that the
-  mnemonic or dice backup is the recovery path for the SEED, and equally plainly that it is
-  not a recovery path for anything else: multisig registrations, labels and settings are
+- **Wipe-on-N** (N = 15 in every shipped build; the format admits 3..=25 or off and no
+  shipped build can commit either, per invariant 5) destroys the sealed records and bumps a
+  one-way epoch marker. The user is told at setup that the mnemonic or dice backup is the
+  recovery path for the SEED, and equally plainly that it is not a recovery path for
+  anything else: multisig registrations, labels and settings are
   destroyed permanently, and every wipe surface names them. A power cut taken between the
   attempt-cell program and the success-cell write CONSUMES an attempt even when the PIN was
   correct - deliberate and fail-closed, because otherwise power-cutting is a free oracle -
   so on a portable device the counter can advance with no wrong PIN entered, and the
   wrong-PIN policy screen says so.
-- **Turning the wipe off is a real weakening, and the device says so where it happens.**
-  With the wipe enabled an attacker holding the device gets N guesses; with it disabled
-  they get all of them, at one guess per Argon2id stretch - the pinned cost is 1.8 s, so a
-  4-digit PIN is a few hours, and half that for an attacker running their own firmware on
-  both P4 cores, which in 0.2.0 needs no key because Secure Boot is not burned. The
-  settings screen states
-  the keyspace, the measured per-guess cost and the resulting time for the PIN actually set,
-  at the moment of the change, and offers the longer-PIN path as an action. A longer PIN is
-  not required: the device states the trade and does not withhold the setting.
-- **What stops an attacker turning the wipe off before guessing.** A policy change needs
-  the PIN: both writes that constitute it require an unlocked session plus a fresh PIN
-  confirmation, and every attempt to obtain one spends an attempt against the counter being
-  attacked. Offline editing cannot do it either, because the ledger cell's guard and the
+- **Turning the wipe off would be a real weakening, and no shipped build can do it.** With
+  the wipe enabled an attacker holding the device gets N guesses; with it disabled they get
+  all of them, at one guess per Argon2id stretch - the pinned cost is 1.8 s, so a 4-digit
+  PIN is a few hours, and half that for an attacker running their own firmware on both P4
+  cores, which needs no key while Secure Boot is not burned. The wrong-PIN policy screen is
+  written to state that arithmetic at the moment of the change - the keyspace, the measured
+  per-guess cost and the resulting time for the PIN actually in force, computed from runtime
+  state rather than written as a sentence - behind a typed confirmation, with the longer-PIN
+  path offered as an action beside accept and cancel. That is the ratified answer (Q62): the
+  device states the trade rather than withholding the setting. What happens today is that
+  the save is refused, the screen renders the refusal, and the policy in force is unchanged,
+  so the state this bullet warns about is one a user of a shipped build cannot enter.
+- **What stops an attacker turning the wipe off before guessing.** In a shipped build, the
+  operation itself: it is refused for everyone, the owner included. In the format, a policy
+  change needs the PIN: both writes that constitute it require an unlocked session plus a
+  fresh PIN confirmation, and every attempt to obtain one spends an attempt against the
+  counter being attacked. Offline editing cannot do it either, because the ledger cell's guard and the
   superblock mirror's MAC both descend from the read-protected eFuse key, so forged bytes
   are malformed, and malformed resolves to wipe ON. Erasing the policy log does not help: an
   empty log falls back to the format-time policy, which has the wipe enabled. **What is NOT
@@ -425,12 +495,18 @@ exposure and stops there.
   every multisig registration, all labels and settings, the anti-phishing words - with
   counts read from the store rather than a generic phrase. It is a data-loss event, not a
   security downgrade: the device it produces stores nothing, which is the safest state this
-  hardware has.
+  hardware has. **Like the policy commit, it is refused in every shipped build**, for the
+  same reason: `Vault::remove_pin` destroys every sealed record and takes a fresh PIN
+  confirmation the session cannot supply, so `firmware/src/main.rs` answers
+  `ui.pin_removed(false)` and the settings screen renders that refusal. Nothing is destroyed
+  on that path today (K16).
 - **Duress PIN:** opens a decoy wallet set, with no stored marker saying which PIN is which.
-  The feature is OFF by default. The record format carries it unconditionally - four PIN
-  identities, index 0 primary - so nothing about the decision reaches the on-flash bytes;
-  the enrolment and classification UX is the half that decides whether a given release
-  exposes it. The deniability package it depends on is not optional and
+  **No shipped build in this series exposes it**, and "off by default" would be the wrong
+  way to say that, because it implies a setting a user could turn on. There is none. What
+  exists is the record format, which carries the shape unconditionally - four PIN
+  identities, index 0 primary - so nothing about the decision reaches the on-flash bytes.
+  The enrolment and classification UX is the missing half, and until it ships this bullet
+  describes a format property rather than a feature. The deniability package it depends on is not optional and
   is not off by default - unused slots always hold device-derived filler ciphertext for
   every user, and the Verify storage readout is permanently coarse for every user - because
   a package only some devices have is itself the tell. A duress PIN alone would NOT be
@@ -440,7 +516,8 @@ exposure and stops there.
   are derived from the read-protected eFuse key, so they genuinely detect a swapped board.
   **They do not detect replaced firmware on the same board**: any firmware running on that
   board can compute them, and without Secure Boot firmware replacement is precisely the
-  attack in play - on a 0.2.0 unit it needs one USB cable and open ROM download mode (see
+  attack in play - on a unit running this series it needs one USB cable and open ROM
+  download mode (see
   "The powered device"), not a workshop. The words catch a different device, not different
   software on the same device. A second known limit, shared with Coldcard: an evil maid who held the device can
   enumerate and replay the words on a look-alike. Displaying them costs no attempt-counter
@@ -481,7 +558,8 @@ exposure and stops there.
   Every Waveshare board module in docs/BOARDS.md carries a C6-MINI module whose EN has no
   pullup (1 uF to GND only, schematic-verified), so its radio is held down from power-on
   and no window exists at all. Every Elecrow board module pulls EN up and has the window
-  described next. **Of the hardware 0.2.0 supports, a Waveshare unit is therefore the
+  described next. **Of the hardware this firmware supports, a Waveshare unit is therefore
+  the
   airgap-preferred choice.** The running firmware already states which case the board in
   your hand is, at every boot: the Waveshare modules log the radio as held down from
   power-on at info level, the Elecrow modules log the power-on window as a warning. The

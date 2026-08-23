@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "notyas-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "bitcoin",
  "hex",
@@ -1462,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "notyas-firmware"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "argon2",
  "embedded-graphics",
@@ -1491,14 +1491,14 @@ dependencies = [
 
 [[package]]
 name = "notyas-fonts"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "embedded-graphics-core",
 ]
 
 [[package]]
 name = "notyas-ui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "embedded-graphics",
  "notyas-core",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "notyas-wallet"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "argon2",
  "chacha20poly1305",

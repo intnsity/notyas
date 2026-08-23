@@ -1586,6 +1586,26 @@ are covered again by the workspace-wide suite that does run. It is recorded here
 than deferred silently, because "a gate nobody noticed had stopped running" is exactly the shape of
 failure this file exists to keep visible.
 
+**The gate half is fixed as of 0.2.3.** `tools/ci/check-heap-residue.sh` now runs
+
+```
+cargo test --locked -p notyas-ui --features notyas-core/qr --test review_capacity_and_wipe -- --test-threads=1
+```
+
+which compiles the crate the way every real consumer of it compiles it, the firmware included, and
+the three assertions are reported as ran-and-passed again instead of unverified. That also
+unblocks `ci.yml`'s test job, which had been red on every push since the Receive screen landed -
+and a red CI run is not a thing `tools/release.sh gates` can cite for a gate the bench cannot run,
+so this was on the release path and not only on the hygiene path.
+
+**The architectural half stays open.** `crates/notyas-ui/src/screens/receive.rs` still calls
+`notyas_core::qr::matrix` directly, and the rule that this crate renders precomputed matrices
+rather than computing them still has a violation in it. The gate now names the feature instead of
+tripping over it, which is honest about the dependency but does not remove it. Deferred
+deliberately: 0.2.3's firmware delta is the version string alone, and rewiring a screen to raise
+`UiRequest::Qr` belongs in a release that re-runs the two-board hardware gauntlet over changed UI
+code. Closing this entry requires that rewiring plus reverting the `--features` flag added above.
+
 ### K33. The scheme tab strip is labelled from Scheme::ALL while its content comes from report.schemes
 
 **Found:** 2026-08-22, during the 0.2.2 funnel audit. `crates/notyas-ui/src/screens/schemes.rs`
@@ -1605,3 +1625,43 @@ so the list is always in order and the labels always agree. It is recorded becau
 an identity-resolved lookup onto a screen whose labels are still index-resolved, and a mislabelled
 derivation on an export screen is precisely the class of defect K29 was about. The fix is to draw
 the strip from the report rather than from the constant, so the two halves cannot drift.
+
+### K34. v0.2.2 was tagged and signed over firmware nobody could package: no artifact was ever produced
+
+**Found:** 2026-08-21, in the `repro` GitHub Actions workflow on the `v0.2.2` tag, on both boards,
+and reproduced byte-identically in a local Linux Docker host the same day. The same failure is in
+the workflow's history on `v0.2.0`, twice. It had never once succeeded.
+
+`tools/repro/Dockerfile` failed at step 5 of 7. That step sourced ESP-IDF's `export.sh` inside a
+`RUN` line before calling `idf_tools.py`. ESP-IDF v5.5's `export.sh` locates itself through
+`$BASH_SOURCE`, then `$ZSH_VERSION`, and only then falls back to the `IDF_PATH` already in the
+environment - and it accepts that fallback only when the file `/.dockerenv` exists. Docker's engine
+creates `/.dockerenv` in every container it starts, so the identical command succeeds under `docker
+run`; BuildKit, which executes `RUN` steps, does not create it in its build sandbox. Under `docker
+build` the detection ran off the end of its chain and the step died with `Could not automatically
+detect IDF_PATH from script location`. `/bin/sh` being dash is a necessary condition and not the
+cause: dash sources the same file successfully under `docker run`.
+
+The consequence is the entry, not the mechanism. **`v0.2.2` is a tag over firmware whose gates were
+green and whose two-board hardware pass had run, and there is no `v0.2.2` image, no
+`SHA256SUMS.txt`, and no signature over one.** The release page has nothing to download. Every
+statement `docs/VERIFYING.md` makes about rebuilding and comparing was, until this was fixed,
+unusable in fact rather than merely untested: the container it instructs a reader to build could
+not be built by anybody.
+
+Two further defects were behind it, both invisible while the first one held. `idf_tools.py install
+esp-clang` installs Espressif's clang front-end, which since the upstream split carries no
+`libclang.so` at all - that library is a separate tool, `esp-clang-libs` - so several plausible
+one-line workarounds stop the error while leaving the image without the very library the step
+exists to pin. And `tools/repro/build.sh` took `dirname` of an empty `find` result when hunting for
+libclang, which yields `.`, which passes the `[ -d ]` guard, so the `die` written to catch a
+missing libclang could never fire. A third surfaced only once the container ran to completion for
+the first time: `esptool` was being handed espflash's lowercase spelling of the flash size and
+rejects it at argument parsing.
+
+**Does it block 0.2.3?** It IS 0.2.3. The tag `v0.2.2` stays where it is - it is the honest record
+of a firmware release whose packaging did not work, and moving it would replace a true statement
+with a tidy one. `docs/RELEASE-0.2.3.md` sections 0 and 1 carry the full account and the fix.
+Closing this entry requires what 0.2.3 delivers: a container that builds, a `build.sh` that runs to
+`done: <board>`, a `toolchain.lock` with no pending pins, and a published artifact set that a
+stranger can reproduce.

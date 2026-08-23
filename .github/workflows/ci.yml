@@ -277,6 +277,12 @@ jobs:
       # ASCII hyphens only, in every tracked text file.
       - name: No em dash or en dash in the tree
         run: bash tools/ci/check-dashes.sh
+      # And in published prose, no byte above 0x7F at all. Separate from the gate
+      # above because its scope is narrower and its rule is absolute: source may
+      # legitimately carry non-ASCII (wordlists, vectors, font tables) and prose
+      # may not.
+      - name: No non-ASCII in README or docs
+        run: bash tools/ci/check-ascii-prose.sh
       # The tree still matches the answers the owner ratified.
       #
       # This gate existed with zero references in ci.yml, repro.yml, release.sh or

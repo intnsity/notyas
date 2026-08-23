@@ -1,4 +1,4 @@
-# Verifying notyas 0.2.0
+# Verifying a notyas release
 
 notyas is an airgapped Bitcoin signer. It holds key material, so you should not have to
 take anybody's word for what is running on it. This document is how you check, end to
@@ -11,13 +11,13 @@ Source: https://github.com/intnsity/notyas (GPL-3.0-or-later).
 
 ---
 
-## 1. Read this before you start: what verification is worth in 0.2.0
+## 1. Read this before you start: what verification is worth today
 
-**0.2.0 ships without Secure Boot v2 and without flash encryption. That is a deliberate
-scope decision, and it has one consequence you must understand before you rely on
-anything the device tells you about itself:**
+**Every notyas release so far ships without Secure Boot v2 and without flash encryption.
+That is a deliberate scope decision, and it has one consequence you must understand before
+you rely on anything the device tells you about itself:**
 
-> On a 0.2.0 unit the Verify screen reports what the RUNNING FIRMWARE says about itself.
+> The Verify screen reports what the RUNNING FIRMWARE says about itself.
 > If you did not build that firmware yourself from a reproduced image and flash it
 > yourself, the screen cannot prove it is the firmware you think it is.
 
@@ -31,8 +31,23 @@ what the value being compared against is worth.
 Secure Boot v2 is planned for 0.3.0. With it burned, the chip's boot ROM - mask silicon,
 not this project's code - checks a signature before the bootloader runs, and the
 bootloader checks one before the app runs, so modified firmware does not execute and
-there is nothing left to print a reassuring screen. That link does not exist in 0.2.0
-and no amount of software can substitute for it.
+there is nothing left to print a reassuring screen. That link does not exist in any
+release published so far, and no amount of software can substitute for it.
+
+### Which releases have anything to check
+
+**0.2.3 is the first notyas release for which a build artifact was ever produced.** The
+release container failed at step 5 of 7 on every attempt before it, on GitHub Actions and on
+every local host, so `v0.2.0` and `v0.2.2` are tags over gated firmware that was never
+packaged: their release pages carry no `app.bin`, no `SHA256SUMS.txt` and no signature over
+one. Until 0.2.3 this document was accurate about the intent and unusable in fact, because
+the container it tells you to build in step 4 could not be built by anybody.
+
+So if you are holding an earlier tag, there is nothing on its page to check and no procedure
+here can be run against it. 0.2.3 is `v0.2.2`'s firmware with a version string that says so,
+and it is the version to take. `docs/RELEASE-0.2.3.md` sections 0, 1 and 4 are the account,
+and `docs/KNOWN-ISSUES.md` K34 is the defect entry. Every command below is written out with
+`0.2.3` for that reason.
 
 ### What each step actually answers
 
@@ -114,6 +129,13 @@ install from a package index that this project controls.
 Download, into one directory, the artifacts for your board plus `SHA256SUMS.txt` and
 `SHA256SUMS.txt.asc`.
 
+**About the version in the commands below.** Every filename and tag here is written out
+with a concrete version so the commands are copy-pasteable, and `0.2.3` is the one they
+use, because it is the first release with any files to name (section 1). Substitute the
+version you actually downloaded, and the board slug you actually have: an artifact is named
+`notyas-<version>-<board>-app.bin` and its tag is `v<version>`. The release page for your
+version is the authority on which files it carries.
+
 Linux:
 
 ```sh
@@ -133,7 +155,7 @@ Windows PowerShell, comparing the printed hash by eye against the line in
 `SHA256SUMS.txt` for the same filename:
 
 ```powershell
-Get-FileHash .\notyas-0.2.0-waveshare-4b-app.bin -Algorithm SHA256
+Get-FileHash .\notyas-0.2.3-waveshare-4b-app.bin -Algorithm SHA256
 ```
 
 Every file must say `OK`. A failure here is far more often a truncated download than an
@@ -283,7 +305,7 @@ same weakness as `gpg --verify`, and `--raw` is how you ask git the same pinned 
 
 ```sh
 git clone https://github.com/intnsity/notyas && cd notyas
-git verify-tag --raw v0.2.0 2>&1 \
+git verify-tag --raw v0.2.3 2>&1 \
   | grep "VALIDSIG .*A1E953B25C6A623B77A1D5223AC4BBCFE51AB37D"
 ```
 
@@ -297,8 +319,8 @@ This is the step that makes the others worth doing.
 # 1. The source, at the exact tag, with the tag's signature checked against the
 #    fingerprint rather than against the name on it (section 4).
 git clone https://github.com/intnsity/notyas && cd notyas
-git checkout v0.2.0
-git verify-tag --raw v0.2.0 2>&1 | grep "VALIDSIG .*A1E953B25C6A623B77A1D5223AC4BBCFE51AB37D"
+git checkout v0.2.3
+git verify-tag --raw v0.2.3 2>&1 | grep "VALIDSIG .*A1E953B25C6A623B77A1D5223AC4BBCFE51AB37D"
 
 # 2. Build the container, then build one board.
 docker build -t notyas-repro -f tools/repro/Dockerfile .
@@ -307,7 +329,7 @@ docker run --rm -v "$PWD":/mnt/src:ro -v "$PWD/out":/out notyas-repro waveshare-
 # 3. Compare against what was published. Put the downloaded files in ./published/.
 cd out
 grep waveshare-4b ../published/SHA256SUMS.txt | sha256sum -c -
-cmp notyas-0.2.0-waveshare-4b-app.bin ../published/notyas-0.2.0-waveshare-4b-app.bin
+cmp notyas-0.2.3-waveshare-4b-app.bin ../published/notyas-0.2.3-waveshare-4b-app.bin
 ```
 
 Substitute `elecrow-5` for the other board. `bash tools/repro/build.sh --list-boards`
@@ -379,7 +401,7 @@ carries the same rule as a compile error. Only the third reads the artifact, whi
 it is the one written down here:
 
 ```sh
-bash tools/ci/check-release-symbols.sh --image notyas-0.2.0-waveshare-4b.elf
+bash tools/ci/check-release-symbols.sh --image notyas-0.2.3-waveshare-4b.elf
 ```
 
 It looks for three different kinds of evidence, because each covers a gap in the others:
@@ -415,16 +437,16 @@ buys: the firmware you verified is firmware you can actually install.
 ```sh
 pip install esptool     # or pipx, or a venv: see section 2
 esptool --chip esp32p4 -p /dev/ttyUSB0 write-flash 0x0 \
-        notyas-0.2.0-waveshare-4b-merged.bin
+        notyas-0.2.3-waveshare-4b-merged.bin
 ```
 
 Or the three regions separately, which is the same thing spelled out:
 
 ```sh
 esptool --chip esp32p4 -p /dev/ttyUSB0 write-flash \
-    0x2000  notyas-0.2.0-waveshare-4b-bootloader.bin \
-    0x8000  notyas-0.2.0-waveshare-4b-partition-table.bin \
-    0x10000 notyas-0.2.0-waveshare-4b-app.bin
+    0x2000  notyas-0.2.3-waveshare-4b-bootloader.bin \
+    0x8000  notyas-0.2.3-waveshare-4b-partition-table.bin \
+    0x10000 notyas-0.2.3-waveshare-4b-app.bin
 ```
 
 On Windows the port is `COM3` or similar. Command spellings changed between esptool 4.x
@@ -443,7 +465,7 @@ block has been burned. That burn is what binds sealed storage to this physical b
 that every PIN guess requires the board itself.
 
 **Provisioning is a host-side ceremony, performed once per device with `espefuse`.
-Release firmware contains no eFuse-burn code.** 0.2.0 burns exactly one key block: no
+Release firmware contains no eFuse-burn code.** Provisioning burns exactly one key block: no
 secure-boot digest, no anti-rollback fuse, no flash-encryption key.
 
 **The procedure is `docs/PROVISIONING.md` in this repository, and it is deliberately not
@@ -488,8 +510,8 @@ digest slots and the HMAC key block, the chip and flash identity, the radio kill
 level, the self-test verdict and the storage state. `[ Show as QR ]` exports the whole
 readout.
 
-Every release publishes a signed manifest per board,
-`notyas-0.2.0-<board>-VERIFY.json`, listed in `SHA256SUMS.txt` and therefore covered by
+A release that publishes artifacts publishes a signed manifest per board,
+`notyas-0.2.3-<board>-VERIFY.json`, listed in `SHA256SUMS.txt` and therefore covered by
 the signature you checked in step 3. It carries exactly the numbers the screen shows.
 
 Compare the device against it:
@@ -506,7 +528,7 @@ downloaded, so it is wherever you put the downloads).
 # it could not read rather than guessing, and it refuses a file whose first line is
 # something else.
 python3 tools/repro/verify-manifest.py check \
-    --manifest notyas-0.2.0-waveshare-4b-VERIFY.json \
+    --manifest notyas-0.2.3-waveshare-4b-VERIFY.json \
     --readout readout.txt
 ```
 
@@ -515,7 +537,7 @@ from the other end:
 
 ```sh
 python3 tools/repro/verify-manifest.py check \
-    --manifest notyas-0.2.0-waveshare-4b-VERIFY.json \
+    --manifest notyas-0.2.3-waveshare-4b-VERIFY.json \
     --dir ./out
 ```
 
@@ -540,11 +562,11 @@ To see the relationship for yourself:
 
 ```sh
 # The image-content digest, read straight out of the file's own last 32 bytes:
-tail -c 32 notyas-0.2.0-waveshare-4b-app.bin | od -An -tx1 | tr -d ' \n'; echo
+tail -c 32 notyas-0.2.3-waveshare-4b-app.bin | od -An -tx1 | tr -d ' \n'; echo
 
 # The same number, recomputed over everything before those 32 bytes:
-head -c $(( $(wc -c < notyas-0.2.0-waveshare-4b-app.bin) - 32 )) \
-     notyas-0.2.0-waveshare-4b-app.bin | sha256sum
+head -c $(( $(wc -c < notyas-0.2.3-waveshare-4b-app.bin) - 32 )) \
+     notyas-0.2.3-waveshare-4b-app.bin | sha256sum
 ```
 
 `od` and `wc` rather than `xxd` and `stat`: `xxd` is part of vim and is missing from a
@@ -572,10 +594,12 @@ follows is the short form:
 > there is nothing left to report a false value. The Verify screen shows whether that
 > eFuse is burned on your unit.
 
-On a 0.2.0 unit that last row reads `not burned` for all three digest slots, and that is
+On a unit running any release published so far that last row reads `not burned` for all
+three digest slots, and that is
 the true and important answer rather than an omission.
 
-Concretely, then, what the screen is good for on a 0.2.0 device:
+Concretely, then, what the screen is good for on a device running any release published
+so far:
 
 - **Catching accidental corruption and incomplete flashes**, by far the most common real
   failure: a flash interrupted partway, a stale bootloader left from a different board,
@@ -588,8 +612,8 @@ Concretely, then, what the screen is good for on a 0.2.0 device:
   id and the flash ids are values you record once, off the device, when you first set it
   up. A look-alike unit reports different ones.
 
-What it cannot do is establish its own honesty. Step 5 is what covers that, and on a
-0.2.0 unit nothing else does.
+What it cannot do is establish its own honesty. Step 5 is what covers that, and without
+Secure Boot v2 nothing else does.
 
 ---
 
@@ -633,7 +657,7 @@ recipe bug is as useful as one that turns out to be an attack, and far more like
 
 ## 10. Where the detail lives
 
-- `docs/PROVISIONING.md` - the one eFuse burn 0.2.0 performs, in full.
+- `docs/PROVISIONING.md` - the one eFuse burn provisioning performs, in full.
 - `docs/plan-0.2.0/REPRODUCIBLE.md` - the recipe and its reasoning: every source of
   nonreproducibility in this stack, named, with its fix and the check that proves the fix
   worked.
@@ -645,5 +669,5 @@ recipe bug is as useful as one that turns out to be an attack, and far more like
   exactly where that stops being worth anything.
 - `docs/SECURITY.md` - the security model these checks belong to, including what is
   explicitly out of scope.
-- `docs/RELEASE-0.2.0.md` - what shipped in this release, what deliberately did not, and
-  the known limitations a buyer should read.
+- `docs/RELEASE-0.2.0.md`, and the `docs/RELEASE-*.md` for every point release after it -
+  what shipped, what deliberately did not, and the known limitations a buyer should read.

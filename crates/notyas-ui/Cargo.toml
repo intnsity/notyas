@@ -5,7 +5,7 @@
 # audit surface.
 [package]
 name = "notyas-ui"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 rust-version = "1.85"
 description = "Board-independent Butter Paper UI for the notyas device: screens, touch state machine, masking discipline"

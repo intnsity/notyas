@@ -59,10 +59,21 @@ RUN cargo install ldproxy  --version =0.3.5 --locked \
 
 # bindgen's libclang. bindgen output differs across libclang versions - upstream
 # keeps per-version expectation files - so this is a build input on par with the
-# compiler. esp-clang is managed by ESP-IDF's own idf_tools.py, which means its
-# version is pinned by the IDF release and therefore by this image's digest.
-RUN . $IDF_PATH/export.sh \
- && python $IDF_PATH/tools/idf_tools.py install esp-clang
+# compiler. Espressif ships clang split in two: esp-clang is the compiler
+# front-end whose `clang --version` build.sh asserts against toolchain.lock, and
+# esp-clang-libs is the standalone shared-library distribution that carries the
+# libclang.so bindgen actually loads. Both are managed by ESP-IDF's own
+# idf_tools.py, so their version is pinned by the IDF release and therefore by
+# this image's digest.
+#
+# idf_tools.py is invoked directly, the way ESP-IDF's own install.sh invokes it:
+# it needs only IDF_PATH and IDF_TOOLS_PATH, and the base image sets both as
+# image ENV. Sourcing export.sh here would fail: its non-bash fallback trusts
+# IDF_PATH from the environment only when it sees /.dockerenv, which exists in a
+# running container but not in the sandbox BuildKit runs build steps in.
+# Activation is build.sh's job at run time, where it runs under bash in a real
+# container and both detection paths work.
+RUN python3 $IDF_PATH/tools/idf_tools.py install esp-clang esp-clang-libs
 
 COPY tools/repro/build.sh tools/repro/toolchain.lock tools/repro/verify-manifest.py /opt/notyas/
 RUN chmod 0755 /opt/notyas/build.sh

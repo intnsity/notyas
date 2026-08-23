@@ -109,7 +109,13 @@ printf '\n'
 # is the graph that was audited.
 # --nocapture so that a failing assertion's message - which names how many freed
 # blocks held the secret - reaches the log rather than being summarised away.
-CMD=(cargo test --locked -p "$PACKAGE" --test "$TEST_TARGET" -- --test-threads=1 --nocapture)
+# --features notyas-core/qr because screens/receive.rs calls
+# notyas_core::qr::matrix directly: the standalone -p build is the only build
+# in the tree that does not already have that feature unified in by a
+# consumer, the firmware included, so without it this gate stopped compiling
+# and stopped running at all. K32 tracks the architectural fix that removes
+# the need - receive.rs raising a UiRequest instead of reaching into core.
+CMD=(cargo test --locked -p "$PACKAGE" --features notyas-core/qr --test "$TEST_TARGET" -- --test-threads=1 --nocapture)
 note "running: ${CMD[*]}"
 printf '\n'
 

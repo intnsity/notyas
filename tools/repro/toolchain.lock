@@ -24,8 +24,14 @@
 #   espflash_version                the installed host tool (espflash -V)
 #   idf_version                     firmware/.cargo/config.toml ESP_IDF_VERSION
 #   image_digest                    docs/plan-0.2.0/REPRODUCIBLE.md 3.2, observed 2026-08-17
-# Everything marked pending needs the first container run on a Linux host with
-# Docker, which this bench does not have.
+# The seven pins that were pending were read off the container on 2026-08-23, by
+# the first run of tools/repro/build.sh that ever completed: build.sh --bootstrap
+# in the image built from tools/repro/Dockerfile, on the WSL2 Docker host, at the
+# 0.2.3 candidate tree. Nothing here was guessed; every value below is a line that
+# run printed. Until that run the image could not be built at all - the container
+# recipe sourced ESP-IDF's export.sh in a docker build step, which cannot detect
+# IDF_PATH there - so 0.2.2 shipped no artifact and this file could not be filled.
+# docs/RELEASE-0.2.3.md section 1 and docs/KNOWN-ISSUES.md K34 carry that story.
 
 # --- the container -----------------------------------------------------------
 # The image is the pin for CMake, Ninja, Python and the RISC-V cross-compiler:
@@ -53,15 +59,24 @@ cargo_version = 1.99.0-nightly
 # in the artifact path (REPRODUCIBLE.md item 17).
 ldproxy_version = 0.3.5
 espflash_version = 4.5.0
-esptool_version = pending
+esptool_version = v4.12.dev1
 
 # --- ESP-IDF and its toolchain ------------------------------------------------
 # v5.5.5 is rejected on purpose: it backports struct fields that break
 # esp-idf-hal 0.46.2 (firmware/.cargo/config.toml records the two names).
+#
+# clang_version is the version of the esp-clang FRONT-END, which is what
+# `clang --version` reports and what build.sh observes. The libclang bindgen
+# loads is a different idf tool, esp-clang-libs, since Espressif split the two:
+# the compiler package carries no libclang.so at all. Both come out of the same
+# upstream release tag (esp-19.1.2_20250312) and both are installed by
+# idf_tools.py from this image, so within a digest-pinned image they cannot
+# drift apart - but the pin's subject is the front-end, and the library it
+# stands proxy for is named here so a reader is not misled about which.
 idf_version = v5.5.4
-idf_git_describe = pending
-gcc_version = pending
-clang_version = pending
-cmake_version = pending
-ninja_version = pending
-python_version = pending
+idf_git_describe = v5.5.4
+gcc_version = 14.2.0
+clang_version = 19.1.2
+cmake_version = 3.30.2
+ninja_version = 1.11.1
+python_version = 3.12.3

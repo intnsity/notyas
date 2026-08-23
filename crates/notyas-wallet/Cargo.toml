@@ -1,6 +1,6 @@
 [package]
 name = "notyas-wallet"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 # Matches notyas-core: the RustCrypto 2026 generation (sha2 0.11 / hmac 0.13) sets the floor.
 rust-version = "1.85"
